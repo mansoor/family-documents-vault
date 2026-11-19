@@ -5162,10 +5162,29 @@ export function sniffStream(declaredMime: string, filename: string, opts: SniffO
         else resolve(got);
         return;
       }
-      // docx/xlsx sniff as zip; fall back to the declared type for those.
-      const mime = foundMime && foundMime !== 'application/zip' ? foundMime : declared;
-      const ext = UPLOAD_KINDS[mime];
-      if (!ext) {
+      // What its bytes are, and nothing else. A file file-type does not
+      // know — an SVG, a drawing script, text — is refused whatever it was
+      // sent as: what the browser said never makes a file a picture or a
+      // PDF. A zip it cannot tell for Word or Excel is taken as the one it
+      // was sent as, those two alone (read only by the vault's own Word
+      // reader, never drawn); sent as anything else, it is refused.
+      // A PDF with a little before its header — which poppler reads, and
+      // the worker's own check (drawnKindOf) takes — is a PDF when it was
+      // sent as one: `%PDF-` within its first 1 KiB. Nothing else sent is
+      // believed.
+      const leadingPdf =
+        foundMime === undefined &&
+        declared === 'application/pdf' &&
+        head.subarray(0, 1024).includes('%PDF-', 0, 'latin1');
+      const mime = leadingPdf
+        ? 'application/pdf'
+        : foundMime === 'application/zip'
+          ? OFFICE_TYPES.has(declared)
+            ? declared
+            : undefined
+          : foundMime;
+      const ext = mime ? UPLOAD_KINDS[mime] : undefined;
+      if (!mime || !ext) {
         reject(
           new ApiError(
             415,

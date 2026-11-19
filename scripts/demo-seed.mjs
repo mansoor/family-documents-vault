@@ -15,6 +15,9 @@
 //   --email <address>        FDV_DEMO_OWNER_EMAIL     the owner's sign-in (required)
 //   --password <password>    FDV_DEMO_OWNER_PASSWORD  the owner's password (required)
 //   --code <six digits>      FDV_DEMO_TOTP_CODE       only if the owner already has two-step sign-in
+//   --totp-secret <key>      FDV_DEMO_TOTP_SECRET     or the owner's authenticator key, to make codes here
+//   --setup-code <code>      FDV_DEMO_SETUP_CODE      a new vault's setup code (FDV_SETUP_TOKEN in its
+//                                                     .env, or the code in the API's log)
 //   --household <name>       FDV_DEMO_HOUSEHOLD       a new vault's name (default "The Khan family")
 //   --name <name>            FDV_DEMO_OWNER_NAME      a new vault's owner's name (default "Olivia")
 //   --domain <domain>        FDV_DEMO_EMAIL_DOMAIN    the made-up people's addresses (default example.test)
@@ -24,6 +27,9 @@
 //                                                     there instead (scripts/smart-corpus.mjs)
 //   --seed <number>          FDV_CORPUS_SEED          which corpus (default 1)
 //   --i-mean-it                                       allow port 8080
+//
+// A new vault's owner must set up two-step sign-in (0.9.0): the script sets up
+// an authenticator app for them and prints its key, to add to theirs.
 //
 // It also adds three of the family with no sign-in, for inviting (0.8.0):
 // Maryam, 9, too young for a sign-in; Granny Farida, who could have one as an
@@ -49,7 +55,7 @@
 // The made-up people's passwords are made up here and printed at the end,
 // once. Port 8080 — where a household's own vault usually runs — is refused
 // unless --i-mean-it is given.
-import { randomBytes, randomUUID } from 'node:crypto';
+import { createHmac, randomBytes, randomUUID } from 'node:crypto';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
@@ -67,6 +73,8 @@ const base = option('url', 'FDV_DEMO_URL', 'http://localhost:8099').replace(/\/+
 const ownerEmail = option('email', 'FDV_DEMO_OWNER_EMAIL');
 const ownerPassword = option('password', 'FDV_DEMO_OWNER_PASSWORD');
 const totpCode = option('code', 'FDV_DEMO_TOTP_CODE');
+let totpSecret = option('totp-secret', 'FDV_DEMO_TOTP_SECRET');
+const setupCode = option('setup-code', 'FDV_DEMO_SETUP_CODE', process.env.FDV_SETUP_TOKEN);
 const household = option('household', 'FDV_DEMO_HOUSEHOLD', 'The Khan family');
 const ownerName = option('name', 'FDV_DEMO_OWNER_NAME', 'Olivia');
 const domain = option('domain', 'FDV_DEMO_EMAIL_DOMAIN', 'example.test');
@@ -119,25 +127,61 @@ async function call(method, route, { token, body, headers = {} } = {}) {
   return json;
 }
 
+/** A six-digit code from a base32 authenticator key (RFC 6238: SHA-1, 30 s). */
+function codeFrom(base32, at = Date.now()) {
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+  let bits = '';
+  for (const ch of base32.replace(/[=\s]/g, '').toUpperCase()) {
+    const v = alphabet.indexOf(ch);
+    if (v < 0) fail('the authenticator key is not base32.');
+    bits += v.toString(2).padStart(5, '0');
+  }
+  const key = Buffer.from(bits.match(/.{8}/g).map((b) => parseInt(b, 2)));
+  const counter = Buffer.alloc(8);
+  counter.writeBigUInt64BE(BigInt(Math.floor(at / 30_000)));
+  const mac = createHmac('sha1', key).update(counter).digest();
+  const at4 = mac[mac.length - 1] & 0xf;
+  return String((mac.readUInt32BE(at4) & 0x7fffffff) % 1_000_000).padStart(6, '0');
+}
+
 const password = () => `${randomBytes(9).toString('base64url')}-demo`;
 
 /** Somebody signed in: their tokens, and their password to confirm it is them. */
 async function signIn(email, secret) {
   let tokens = await call('POST', '/auth/password', { body: { email, password: secret } });
   if (tokens.mfa_required) {
-    if (!totpCode) {
+    const code = totpSecret ? codeFrom(totpSecret) : totpCode;
+    if (!code) {
       fail(`${email} has two-step sign-in: give a code from the authenticator with --code.`);
     }
     tokens = await call('POST', '/auth/mfa', {
-      body: { mfa_token: tokens.mfa_token, code: totpCode },
+      body: { mfa_token: tokens.mfa_token, code },
     });
   }
   return tokens;
 }
 
-/** Confirms it is them, for what asks (inviting somebody). */
+/** Confirms it is them, for what asks (inviting somebody): with a code once there is a key. */
 const confirm = (token, secret) =>
-  call('POST', '/auth/step-up', { token, body: { password: secret } });
+  call('POST', '/auth/step-up', {
+    token,
+    body: totpSecret ? { code: codeFrom(totpSecret) } : { password: secret },
+  });
+
+/**
+ * An owner held to two-step sign-in (0.9.0) may do nothing else until one is
+ * set up: set up an authenticator app for them here, and print its key.
+ */
+async function twoStepIfAsked(token) {
+  const me = await call('GET', '/me', { token });
+  if (!me.two_step_setup_required) return;
+  const enrol = await call('POST', '/auth/totp/enrol', { token });
+  await call('POST', '/auth/totp/confirm', { token, body: { code: codeFrom(enrol.secret) } });
+  totpSecret = enrol.secret;
+  console.log(
+    `  set up two-step sign-in for the owner: add this key to an authenticator app: ${enrol.secret}`,
+  );
+}
 
 // ------------------------------------------------------------- made-up papers
 
@@ -330,6 +374,7 @@ async function main() {
   if (caps.setup_required) {
     owner = await call('POST', '/setup', {
       body: {
+        ...(setupCode ? { setup_token: setupCode } : {}),
         household_name: household,
         display_name: ownerName,
         email: ownerEmail,
@@ -342,6 +387,7 @@ async function main() {
     console.log(`  signed in as ${ownerEmail}`);
   }
   const t = owner.access_token;
+  await twoStepIfAsked(t);
 
   // The people: each invited as the web invites them, and accepted with a
   // password made up here.

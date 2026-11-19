@@ -46,3 +46,6 @@ Thumbs.db
 .vscode/*
 !.vscode/extensions.json
 *.log
+
+# The e2e owner's authenticator key (e2e/vault.ts), kept between specs
+.e2e-owner-totp

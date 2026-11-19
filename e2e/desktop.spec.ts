@@ -1,4 +1,5 @@
 import { expect, test, type APIRequestContext, type Locator, type Page } from '@playwright/test';
+import { finishSignIn, setupCode } from './vault.js';
 
 /**
  * The wide layouts (Phase 6, R5), on the real stack at 1280 × 800: the
@@ -40,6 +41,7 @@ async function signIn(p: Page, request: APIRequestContext): Promise<string> {
   if (caps.setup_required) {
     await request.post('/api/v1/setup', {
       data: {
+        setup_token: setupCode(),
         household_name: 'The E2E family',
         display_name: 'Mansoor',
         email: EMAIL,
@@ -65,8 +67,10 @@ async function signIn(p: Page, request: APIRequestContext): Promise<string> {
       continue;
     }
     expect(answer.ok()).toBe(true);
+    // The owner's code, the second step (0.9.0).
+    const token = await finishSignIn(p, answer);
     await expect(p).toHaveURL(/\/$/);
-    return ((await answer.json()) as { access_token: string }).access_token;
+    return token;
   }
 }
 

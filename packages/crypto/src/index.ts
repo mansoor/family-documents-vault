@@ -11,3 +11,4 @@ export * from './scope-keys.js';
 export * from './private-values.js';
 export * from './identity.js';
 export * from './emergency.js';
+export * from './weak-secret.js';

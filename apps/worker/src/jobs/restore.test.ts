@@ -3861,6 +3861,27 @@ describe.skipIf(!testAdminUrl())('checking a restored vault', { timeout: 60_000 
     expect(await checkRestored(target())).toMatchObject({ households: 1 });
   });
 
+  it('notices the guard on two-step sign-in for adults gone: the household’s, an owner’s (0120)', async () => {
+    await sql(
+      vault.adminUrl,
+      'alter table public.household disable trigger household_two_step_rule',
+    );
+    try {
+      const refused = await checkRestored(target()).then(
+        () => null,
+        (e: unknown) => (e as Error).message,
+      );
+      expect(refused).toMatch(/guard the vault relies on is missing/);
+      expect(refused).not.toMatch(/household_two_step_rule/);
+    } finally {
+      await sql(
+        vault.adminUrl,
+        'alter table public.household enable trigger household_two_step_rule',
+      );
+    }
+    expect(await checkRestored(target())).toMatchObject({ households: 1 });
+  });
+
   it('notices the guards on a collection’s managers gone: who may be one, and who goes as it narrows (0095)', async () => {
     for (const [table, trigger] of [
       ['doc_collection_manager', 'doc_collection_manager_rule'],

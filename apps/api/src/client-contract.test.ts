@@ -19,7 +19,7 @@ import { LocalAdapter } from '@fdv/storage';
 import FormData from 'form-data';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { codeFor } from './auth/totp.js';
-import { createHarness, TEST_MASTER, type Harness } from './test-harness.js';
+import { createHarness, TEST_MASTER, TEST_SETUP_TOKEN, type Harness } from './test-harness.js';
 
 /**
  * The contract every client relies on, against the real API.
@@ -37,14 +37,22 @@ describe.skipIf(!testAdminUrl())('the client contract, against the real API', ()
 
   /** fetch, as the client sees it, answered by Fastify's inject. */
   const viaInject: FetchLike = async (url, init) => {
+    // First-run setup takes a code since 0.9.0, which a client older than
+    // that never sends: no phone sets a vault up (the web does), but the
+    // contract an older client carries does. Given here, as the person
+    // setting it up would type it; a client that sends one sends its own.
+    const body =
+      /\/api\/v1\/setup$/.test(url) && typeof init.body === 'string'
+        ? JSON.stringify({ setup_token: TEST_SETUP_TOKEN, ...JSON.parse(init.body) })
+        : init.body;
     const res = await h.app.inject({
       method: init.method as 'GET',
       url: url.replace(/^https?:\/\/[^/]+/, ''),
       headers: init.headers,
-      ...(init.body instanceof Uint8Array
-        ? { payload: Buffer.from(init.body) }
-        : typeof init.body === 'string'
-          ? { payload: init.body }
+      ...(body instanceof Uint8Array
+        ? { payload: Buffer.from(body) }
+        : typeof body === 'string'
+          ? { payload: body }
           : {}),
       // Sign-in is rate-limited per address; each call is its own peer. An
       // app's calls come from this machine: plain http is let in only so;
@@ -79,6 +87,7 @@ describe.skipIf(!testAdminUrl())('the client contract, against the real API', ()
     fetch: viaInject,
     email: 'contract@example.test',
     password: 'a long enough password',
+    setupToken: TEST_SETUP_TOKEN,
     // The household's own setting on a built-in (0031), written as the
     // editor writes it (0.5.10), by the owner the scenarios signed in as.
     hideType: async (_householdId, key) => {
@@ -442,6 +451,7 @@ describe.skipIf(!testAdminUrl())('kinds newer than the client (S5)', () => {
 
   it('lists them, files a document of each and reads it back', async () => {
     const tokens = await api.setup({
+      setup_token: TEST_SETUP_TOKEN,
       household_name: 'The Kinds family',
       display_name: 'Owner',
       email: 'kinds@example.test',
@@ -502,6 +512,7 @@ describe.skipIf(!testAdminUrl())('a note, newer than the client (N1)', () => {
 
   it('lists it, reads it, finds its kind and its words, changes them, and keeps Essentials as before', async () => {
     const tokens = await api.setup({
+      setup_token: TEST_SETUP_TOKEN,
       household_name: 'The Notes family',
       display_name: 'Owner',
       email: 'notes-older@example.test',
@@ -589,6 +600,7 @@ describe.skipIf(!testAdminUrl())(
 
     it('lists, reads, finds and edits it, shows its status by its label, and hears of no reminder for it', async () => {
       const tokens = await api.setup({
+        setup_token: TEST_SETUP_TOKEN,
         household_name: 'The Kept family',
         display_name: 'Owner',
         email: 'kept-older@example.test',
@@ -689,6 +701,7 @@ describe.skipIf(!testAdminUrl() || !clientSetsReminders)(
 
     it('a reminder set from the phone, listed, and removed; one from a date is not', async () => {
       const { access_token: token } = await api.setup({
+        setup_token: TEST_SETUP_TOKEN,
         household_name: 'The Reminded family',
         display_name: 'Owner',
         email: 'reminded@example.test',

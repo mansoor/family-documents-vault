@@ -48,6 +48,8 @@ import { zipEntryNames } from './zip.js';
 export interface ContractContext {
   email: string;
   password: string;
+  /** The setup code the vault takes (0.9.0): the real API's harness has one; the fake takes any. */
+  setupToken?: string;
   tokens?: Tokens;
   spent?: string;
   /**
@@ -340,6 +342,7 @@ export const contractScenarios: Scenario[] = [
     name: 'setting it up opens a session for the first owner',
     run: async (api, ctx) => {
       const t = await api.setup({
+        ...(ctx.setupToken ? { setup_token: ctx.setupToken } : {}),
         household_name: 'The Contract family',
         display_name: 'Owner',
         email: ctx.email,

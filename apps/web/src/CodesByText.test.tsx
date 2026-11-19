@@ -264,12 +264,14 @@ describe('“Text me a code”', () => {
   });
 
   it('when confirming it’s you: offered where a text may serve, and confirms with it', async () => {
-    const state = texts({ stepUpNeeded: true, stepUpTextTo: '•••• •••303' });
+    // Adding a computer asks with any credential (exporting everything takes
+    // a passkey or a code since 0.9.0, and offers no text).
+    const state = texts({ stepUpNeeded: true, stepUpTextTo: '•••• •••303', computers: [] });
     installFakeApi(state);
     signedIn();
-    window.history.replaceState({}, '', '/settings/data');
+    window.history.replaceState({}, '', '/settings/computers');
     render(<App />);
-    fireEvent.click(await screen.findByRole('button', { name: 'Make an export' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Add a computer' }));
     await screen.findByRole('dialog', { name: 'Just checking it is you' });
     fireEvent.click(
       await screen.findByRole('button', { name: 'Or text me a code at •••• •••303' }),
@@ -278,16 +280,20 @@ describe('“Text me a code”', () => {
     fireEvent.change(screen.getByLabelText('Code from the text'), { target: { value: '654321' } });
     await expectAccessible();
     fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
-    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    await waitFor(() =>
+      expect(
+        screen.queryByRole('dialog', { name: 'Just checking it is you' }),
+      ).not.toBeInTheDocument(),
+    );
     expect(bodyOf(state, 'POST', '/api/v1/auth/step-up')).toEqual({ text_code: '654321' });
   });
 
   it('when confirming it’s you, not offered to whoever has no text to give', async () => {
-    installFakeApi(texts({ stepUpNeeded: true, stepUpTextTo: null }));
+    installFakeApi(texts({ stepUpNeeded: true, stepUpTextTo: null, computers: [] }));
     signedIn();
-    window.history.replaceState({}, '', '/settings/data');
+    window.history.replaceState({}, '', '/settings/computers');
     render(<App />);
-    fireEvent.click(await screen.findByRole('button', { name: 'Make an export' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Add a computer' }));
     await screen.findByRole('dialog', { name: 'Just checking it is you' });
     await screen.findByLabelText('Or your password');
     expect(screen.queryByRole('button', { name: /text me a code/i })).not.toBeInTheDocument();

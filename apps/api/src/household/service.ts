@@ -380,6 +380,69 @@ export class HouseholdService {
     return this.endedSharing(p);
   }
 
+  /**
+   * GET /household/two-step (0.9.0): whether every adult must have two-step
+   * sign-in — a code from an authenticator app, or a passkey — before a
+   * password sign-in opens anything else. Owners always must. Read by
+   * everybody signed in; `can_change` for an owner.
+   */
+  async twoStep(p: Principal): Promise<{ adults: boolean; can_change: boolean }> {
+    return withPrincipal(this.db, p, async (trx) => {
+      const hh = await trx
+        .selectFrom('household')
+        .select('require_two_step_adults')
+        .where('id', '=', p.householdId)
+        .executeTakeFirstOrThrow();
+      return { adults: hh.require_two_step_adults, can_change: p.role === 'owner' };
+    });
+  }
+
+  /**
+   * PUT /household/two-step (0.9.0): an owner's, with a passkey or a code
+   * (the route: an owner power over other people's sign-ins, A54). The
+   * database holds it to owners too (household_two_step_rule, 0120). Turned
+   * on, an adult with neither may only set one up at their next request,
+   * signed in already or not. Each change is in the activity log; the same
+   * again changes nothing.
+   */
+  async setTwoStep(
+    p: Principal,
+    adults: boolean,
+    meta: RequestMeta,
+  ): Promise<{ adults: boolean; can_change: boolean }> {
+    if (p.role !== 'owner') {
+      throw new ApiError(
+        403,
+        'forbidden',
+        'Only an owner can choose whether adults must use two-step sign-in.',
+      );
+    }
+    await withPrincipal(this.db, p, async (trx) => {
+      const before = await trx
+        .selectFrom('household')
+        .select('require_two_step_adults')
+        .where('id', '=', p.householdId)
+        .forUpdate()
+        .executeTakeFirstOrThrow();
+      if (before.require_two_step_adults === adults) return;
+      await trx
+        .updateTable('household')
+        .set({ require_two_step_adults: adults })
+        .where('id', '=', p.householdId)
+        .execute();
+      await appendAudit(trx, {
+        householdId: p.householdId,
+        actorAccountId: p.accountId,
+        action: 'household.two_step_changed',
+        objectType: 'household',
+        objectId: p.householdId,
+        detail: { adults },
+        ip: meta.ip,
+      });
+    });
+    return this.twoStep(p);
+  }
+
   async updateProfile(p: Principal, input: z.infer<typeof profileBody>, meta: RequestMeta) {
     requireCapability(p, 'profile.edit');
     // The time zone is an owner's (0.9.0, TZ): an adult sending one is

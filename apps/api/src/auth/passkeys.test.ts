@@ -158,6 +158,58 @@ describe.skipIf(!testAdminUrl())('passkeys', () => {
     expect(json<{ error: { message: string } }>(res).error.message).toMatch(/looks like a copy/);
   });
 
+  it('a passkey must ask for a PIN, a fingerprint or a face, to be made and every time it is used', async () => {
+    // What a browser is told: user verification required, both ways.
+    expect((await registerChallenge()).authenticatorSelection?.userVerification).toBe('required');
+    const options = await signInChallenge('owner@example.test');
+    expect(options.userVerification).toBe('required');
+
+    // A key that only knows it was touched is not made a passkey…
+    const bare = new SoftwareAuthenticator();
+    const made = await h.app.inject({
+      method: 'POST',
+      url: '/api/v1/auth/passkeys',
+      headers: h.as(owner),
+      payload: { response: bare.register(await registerChallenge(), { presenceOnly: true }) },
+    });
+    expect(made.statusCode).toBe(400);
+    expect(json<{ error: { message: string } }>(made).error.message).toMatch(
+      /PIN, fingerprint or face/,
+    );
+
+    // …and a passkey made before 0.9.0, used without one, signs nobody in
+    // (its device is asked for one; one that cannot give it is refused),
+    // nor confirms it's them for a step-up.
+    const signIn = await h.app.inject({
+      method: 'POST',
+      url: '/api/v1/auth/passkey/verify',
+      payload: { response: phone.authenticate(options, { presenceOnly: true }) },
+    });
+    expect(signIn.statusCode).toBe(401);
+    expect(json<{ error: { message: string } }>(signIn).error.message).toMatch(
+      /PIN, fingerprint or face/,
+    );
+    const step = await h.app.inject({
+      method: 'POST',
+      url: '/api/v1/auth/step-up',
+      headers: h.as(owner),
+      payload: {
+        passkey: phone.authenticate(await signInChallenge('owner@example.test'), {
+          presenceOnly: true,
+        }),
+      },
+    });
+    expect(step.statusCode).toBe(401);
+
+    // The same passkey, its PIN or fingerprint given, still signs in.
+    const verified = await h.app.inject({
+      method: 'POST',
+      url: '/api/v1/auth/passkey/verify',
+      payload: { response: phone.authenticate(await signInChallenge('owner@example.test')) },
+    });
+    expect(verified.statusCode, verified.body).toBe(200);
+  });
+
   it('an unknown email still gets a challenge, so it cannot be used to find accounts', async () => {
     const unknown = await signInChallenge('nobody@example.test');
     expect(unknown.challenge).toBeTruthy();
@@ -228,5 +280,51 @@ describe.skipIf(!testAdminUrl())('passkeys', () => {
       'credential.passkey_added',
       'credential.passkey_removed',
     ]);
+  });
+
+  it('challenges asked for over and over by somebody else spoil nobody’s sign-in or step-up (0.9.0)', async () => {
+    // Sign-in's routes are limited to 10 a minute an address: this test's
+    // own calls come from addresses of their own, so it spends none of the
+    // file's.
+    const ask = async (at: string) =>
+      json<PublicKeyCredentialRequestOptionsJSON>(
+        await h.app.inject({
+          method: 'POST',
+          url: '/api/v1/auth/passkey/challenge',
+          payload: { email: 'owner@example.test' },
+          remoteAddress: at,
+        }),
+      );
+    // The owner's own challenge, for a sign-in and for confirming it's them…
+    const mine = await ask('10.98.0.1');
+    const mineForStepUp = await ask('10.98.0.2');
+    // …then a stranger, from addresses of their own, asks for many more,
+    // for the same email and for none.
+    for (let i = 0; i < 6; i++) {
+      for (const payload of [{ email: 'owner@example.test' }, {}]) {
+        const asked = await h.app.inject({
+          method: 'POST',
+          url: '/api/v1/auth/passkey/challenge',
+          payload,
+          remoteAddress: `10.99.0.${i + 1}`,
+        });
+        expect(asked.statusCode).toBe(200);
+      }
+    }
+    // The answer signed over the owner's own still finds it, by its value.
+    const signedIn = await h.app.inject({
+      method: 'POST',
+      url: '/api/v1/auth/passkey/verify',
+      payload: { response: phone.authenticate(mine) },
+      remoteAddress: '10.98.0.1',
+    });
+    expect(signedIn.statusCode, signedIn.body).toBe(200);
+    const stepped = await h.app.inject({
+      method: 'POST',
+      url: '/api/v1/auth/step-up',
+      headers: h.as(owner),
+      payload: { passkey: phone.authenticate(mineForStepUp) },
+    });
+    expect(stepped.statusCode, stepped.body).toBe(200);
   });
 });

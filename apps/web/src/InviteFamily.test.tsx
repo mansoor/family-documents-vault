@@ -235,6 +235,7 @@ describe('adding a person, with an invitation (after 0.7.0)', () => {
     installFakeApi(state);
     render(<App />);
     await screen.findByRole('heading', { name: /Set up your family/ });
+    fireEvent.change(screen.getByLabelText('Setup code'), { target: { value: 'the-code' } });
     fireEvent.change(screen.getByLabelText(/call your family/), { target: { value: 'Khans' } });
     fireEvent.change(screen.getByLabelText('Your name'), { target: { value: 'Mansoor' } });
     fireEvent.change(screen.getByLabelText('Your email'), { target: { value: 'm@example.test' } });
@@ -502,6 +503,7 @@ describe('the review’s findings (after 0.7.0)', () => {
     installFakeApi(state);
     render(<App />);
     await screen.findByRole('heading', { name: /Set up your family/ });
+    fireEvent.change(screen.getByLabelText('Setup code'), { target: { value: 'the-code' } });
     fireEvent.change(screen.getByLabelText(/call your family/), { target: { value: 'Khans' } });
     fireEvent.change(screen.getByLabelText('Your name'), { target: { value: 'Mansoor' } });
     fireEvent.change(screen.getByLabelText('Your email'), { target: { value: 'm@example.test' } });

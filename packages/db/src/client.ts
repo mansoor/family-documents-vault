@@ -118,6 +118,12 @@ export interface Schema {
      * only once its time has passed since both its end and this.
      */
     ended_sharing_from: GeneratedTimestamp;
+    /**
+     * Whether every adult must have two-step sign-in (0120, 0.9.0): on for
+     * households made since, off for those before. Owners always must. An
+     * owner's to change.
+     */
+    require_two_step_adults: Generated<boolean>;
   };
 
   member: {
@@ -312,6 +318,12 @@ export interface Schema {
     transports: Generated<string[]>;
     backed_up: boolean | null;
     aaguid: string | null;
+    /**
+     * A passkey that has asked for a PIN, a fingerprint or a face (0120,
+     * 0.9.0): every one made since, and one made before once it has been
+     * used with one. Only such a passkey is a factor of two-step sign-in.
+     */
+    user_verified: Generated<boolean>;
   };
 
   password_reset: {

@@ -94,6 +94,14 @@ export class TotpService {
         .set({ totp_confirmed_at: new Date() })
         .where('id', '=', p.accountId)
         .execute();
+      // A code was just given: this session has presented two-step sign-in
+      // (0.9.0). Fresh, as any
+      // code given is, for five minutes.
+      await trx
+        .updateTable('session')
+        .set({ factor_verified_at: new Date() })
+        .where('id', '=', p.sessionId)
+        .execute();
       await appendAudit(trx, {
         householdId: p.householdId,
         actorAccountId: p.accountId,

@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import { afterEach, describe, expect, it } from 'vitest';
 import { buildApp } from './app.js';
@@ -377,6 +378,18 @@ describe('loadConfig', () => {
       '/k',
     );
     expect(() => loadConfig({ DATABASE_URL: 'x', FDV_MASTER_KEY: 'short' })).toThrow(/32/);
+  });
+
+  it('takes a setup code only as hard to guess as gen-env makes one (0.9.0)', () => {
+    const base = { DATABASE_URL: 'x', FDV_MASTER_KEY: config.FDV_MASTER_KEY };
+    expect(() => loadConfig({ ...base, FDV_SETUP_TOKEN: 'short' })).toThrow(/16/);
+    for (const weak of ['a'.repeat(24), '1234567812345678', 'replace-with-a-setup-code']) {
+      expect(() => loadConfig({ ...base, FDV_SETUP_TOKEN: weak }), weak).toThrow(
+        /FDV_SETUP_TOKEN: is a placeholder, or too easy to guess/,
+      );
+    }
+    const made = randomBytes(16).toString('base64url');
+    expect(loadConfig({ ...base, FDV_SETUP_TOKEN: made }).FDV_SETUP_TOKEN).toBe(made);
   });
 
   it('applies self-hosted defaults', () => {

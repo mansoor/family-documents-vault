@@ -105,7 +105,19 @@ export class Session {
     return this.core.info;
   }
 
+  /**
+   * The sign-in just accepted may only set up two-step sign-in, or sign out
+   * (0.9.0, `Tokens.two_step_setup_required`), until the app says it is done.
+   */
+  twoStepSetup = false;
+
+  /** Two-step sign-in is set up: this sign-in goes on. */
+  twoStepDone() {
+    this.twoStepSetup = false;
+  }
+
   accept(tokens: Tokens) {
+    this.twoStepSetup = tokens.two_step_setup_required === true;
     // A new sign-in starts with no notes half-written by the last one
     // (5.35, A32).
     forgetDrafts();
@@ -115,6 +127,7 @@ export class Session {
   }
 
   clear() {
+    this.twoStepSetup = false;
     // People's photos are held in memory for the sign-in that fetched them
     // (5.17c), and a batch's first pages (I1): the next person at this
     // browser is not shown them. Nor the notes they had not saved (5.35, A32).

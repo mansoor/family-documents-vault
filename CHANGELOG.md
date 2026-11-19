@@ -6,6 +6,32 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.9.0-dev.73] - 2026-11-19 — security before launch
+
+### Security
+
+- **Pictures are only ever read as what they are.** A file is now stored as a photo, a scan or a PDF only when its own bytes say it is one: what the browser or app said about it no longer counts, and a file the vault does not recognise is refused (Word and Excel files are still taken as sent, and read only as Word and Excel files; a PDF sent as one is taken when its header is within its first 1 KiB, as some scanners and mail programs write them). The worker checks the bytes again before drawing any thumbnail, page or photo, names the kind of file to the drawing tool every time, and the worker image now carries an ImageMagick security policy that turns off the tool's scripting, text, network and PostScript features and limits what one drawing may use. The image is not built, and the worker does not start, unless the policy is in force.
+- **Owners must have two-step sign-in.** The README always said so; now it is held to. An owner who signs in with a password and has neither a passkey nor an authenticator app can only set one up, or sign out, and then goes straight on. The first owner sets it up during first-run setup.
+- **A password alone never opens the vault for somebody with two-step sign-in.** An owner (or an adult, where asked) whose second step is a passkey is now asked for it after the password — **Use your passkey** — as one with an authenticator app is asked for its code; before, a passkey alone let a password through. A sign-in that has not given the passkey or code, such as one opened before this version, can only confirm it's them with one, or sign out. A code by text never stands in for it.
+- **Adding or removing a passkey or an authenticator app, or setting a new password by confirming it's you, takes a passkey or a code** once you have either — never the password alone. Every passkey counts, one made before this version included: it is asked for a PIN or a fingerprint as it is used.
+- **Two-step sign-in for adults**, a new setting in Settings → Privacy, an owner's to change. When on, every adult is held to it the same way. It is **on for households made from this version on**, and **off for households that already exist**: their adults may have neither today, and turning it on by upgrading would stop them at their next sign-in with no warning. Owners of an existing household can turn it on once the adults have set it up.
+- **Exporting everything takes a passkey or a code**, never the password alone (as connecting an app already did). Somebody with neither is asked to set up two-step sign-in first.
+- **First-run setup asks for a setup code.** Until a new vault is set up, whoever reached it first could make themselves its owner. Now setup asks for `FDV_SETUP_TOKEN`, which `scripts/gen-env.mjs` writes to `.env`; with none (a `.env` made earlier), the API makes a code each time it starts, until the vault is set up, and writes it to its log. Two setups at the same moment can no longer both go through. A `FDV_SETUP_TOKEN` too easy to guess is refused at start, however long it is.
+- **No starting on the example file's secrets.** The api and the worker now refuse to start with the master key from `.env.example`, a master key that is too easy to guess, or the example's `replace-me` database passwords, and say what to do. (A vault already running on a weak master key can move to a new one with `rotate-master-key`, which still runs — and which now refuses a new key that is a placeholder or too easy to guess.)
+- **The app cannot be put inside another site's page.** The signed-in web app is now sent `frame-ancestors 'none'` and `X-Frame-Options: DENY`, with a `Referrer-Policy` of `same-origin` and a `Permissions-Policy` turning off the camera, microphone, location, payments and USB, which it never uses — on plain `:8080` too. The pages people outside the family open had these already.
+- **Row-level security is checked at start.** The api and the worker refuse to start if the database role they serve the family with is a superuser, has `BYPASSRLS`, or owns the tables — any of which would quietly switch off every household boundary.
+- **Passkeys ask for your PIN, fingerprint or face.** Making a passkey, signing in with one and confirming it's you with one now all require the device to check it is you, not only that it was touched. Passkeys on phones and computers always do. **After upgrading, a passkey-only owner signs in with the passkey; a security key without a PIN needs one set, or the owner reset.** A passkey made earlier on a security key with no PIN set no longer works until a PIN is set on the key; an owner with no other way in is given one by another owner's password reset, or the operator's.
+
+### Changed
+
+- **Settings → Privacy** has **Two-step sign-in for adults** (owners).
+- **First-run setup** asks for the setup code first, and has a two-step sign-in step before the questions.
+- Phone app before 0.20.0: an owner without two-step must set it up in a browser.
+
+### Database
+
+- Migration 0120: `household.require_two_step_adults`, on for households made from now on and off for those already there, an owner's to change; `credential.user_verified`, a passkey that has asked for a PIN or fingerprint (every one made from now on, and an older one once used with one), kept for the record.
+
 ## [0.9.0-dev.72] - 2026-11-19 — connected apps hardened before going live
 
 ### Added

@@ -6,6 +6,7 @@ import { describeError, useApp, useLoad } from '../app-context.js';
 import { TwoStepNeeded } from '../identity.js';
 import { EndedSharingCard } from '../ended-sharing.js';
 import { NeutralWordingCard } from '../neutral-wording.js';
+import { TwoStepRuleCard } from '../two-step-rule.js';
 import { endedSharingCard, privacyRows, SettingsRows, wordingCard } from '../settings-sections.js';
 import { storedRole } from '../session.js';
 import { ErrorNote, LoadFailed } from '../ui.js';
@@ -33,6 +34,8 @@ export function PrivacyScreen() {
       <OnlyMeSharingCard />
       {/* Ended links and requests (0.9.0, RQ): how long they are kept. */}
       {endedSharingCard(role, caps) && <EndedSharingCard />}
+      {/* Two-step sign-in for adults (0.9.0): an owner's to change. */}
+      {role === 'owner' && <TwoStepRuleCard />}
       {/* Its page: who sees identity details, where it was shown before. */}
       <SettingsRows rows={rows} label="More about privacy" />
     </SettingsPage>

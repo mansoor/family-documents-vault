@@ -8,7 +8,7 @@ import { createApi, createHttp } from '@fdv/client';
 import { createPool } from '@fdv/db';
 import { testAdminUrl } from '@fdv/db/testing';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { createHarness, type Harness } from '../test-harness.js';
+import { createHarness, TEST_SETUP_TOKEN, type Harness } from '../test-harness.js';
 
 /**
  * `@fdv/client`'s device paths under Node's own fetch, against the API
@@ -51,6 +51,7 @@ describe.skipIf(!testAdminUrl())('the client’s device paths, under plain fetch
       }),
     );
     const owner = await api.setup({
+      setup_token: TEST_SETUP_TOKEN,
       household_name: 'The Client family',
       display_name: 'Owner',
       email: 'client-owner@example.test',

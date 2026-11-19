@@ -320,6 +320,15 @@ describe.skipIf(!testAdminUrl())('rotating the master key', () => {
       expect(newMasterKeyProblem(TEST_MASTER, bad)).toMatch(/only letters, digits/);
     }
     expect(newMasterKeyProblem(TEST_MASTER, NEW)).toBeNull();
+    // Never onto a placeholder, or a key too easy to guess (0.9.0): the
+    // vault would refuse to start with it.
+    for (const weak of [
+      'a'.repeat(44),
+      'replace-with-32-random-bytes-base64url',
+      'ab'.repeat(20),
+    ]) {
+      expect(newMasterKeyProblem(TEST_MASTER, weak), weak).toMatch(/too easy to guess/);
+    }
     // What the README's command makes, and base64 and hex, all do.
     for (const good of [
       randomBytes(32).toString('base64url'),

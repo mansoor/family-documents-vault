@@ -1,6 +1,6 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { execFile } from 'node:child_process';
-import { access, mkdtemp, open, readdir, readFile, rm } from 'node:fs/promises';
+import { access, mkdtemp, open, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { childEnv } from './child-env.js';
@@ -409,14 +409,29 @@ export async function cleanForOcr(
 }
 
 /**
- * A JPEG thumbnail, longest side `size`. PDFs go through poppler for the
- * first page (ImageMagick would need Ghostscript for that); images go
- * straight to ImageMagick, which also fixes camera orientation.
+ * A JPEG thumbnail of a file stored as `mime`, longest side `size`. PDFs go
+ * through poppler for the first page (ImageMagick would need Ghostscript for
+ * that); images go straight to ImageMagick, which also fixes camera
+ * orientation.
+ *
+ * Only the kinds the vault draws (`drawable`), and only when the file's own
+ * first bytes are that kind (`refuseUnlessKind`): anything else — an SVG or
+ * a drawing script sent as a PNG, a text file — is refused, and never handed
+ * to ImageMagick. Every file ImageMagick reads is named with its coder
+ * (`png:`, `jpeg:`, …), so it is read as the kind it was checked to be and
+ * never as whatever its bytes claim; the worker image's policy.xml refuses
+ * the coders that run scripts or reach outside besides.
  */
-export async function thumbnail(input: string, output: string, size = 480): Promise<void> {
+export async function thumbnail(
+  input: string,
+  output: string,
+  mime: string,
+  size = 480,
+): Promise<void> {
+  await refuseUnlessKind(input, mime);
   const bin = await MAGICK();
-  let src = input;
-  if (input.toLowerCase().endsWith('.pdf')) {
+  let src: string;
+  if (mime === 'application/pdf') {
     const base = path.join(path.dirname(output), 'thumb-src');
     // A JPEG on its first page libjpeg would hold whole, too big or
     // unreadable, is refused first, as a photo's is (L2).
@@ -427,11 +442,14 @@ export async function thumbnail(input: string, output: string, size = 480): Prom
       ['-png', '-scale-to', '960', '-f', '1', '-l', '1', '-singlefile', input, base],
       { timeout: 60_000 },
     );
-    src = `${base}.png`;
+    src = `png:${base}.png`;
   } else {
-    // Read by what its bytes are: a JPEG libjpeg would hold whole, too big
-    // or unreadable, is refused first (R3, round four).
-    await refuseHeldJpeg(input);
+    const coder = IMAGE_CODERS[mime] as string;
+    // A JPEG libjpeg would hold whole, too big or unreadable, is refused
+    // first (R3, round four).
+    if (coder === 'jpeg') await refuseHeldJpeg(input);
+    // The first frame only: a scanner's TIFF's first page.
+    src = `${coder}:${input}[0]`;
   }
   await run(
     bin,
@@ -444,12 +462,99 @@ export async function thumbnail(input: string, output: string, size = 480): Prom
       '-quality',
       '82',
       '-strip',
-      output,
+      `jpeg:${output}`,
     ],
     { timeout: 60_000 },
   );
   await access(output);
 }
+
+/**
+ * A file the vault will not draw: not a kind it draws, or its bytes are not
+ * the kind it was stored as. Nothing was handed to any tool.
+ */
+export class KindRefused extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'KindRefused';
+  }
+}
+
+/**
+ * What a file's first bytes say it is, of the kinds the vault draws: a PDF,
+ * or a JPEG, PNG, WebP, TIFF or HEIC/HEIF picture. Null for anything else —
+ * an SVG, an MVG or MSL script, text, a zip — which is never drawn.
+ */
+export function drawnKindOf(head: Buffer): string | null {
+  // A PDF may have a little before its header; poppler reads it so.
+  if (head.subarray(0, 1024).includes('%PDF-', 0, 'latin1')) return 'application/pdf';
+  const photo = photoType(head);
+  if (photo) return photo;
+  if (head.length >= 4) {
+    const [a, b, c, d] = [head[0], head[1], head[2], head[3]];
+    // Little- and big-endian TIFF, and BigTIFF.
+    if (a === 0x49 && b === 0x49 && (c === 0x2a || c === 0x2b) && d === 0x00) return 'image/tiff';
+    if (a === 0x4d && b === 0x4d && c === 0x00 && (d === 0x2a || d === 0x2b)) return 'image/tiff';
+  }
+  return null;
+}
+
+/** HEIF and HEIC are one coder's, as IMAGE_CODERS has them. */
+const kindKey = (mime: string) => (mime === 'image/heif' ? 'image/heic' : mime);
+
+/**
+ * Refuses (`KindRefused`) a file unless the vault draws its kind and its
+ * own first bytes are that kind: whatever a file was stored as, a tool is
+ * only ever handed what it was checked to be.
+ */
+export async function refuseUnlessKind(file: string, mime: string): Promise<void> {
+  if (!drawable(mime)) throw new KindRefused(`the vault draws no ${mime}`);
+  const handle = await open(file, 'r');
+  let head: Buffer;
+  try {
+    const buf = Buffer.alloc(1024);
+    const { bytesRead } = await handle.read(buf, 0, buf.length, 0);
+    head = buf.subarray(0, bytesRead);
+  } finally {
+    await handle.close();
+  }
+  const found = drawnKindOf(head);
+  if (found === null || kindKey(found) !== kindKey(mime)) {
+    throw new KindRefused(`its bytes are not ${mime}`);
+  }
+}
+
+/**
+ * What ImageMagick's security policy (docker/imagemagick/policy.xml, the
+ * worker image's) does to a script: a one-line MVG drawing is asked to be
+ * read, by name. `enforced` when the policy refuses it; `absent` when it was
+ * read, or failed for some other reason; `no-magick` with no ImageMagick.
+ */
+export async function magickPolicy(workDir: string): Promise<'enforced' | 'absent' | 'no-magick'> {
+  if (!(await has('magick', ['-version']))) return 'no-magick';
+  const dir = await mkdtemp(path.join(workDir, 'fdv-policy-'));
+  try {
+    const probe = path.join(dir, 'probe.mvg');
+    await writeFile(probe, 'viewbox 0 0 1 1\n');
+    try {
+      await run('magick', [`mvg:${probe}`, `png:${path.join(dir, 'probe.png')}`], {
+        timeout: 30_000,
+      });
+      return 'absent';
+    } catch (err) {
+      const { stderr, message } = err as { stderr?: string | Buffer; message?: string };
+      return MAGICK_POLICY_REFUSAL.test(`${stderr?.toString() ?? ''} ${message ?? ''}`)
+        ? 'enforced'
+        : 'absent';
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+/** What ImageMagick says when its policy refuses a coder (the Dockerfile checks for the same). */
+// ImageMagick 7.1 says "not authorized"; older builds said "not allowed".
+export const MAGICK_POLICY_REFUSAL = /not (allowed|authorized) by the security policy/;
 
 /** A page preview's size and quality (4.7): enough to read a passport's small print. */
 export const PREVIEW_EDGE = 1600;
@@ -487,6 +592,9 @@ export async function renderPreviews(
   outDir: string,
   maxPages: number,
 ): Promise<string[]> {
+  if (!drawable(mime)) return [];
+  // Drawn only as what its own bytes are (refuseUnlessKind), as a thumbnail is.
+  await refuseUnlessKind(input, mime);
   const bin = await MAGICK();
   let sources: string[];
   if (mime === 'application/pdf') {
@@ -1714,6 +1822,8 @@ export async function imagePage(
 ): Promise<string> {
   const coder = IMAGE_CODERS[mime];
   if (!coder) throw new Error(`a page is not read from ${mime}`);
+  // Read only as what its own bytes are (refuseUnlessKind), as a thumbnail is.
+  await refuseUnlessKind(input, mime);
   const bin = await MAGICK();
   const file = path.join(outDir, `photo-${index + 1}.png`);
   const src = `${coder}:${input}[${index}]`;

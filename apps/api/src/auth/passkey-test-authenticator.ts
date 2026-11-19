@@ -37,7 +37,13 @@ export class SoftwareAuthenticator {
   /** Answers a creation challenge, the way a browser's authenticator does. */
   register(
     options: PublicKeyCredentialCreationOptionsJSON,
-    over: { origin?: string; rpId?: string; challenge?: string } = {},
+    over: {
+      origin?: string;
+      rpId?: string;
+      challenge?: string;
+      /** A key that only knows somebody touched it: no PIN, no fingerprint (UV not set). */
+      presenceOnly?: boolean;
+    } = {},
   ): RegistrationResponseJSON {
     const clientData = this.clientData(
       'webauthn.create',
@@ -46,7 +52,8 @@ export class SoftwareAuthenticator {
     );
     const authData = Buffer.concat([
       rpIdHash(over.rpId ?? options.rp.id ?? 'localhost'),
-      Buffer.from([0x45]), // user present, user verified, attested data included
+      // User present, user verified (unless presence only), attested data included.
+      Buffer.from([over.presenceOnly ? 0x41 : 0x45]),
       counterBytes(++this.counter),
       Buffer.alloc(16), // AAGUID: this authenticator says nothing about itself
       lengthBytes(this.credentialId.length),
@@ -79,14 +86,21 @@ export class SoftwareAuthenticator {
   /** Answers a sign-in challenge. */
   authenticate(
     options: PublicKeyCredentialRequestOptionsJSON,
-    over: { origin?: string; rpId?: string; challenge?: string; counter?: number } = {},
+    over: {
+      origin?: string;
+      rpId?: string;
+      challenge?: string;
+      counter?: number;
+      /** Touched, but no PIN or fingerprint asked (UV not set). */
+      presenceOnly?: boolean;
+    } = {},
   ): AuthenticationResponseJSON {
     const clientData = this.clientData('webauthn.get', over.challenge ?? options.challenge, over);
     if (over.counter !== undefined) this.counter = over.counter;
     else this.counter += 1;
     const authData = Buffer.concat([
       rpIdHash(over.rpId ?? options.rpId ?? 'localhost'),
-      Buffer.from([0x05]), // user present, user verified
+      Buffer.from([over.presenceOnly ? 0x01 : 0x05]), // user present, user verified (unless not)
       counterBytes(this.counter),
     ]);
     const signed = Buffer.concat([authData, createHash('sha256').update(clientData).digest()]);

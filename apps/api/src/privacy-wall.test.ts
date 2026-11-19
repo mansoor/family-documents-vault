@@ -17,6 +17,26 @@ import type { MemberView } from './household/service.js';
 import { createHarness, TEST_MASTER, type Harness } from './test-harness.js';
 
 /**
+ * An export of `t`'s, made as the vault makes one when asked (its row, which
+ * the worker fills): asking takes a passkey or a code since 0.9.0, which
+ * would change what the tests that only need one are about.
+ */
+async function exportMadeFor(h: Harness, t: Tokens): Promise<string> {
+  const admin = createPool(h.adminUrl, 1);
+  try {
+    const { rows } = await admin.query<{ id: string }>(
+      `insert into export (household_id, requested_by)
+       select household_id, account_id from account_household where member_id = $1
+       returning id`,
+      [t.member_id],
+    );
+    return rows[0]?.id as string;
+  } finally {
+    await admin.end();
+  }
+}
+
+/**
  * The Phase 3 exit condition, as an adversarial suite.
  *
  * *A second adult uses the vault untaught and cannot reach the first
@@ -662,6 +682,8 @@ describe.skipIf(!testAdminUrl())('the privacy wall, from the other side', () => 
   });
 
   it('a copy of everything is a copy of everything Sam can see, and no more', async () => {
+    // Exporting takes a passkey or a code (0.9.0): Sam has one.
+    await h.decider(sam);
     const asked = await h.app.inject({ method: 'POST', url: '/api/v1/exports', headers: as(sam) });
     expect(asked.statusCode).toBe(202);
     const exportId = json<{ id: string }>(asked).id;
@@ -1054,9 +1076,10 @@ describe.skipIf(!testAdminUrl())('the privacy wall, from the owner’s side', ()
   afterAll(() => h.close());
 
   it('an owner cannot list, look up or download another adult’s export', async () => {
-    const asked = await h.app.inject({ method: 'POST', url: '/api/v1/exports', headers: as(sam) });
-    expect(asked.statusCode).toBe(202);
-    const id = json<{ id: string }>(asked).id;
+    // An owner with two-step sign-in, who may download exports (0.9.0)…
+    await h.decider(owner);
+    // …and Sam's, made as the vault makes one (asking takes a passkey or a code).
+    const id = await exportMadeFor(h, sam);
 
     const listed = json<{ items: Array<{ id: string }> }>(
       await h.app.inject({ url: '/api/v1/exports', headers: as(owner) }),
@@ -1282,12 +1305,8 @@ describe.skipIf(!testAdminUrl())('the privacy wall: links, keys and hand-overs',
       payload: { document_id: docOf['Sam private'], fire_at: '2030-01-01' },
     });
     samReminder = json<{ id: string }>(reminder).id;
-    const exported = await h.app.inject({
-      method: 'POST',
-      url: '/api/v1/exports',
-      headers: as(sam),
-    });
-    samExport = json<{ id: string }>(exported).id;
+    // Made as the vault makes one: asking takes a passkey or a code (0.9.0).
+    samExport = await exportMadeFor(h, sam);
   }, 120_000);
   afterAll(() => h.close());
 
@@ -1462,6 +1481,7 @@ describe.skipIf(!testAdminUrl())('the privacy wall: uploads, exports and invitat
   let peers = 0;
   const peer = () => ({ remoteAddress: `10.78.${peers >> 8}.${peers++ & 0xff}` });
 
+  // A password's and a code's alike: exporting asks for a code (0.9.0).
   const setFresh = (t: Tokens, fresh: boolean) =>
     withSystem(h.db, t.household_id, async (trx) => {
       const a = await trx
@@ -1469,9 +1489,10 @@ describe.skipIf(!testAdminUrl())('the privacy wall: uploads, exports and invitat
         .select('account_id')
         .where('member_id', '=', t.member_id)
         .executeTakeFirstOrThrow();
+      const at = new Date(Date.now() - (fresh ? 0 : 10 * 60 * 1000));
       await trx
         .updateTable('session')
-        .set({ verified_at: new Date(Date.now() - (fresh ? 0 : 10 * 60 * 1000)) })
+        .set({ verified_at: at, factor_verified_at: at })
         .where('account_id', '=', a.account_id)
         .execute();
     });
@@ -1613,7 +1634,10 @@ describe.skipIf(!testAdminUrl())('the privacy wall: uploads, exports and invitat
   });
 
   it('downloading an export asks who is asking, as requesting one does', async () => {
+    // Exporting takes a passkey or a code (0.9.0): Sam has one.
+    await h.decider(sam);
     const asked = await h.app.inject({ method: 'POST', url: '/api/v1/exports', headers: as(sam) });
+    expect(asked.statusCode, asked.body).toBe(202);
     const id = json<{ id: string }>(asked).id;
     await setFresh(sam, false);
     const res = await h.app.inject({ url: `/api/v1/exports/${id}/content`, headers: as(sam) });
@@ -1623,6 +1647,7 @@ describe.skipIf(!testAdminUrl())('the privacy wall: uploads, exports and invitat
   });
 
   it('making a document private retires the exports other people made while they could see it', async () => {
+    await h.decider(owner);
     const asked = await h.app.inject({
       method: 'POST',
       url: '/api/v1/exports',
@@ -2448,6 +2473,8 @@ for (const attacker of ['restricted', 'guest'] as const)
           payload: { owns_home: true, has_business: true },
         });
         expect(answers.statusCode, answers.body).toBe(200);
+        // Exporting takes a passkey or a code (0.9.0): the owner has one.
+        await h.decider(owner);
         await fresh(owner);
         const exported = await h.app.inject({
           method: 'POST',

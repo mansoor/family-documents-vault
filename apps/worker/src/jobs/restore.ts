@@ -1245,6 +1245,9 @@ const GUARDS = [
     table: 'household',
     fn: 'household_ended_sharing_rule',
   },
+  // Only an owner chooses whether every adult must have two-step sign-in
+  // (0120, 0.9.0).
+  { name: 'household_two_step_rule', table: 'household', fn: 'household_two_step_rule' },
   // A batch's uploader changes its name and defaults, and nothing else of
   // it (0062, Phase 6 I1).
   {

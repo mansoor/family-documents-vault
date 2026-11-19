@@ -16,8 +16,11 @@ export function registerExports(
   const principal = (req: FastifyRequest) => req.principal as Principal;
 
   app.post('/api/v1/exports', guard('export.request'), async (req, reply) => {
-    // Everything you can see, in one file: worth asking who is asking.
-    await stepUp?.require(principal(req), 'export_everything');
+    // Everything you can see, in one file: worth asking who is asking — with
+    // a passkey or a code, never the password (0.9.0), so one phished
+    // password cannot carry the whole vault off. Somebody with neither is
+    // told to set up two-step sign-in.
+    await stepUp?.requireFactor(principal(req), 'export_everything');
     return reply.status(202).send(await exports.request(principal(req), metaOf(req)));
   });
   app.get('/api/v1/exports', auth, async (req) => ({ items: await exports.list(principal(req)) }));
@@ -26,8 +29,9 @@ export function registerExports(
   );
   app.get<{ Params: { id: string } }>('/api/v1/exports/:id/content', auth, async (req, reply) => {
     // It is everything its requester can see, "Only me" included, in one
-    // file: a session picked up off a desk must not be able to take it.
-    await stepUp?.require(principal(req), 'export_everything');
+    // file: a session picked up off a desk must not be able to take it, nor
+    // one opened with a phished password (a passkey or a code, 0.9.0).
+    await stepUp?.requireFactor(principal(req), 'export_everything');
     const { stream, bytes } = await exports.content(principal(req), req.params.id, metaOf(req));
     reply.header('content-type', 'application/zip');
     reply.header('content-disposition', 'attachment; filename="family-document-vault-export.zip"');

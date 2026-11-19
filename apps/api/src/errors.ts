@@ -14,6 +14,8 @@ export interface ErrorBody {
     action?: string;
     /** Why a session ended (session_ended, 0.4.11). */
     reason?: string;
+    /** A step-up only a passkey or a code answers, never the password (0.9.0). */
+    factor?: true;
   };
 }
 
@@ -30,6 +32,8 @@ export class ApiError extends Error {
       retryAfter?: number;
       /** Why a session ended (0.4.11): expired, revoked, reused, removed or malformed. */
       reason?: string;
+      /** A step-up only a passkey or a code answers (0.9.0). */
+      factor?: boolean;
     } = {},
   ) {
     super(message);
@@ -46,6 +50,7 @@ export class ApiError extends Error {
     if (this.options.detail !== undefined) error.detail = this.options.detail;
     if (this.options.action !== undefined) error.action = this.options.action;
     if (this.options.reason !== undefined) error.reason = this.options.reason;
+    if (this.options.factor === true) error.factor = true;
     return { error };
   }
 }

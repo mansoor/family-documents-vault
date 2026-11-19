@@ -13,6 +13,11 @@ export interface ApiErrorExtra {
   detail?: string;
   /** From a Retry-After header, in seconds from now. */
   retryAfterSeconds?: number;
+  /**
+   * A `step_up_required` that only a passkey or a code will answer, never
+   * the password (0.9.0: changing how somebody with either signs in).
+   */
+  factor?: boolean;
 }
 
 /** The server answered, and the answer was no. Its `message` is safe to show. */
@@ -22,6 +27,8 @@ export class ApiRequestError extends Error {
   readonly requestId: string | undefined;
   readonly detail: string | undefined;
   readonly retryAfterSeconds: number | undefined;
+  /** A step-up only a passkey or a code answers (0.9.0). */
+  readonly factor: boolean;
 
   constructor(
     public readonly status: number,
@@ -38,6 +45,7 @@ export class ApiRequestError extends Error {
     this.requestId = extra.requestId;
     this.detail = extra.detail;
     this.retryAfterSeconds = extra.retryAfterSeconds;
+    this.factor = extra.factor === true;
   }
 }
 

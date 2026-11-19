@@ -24,6 +24,7 @@ import {
 import argon2 from 'argon2';
 import { sql } from 'kysely';
 import { ApiError } from '../errors.js';
+import type { SetupToken } from './setup-token.js';
 import {
   ACCESS_TTL_SECONDS,
   hashRefreshToken,
@@ -122,9 +123,26 @@ export interface Principal {
    * mail settings too (the 5.34 review). Absent for anybody else.
    */
   restricted?: boolean;
+  /**
+   * A session of somebody who must have two-step sign-in (0.9.0: an owner,
+   * or an adult where the household asks it of adults) that has not
+   * presented it: `enrol` when they have neither a code from an
+   * authenticator app nor a passkey that asks for a PIN or fingerprint;
+   * `confirm` when they have one and this session never gave it. Such a
+   * session may only set one up, confirm it's them with one, or sign out
+   * (TWO_STEP_SETUP_ROUTES); everything else is `403
+   * two_step_setup_required`. Worked out on every request, so it lifts the
+   * moment a code or a passkey is set up, or given.
+   */
+  twoStepPending?: TwoStepPending;
 }
 
+/** Why a session must deal with two-step sign-in before anything else (0.9.0). */
+export type TwoStepPending = 'enrol' | 'confirm';
+
 export interface SetupInput {
+  /** The setup code (0.9.0): FDV_SETUP_TOKEN, or the one the API logged as it started. */
+  setupToken?: string | undefined;
   householdName: string;
   displayName: string;
   email: string;
@@ -230,6 +248,23 @@ export function membershipSuspended(
   });
 }
 
+/**
+ * Said to a session that must set up two-step sign-in first (0.9.0), on
+ * every route but those that set it up, and signing out.
+ */
+export function twoStepSetupRequired(role: Role, why: TwoStepPending = 'enrol'): ApiError {
+  return new ApiError(
+    403,
+    'two_step_setup_required',
+    why === 'confirm'
+      ? 'Confirm it’s you with your passkey or a code from your authenticator app before going on: a password alone is not enough.'
+      : role === 'owner'
+        ? 'Owners must set up two-step sign-in before going on: a code from an authenticator app, or a passkey.'
+        : 'This household asks every adult to set up two-step sign-in before going on: a code from an authenticator app, or a passkey.',
+    { reason: why },
+  );
+}
+
 export function scopesFor(role: Role): Tokens['scopes_unlocked'] {
   // Until member scope keys exist (1.1), this reflects role alone.
   return role === 'owner' || role === 'adult' ? ['household', 'adults', 'member'] : ['household'];
@@ -238,6 +273,11 @@ export function scopesFor(role: Role): Tokens['scopes_unlocked'] {
 export class AuthService {
   /** What a refresh token's tag is made with (5.30, tokens.ts). */
   private readonly familyKey: Buffer;
+  /**
+   * The code first-run setup asks for (0.9.0, setup-token.ts): until one is
+   * given, setup is refused to everybody.
+   */
+  private setupToken: SetupToken | null = null;
 
   constructor(
     private readonly db: Db,
@@ -275,8 +315,100 @@ export class AuthService {
      * owner's only one (TextCodeService.set refuses that).
      */
     private readonly textCodes: TextCodeService | null = null,
+    opts: {
+      /**
+       * Whether two-step sign-in is held to (0.9.0): always, but in the
+       * test harness, whose tests are not about it, unless one asks.
+       */
+      twoStep?: boolean;
+    } = {},
   ) {
     this.familyKey = refreshFamilyKey(signingKey);
+    this.twoStepHeld = opts.twoStep ?? true;
+  }
+
+  /** Whether two-step sign-in is held to (the constructor's `twoStep`). */
+  private readonly twoStepHeld: boolean;
+
+  /**
+   * Whether somebody must deal with two-step sign-in before anything else
+   * (0.9.0). Held to it: an owner, and an adult where the household asks it
+   * of adults (`require_two_step_adults`, on for every household made
+   * since). Such a person's factor is a code from an authenticator app, or
+   * any passkey of theirs — every one is asked for a PIN, a fingerprint or a
+   * face when it is used (a passkey made before 0.9.0 included, which marks
+   * itself `user_verified` the first time). With neither, `enrol`; with one, a session
+   * that has not presented one (`presented`: a passkey sign-in, a password
+   * and a code, or a passkey or a code given since) is `confirm` — a
+   * password alone never opens their vault. A code by text is never a
+   * factor: it is not an owner's second step, and fails open when texts
+   * cannot go. Asked in the caller's transaction, scoped to the household.
+   */
+  private async twoStepPendingIn(
+    trx: Db,
+    p: { accountId: string; householdId: string; role: Role },
+    presented: boolean,
+  ): Promise<TwoStepPending | null> {
+    if (!this.twoStepHeld || (p.role !== 'owner' && p.role !== 'adult')) return null;
+    // One round trip, on every request an owner or an adult makes.
+    const r = await sql<{ factor: boolean; adults: boolean | null }>`
+      select (exists (select 1 from account
+                       where id = ${p.accountId} and totp_confirmed_at is not null)
+              or exists (select 1 from credential
+                          where account_id = ${p.accountId} and kind = 'passkey')) as factor,
+             (select require_two_step_adults from household where id = ${p.householdId}) as adults
+    `.execute(trx);
+    const row = r.rows[0];
+    if (!row || (p.role !== 'owner' && row.adults !== true)) return null;
+    if (!row.factor) return 'enrol';
+    return presented ? null : 'confirm';
+  }
+
+  /**
+   * At a password sign-in (0.9.0): whether the account is held to two-step
+   * sign-in where it would sign in (its newest membership, as the session
+   * opens), and whether it has a passkey — which, for somebody held to it,
+   * the second step is (asked for a PIN or a fingerprint as it is used).
+   */
+  private async heldAtSignIn(accountId: string): Promise<{ held: boolean; passkey: boolean }> {
+    if (!this.twoStepHeld) return { held: false, passkey: false };
+    const m = await withScope(this.db, { accountId, actor: ANONYMOUS }, (trx) =>
+      trx
+        .selectFrom('account_household')
+        .select(['household_id', 'role'])
+        .orderBy('joined_at', 'desc')
+        .executeTakeFirst(),
+    );
+    if (!m || (m.role !== 'owner' && m.role !== 'adult')) return { held: false, passkey: false };
+    if (m.role === 'adult') {
+      const hh = await withScope(
+        this.db,
+        { householdId: m.household_id, actor: ANONYMOUS },
+        (trx) =>
+          trx
+            .selectFrom('household')
+            .select(['require_two_step_adults'])
+            .where('id', '=', m.household_id)
+            .executeTakeFirst(),
+      );
+      if (hh?.require_two_step_adults !== true) return { held: false, passkey: false };
+    }
+    // Any passkey (0.9.0, the review): one made before this version, which
+    // never asked for a PIN, is asked for now, and marks itself verified the
+    // first time it gives one. Counting it as none would let a password
+    // alone set up an authenticator of somebody else's.
+    const passkey = await this.db
+      .selectFrom('credential')
+      .select(['id'])
+      .where('account_id', '=', accountId)
+      .where('kind', '=', 'passkey')
+      .executeTakeFirst();
+    return { held: true, passkey: passkey !== undefined };
+  }
+
+  /** The code first-run setup will take (server.ts makes or reads it as the API starts). */
+  useSetupToken(gate: SetupToken): void {
+    this.setupToken = gate;
   }
 
   async setupComplete(): Promise<boolean> {
@@ -292,13 +424,23 @@ export class AuthService {
     return r.rows[0]?.name ?? null;
   }
 
-  /** First run: the household, its first member, the owner account, one session. */
+  /**
+   * First run: the household, its first member, the owner account, one
+   * session. Only with the setup code (0.9.0): whoever reached a new vault
+   * first used to become its owner. Two at once cannot both set it up: the
+   * second waits for the first, then finds it done.
+   */
   async setup(input: SetupInput, meta: RequestMeta): Promise<Tokens> {
-    if (await this.setupComplete()) {
+    const alreadySetUp = () =>
+      new ApiError(409, 'already_set_up', 'This vault has already been set up. Sign in instead.');
+    if (await this.setupComplete()) throw alreadySetUp();
+    if (!this.setupToken?.matches(input.setupToken)) {
       throw new ApiError(
-        409,
-        'already_set_up',
-        'This vault has already been set up. Sign in instead.',
+        403,
+        'setup_token_invalid',
+        input.setupToken
+          ? "That setup code isn't right. It is FDV_SETUP_TOKEN in the server's .env file, or the code in the API's log."
+          : "Enter the setup code. It is FDV_SETUP_TOKEN in the server's .env file, or the code in the API's log.",
       );
     }
     const householdId = randomUUID();
@@ -306,6 +448,13 @@ export class AuthService {
 
     // Nobody is anybody yet: the account this makes is not the one asking.
     return withScope(this.db, { householdId, actor: ANONYMOUS }, async (trx) => {
+      // One setup at a time, the whole vault over; the one that waited
+      // finds the vault set up.
+      await sql`select pg_advisory_xact_lock(hashtextextended('fdv:first-run-setup', 0))`.execute(
+        trx,
+      );
+      const done = await sql<{ done: boolean }>`select setup_complete() as done`.execute(trx);
+      if (done.rows[0]?.done) throw alreadySetUp();
       await trx
         .insertInto('household')
         .values({ id: householdId, name: input.householdName })
@@ -375,15 +524,30 @@ export class AuthService {
     let skipped: TextSkipped | null = null;
     if (this.mfa) {
       const totp = await this.mfa.isEnabled(account.id);
+      // Somebody held to two-step sign-in (0.9.0) whose factor is a passkey:
+      // the second step is that passkey (POST /auth/passkey/verify, a whole
+      // sign-in of its own). A password alone opens nothing of theirs.
+      const held = await this.heldAtSignIn(account.id);
+      const passkey = held.passkey;
       // A code by text (SMS3): theirs to give when they asked for one, their
-      // number is confirmed and the household's texts go now.
-      const text: ResetText = this.textCodes
-        ? await this.textCodes.forSignInState(account.id)
-        : { asks: false };
+      // number is confirmed and the household's texts go now — never instead
+      // of the factor somebody held to two-step sign-in has.
+      const text: ResetText =
+        this.textCodes && !(held.held && (totp || passkey))
+          ? await this.textCodes.forSignInState(account.id)
+          : { asks: false };
       if (!totp && 'cannot' in text) skipped = text.cannot;
-      if (totp || text.asks) {
+      if (totp || passkey || text.asks) {
         const mfaToken = await this.mfa.mfaToken(account.id, proof);
-        if (!text.asks) return { mfa_required: true, mfa_token: mfaToken };
+        if (!text.asks) {
+          return passkey
+            ? {
+                mfa_required: true,
+                mfa_token: mfaToken,
+                methods: totp ? ['totp', 'passkey'] : ['passkey'],
+              }
+            : { mfa_required: true, mfa_token: mfaToken };
+        }
         // A text the only second step: one goes now, so that a client that
         // knows only the code box — an older phone's — still signs in, with
         // the code in it. Beside an authenticator app, only when asked for.
@@ -429,8 +593,21 @@ export class AuthService {
   async sendSignInCode(mfaToken: string): Promise<TextCodeSent> {
     if (!this.mfa || !this.textCodes) throw smsCodeNotOffered();
     const { accountId } = await this.mfa.mfaClaims(mfaToken);
+    if (await this.textBarred(accountId)) throw smsCodeNotOffered();
     if (!(await this.textCodes.forSignIn(accountId))) throw smsCodeNotOffered();
     return this.textCodes.send(accountId, 'sign_in');
+  }
+
+  /**
+   * Whether a code by text is refused as the second step (0.9.0): to
+   * somebody held to two-step sign-in who has an authenticator app or a
+   * passkey. Their second step is that; a text, which lets them in with
+   * the password alone when texts cannot go, never stands in for it.
+   */
+  private async textBarred(accountId: string): Promise<boolean> {
+    if (!this.mfa) return false;
+    const held = await this.heldAtSignIn(accountId);
+    return held.held && (held.passkey || (await this.mfa.isEnabled(accountId)));
   }
 
   /**
@@ -453,7 +630,7 @@ export class AuthService {
       const text = await this.textCodes.forSignIn(accountId);
       const byText = method === 'text' || (text !== null && !(await this.mfa.isEnabled(accountId)));
       if (byText) {
-        if (!text) throw smsCodeNotOffered();
+        if (!text || (await this.textBarred(accountId))) throw smsCodeNotOffered();
         await this.textCodes.verify(accountId, 'sign_in', code);
         if (proof === null) throw invalidCredentials();
         return this.openSessionForAccount(accountId, meta, 'password+text', {
@@ -615,6 +792,8 @@ export class AuthService {
     const sessionId = randomUUID();
     const refresh = newRefreshToken(this.familyKey, p.householdId, sessionId);
     const now = Date.now();
+    // A passkey (which asks for a PIN or a fingerprint since 0.9.0), or a
+    // password and an authenticator's code: a factor presented (0.9.0).
     const factor = method === 'passkey' || method === 'password+totp';
     const expiresAt = new Date(now + REFRESH_TTL_SECONDS * 1000);
     const session = await trx
@@ -638,7 +817,12 @@ export class AuthService {
       .returning('id')
       .executeTakeFirstOrThrow();
     await this.noteDevice(trx, p, meta);
-    return this.tokens({ ...p, sessionId: session.id }, refresh, expiresAt);
+    return this.tokens(
+      { ...p, sessionId: session.id },
+      refresh,
+      expiresAt,
+      await this.twoStepPendingIn(trx, p, factor),
+    );
   }
 
   /**
@@ -705,6 +889,7 @@ export class AuthService {
     p: Omit<Principal, 'seesAdults'>,
     refresh: string,
     refreshExpiresAt: Date,
+    twoStepPending: TwoStepPending | null = null,
   ): Promise<Tokens> {
     const claims: AccessClaims = {
       sub: p.accountId,
@@ -723,6 +908,8 @@ export class AuthService {
       member_id: p.memberId,
       role: p.role,
       scopes_unlocked: scopesFor(p.role),
+      // 0.9.0: this session may only set up two-step sign-in, or sign out.
+      ...(twoStepPending ? { two_step_setup_required: true as const } : {}),
     };
   }
 
@@ -885,6 +1072,15 @@ export class AuthService {
         },
         next,
         expiresAt,
+        await this.twoStepPendingIn(
+          trx,
+          {
+            accountId: session.account_id,
+            householdId: session.household_id,
+            role: membership.role,
+          },
+          session.factor_verified_at !== null,
+        ),
       );
     });
     if (result) return result;
@@ -954,8 +1150,13 @@ export class AuthService {
       await this.push({ householdId, message: SESSION_ENDED, targets: phones });
   }
 
-  /** Verifies a bearer token and confirms its session is still open. */
-  async authenticate(bearer: string): Promise<Principal> {
+  /**
+   * Verifies a bearer token and confirms its session is still open. A
+   * session that must set up two-step sign-in first (`twoStepPending`) is
+   * refused, `403 two_step_setup_required`, unless the caller is one of the
+   * routes that sets it up (`enrolling`).
+   */
+  async authenticate(bearer: string, opts: { enrolling?: boolean } = {}): Promise<Principal> {
     let claims: AccessClaims;
     try {
       claims = await verifyAccessToken(this.signingKey, bearer);
@@ -969,8 +1170,9 @@ export class AuthService {
     // here and so has no session either. Until this answers, the bearer
     // is nobody yet.
     const scope = { householdId: claims.hid, actor: ANONYMOUS };
-    const open = await withScope(this.db, scope, (trx) =>
-      trx
+    let pending: TwoStepPending | null = null;
+    const open = await withScope(this.db, scope, async (trx) => {
+      const row = await trx
         .selectFrom('session')
         .innerJoin('account_household', (j) =>
           j
@@ -984,11 +1186,20 @@ export class AuthService {
           'account_household.suspended_at',
           'account_household.suspended_until',
           'account_household.access_expires_at',
+          'session.factor_verified_at',
         ])
         .where('session.id', '=', claims.sid)
         .where('session.revoked_at', 'is', null)
-        .executeTakeFirst(),
-    );
+        .executeTakeFirst();
+      if (row) {
+        pending = await this.twoStepPendingIn(
+          trx,
+          { accountId: claims.sub, householdId: claims.hid, role: row.role },
+          row.factor_verified_at !== null,
+        );
+      }
+      return row;
+    });
     if (!open) throw await this.whyEnded(claims.hid, claims.sid);
     // Locked, or paused after a restore (5.28): its sessions ended with it,
     // and any that did not (opened at that very moment, or written by hand)
@@ -1002,6 +1213,7 @@ export class AuthService {
     if (guestAccessEnded(open.access_expires_at)) {
       throw sessionEnded('guest access ended', 'access_ended');
     }
+    if (pending && !opts.enrolling) throw twoStepSetupRequired(open.role, pending);
     const who = {
       accountId: claims.sub,
       sessionId: claims.sid,
@@ -1019,6 +1231,7 @@ export class AuthService {
       // Limited by an owner, or a guest (always limited): told nothing of
       // where files are kept nor of the mail server (the 5.34 review).
       ...(sight.restricted || open.access_expires_at ? { restricted: true } : {}),
+      ...(pending ? { twoStepPending: pending } : {}),
     };
   }
 

@@ -548,7 +548,17 @@ describe.skipIf(!testAdminUrl())("people's identity details (5.26)", () => {
     expect(refused.body).not.toContain(PASSPORT);
 
     // The owner with two-step sign-in, after a password: still asked.
+    // (Setting up the code counts as giving one, 0.9.0: let that age first.)
     expect((await stepUp(owner, { password: 'correct horse battery' })).statusCode).toBe(200);
+    const pool = admin();
+    try {
+      await pool.query(
+        "update session set factor_verified_at = now() - interval '10 minutes' where household_id = $1",
+        [owner.household_id],
+      );
+    } finally {
+      await pool.end();
+    }
     const asked = await reveal(owner, sara.member_id, { keys: ['ids.p1'] });
     expect(asked.statusCode).toBe(403);
     expect(error(asked)).toMatchObject({ code: 'step_up_required', action: 'open_identity' });

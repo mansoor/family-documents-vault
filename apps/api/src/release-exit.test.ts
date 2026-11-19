@@ -1123,6 +1123,10 @@ const RULES: Record<string, Rule> = {
     who: 'owners',
     body: () => ({ remove_after_days: 365 }),
   },
+  // 0.9.0: whether every adult must have two-step sign-in — read by
+  // everybody signed in, an owner power to change (A54).
+  'GET /api/v1/household/two-step': { who: 'signedIn' },
+  'PUT /api/v1/household/two-step': { who: 'ownerPower', body: () => ({ adults: true }) },
 
   // Changes of owner.
   'GET /api/v1/owner-changes': { who: 'signedIn' },
@@ -2334,8 +2338,15 @@ describe.skipIf(!testAdminUrl())('the release exit (Phase 5, and Phase 6 for 0.7
     );
     ids.reminder = json<{ id: string }>(reminder).id;
     await fresh(ahmed);
-    const exported = await ok(send(ahmed, 'POST', '/api/v1/exports', {}), 202);
-    ids.export = json<{ id: string }>(exported).id;
+    // His export, made as the vault makes one: asking takes a passkey or a
+    // code since 0.9.0, and Ahmed signs in with a password alone here.
+    const exported = await admin.query<{ id: string }>(
+      `insert into export (household_id, requested_by)
+       select household_id, account_id from account_household where member_id = $1
+       returning id`,
+      [ahmed.member_id],
+    );
+    ids.export = exported.rows[0]?.id as string;
     ids.deviceEndpoint = `https://ntfy.example.test/up${randomUUID().slice(0, 8)}`;
     const device = await ok(
       send(ahmed, 'POST', '/api/v1/devices', {

@@ -278,6 +278,12 @@ export function createApi(http: Http) {
     // ------------------------------------------------------ signing in and out
     capabilities: () => request<Capabilities>('/api/v1/capabilities'),
     setup: (body: {
+      /**
+       * The setup code (0.9.0): FDV_SETUP_TOKEN in the server's .env, or the
+       * one the API wrote to its log. Without it, or wrong, `403
+       * setup_token_invalid`; an older vault ignores it.
+       */
+      setup_token?: string;
       household_name: string;
       display_name: string;
       email: string;
@@ -500,6 +506,24 @@ export function createApi(http: Http) {
       request<EndedSharing>('/api/v1/household/ended-sharing', {
         method: 'PUT',
         body: { remove_after_days: days },
+        token,
+      }),
+    /**
+     * Whether every adult must have two-step sign-in (0.9.0): on for every
+     * household made since, off for those before. Owners always must. Every
+     * role reads it; `can_change` for an owner. `404` from older vaults.
+     */
+    twoStepRule: (token: string) =>
+      request<{ adults: boolean; can_change: boolean }>('/api/v1/household/two-step', { token }),
+    /**
+     * An owner asks it of every adult, or stops: `403 forbidden` to anybody
+     * else; an owner power (A54) — `403 totp_required_for_owner`, or
+     * `step_up_required` with `manage_sign_ins`, a passkey or a code.
+     */
+    setTwoStepRule: (token: string, adults: boolean) =>
+      request<{ adults: boolean; can_change: boolean }>('/api/v1/household/two-step', {
+        method: 'PUT',
+        body: { adults },
         token,
       }),
     /** The family: a guest is never among them (5.34), but for a guest themselves. */

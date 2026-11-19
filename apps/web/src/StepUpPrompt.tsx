@@ -22,6 +22,8 @@ export function StepUpPrompt(props: {
   /** Which action asked (`step_up_required`'s `action`). */
   action?: string;
   message: string;
+  /** Only a passkey or a code will do (0.9.0: the refusal said so). */
+  factor?: boolean;
   onSettled: (confirmed: boolean) => void;
 }) {
   // A wrong password here answers 401 with `invalid_credentials`, which
@@ -33,7 +35,10 @@ export function StepUpPrompt(props: {
   const [password, setPassword] = useState('');
   const [code, setCode] = useState('');
   const [busy, setBusy] = useState(false);
-  const factorOnly = FACTOR_STEP_UPS.includes(props.action ?? '');
+  // A passkey or a code, never the password: the owner's powers (A54), and
+  // since 0.9.0 whatever the vault says so of (changing how somebody who
+  // has either signs in).
+  const factorOnly = props.factor === true || FACTOR_STEP_UPS.includes(props.action ?? '');
   const [error, setError] = useState<string | null>(null);
   const canUsePasskey = passkeys.supported() && passkeys.secureEnough();
   const box = useRef<HTMLElement>(null);

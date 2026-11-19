@@ -224,11 +224,15 @@ describe.skipIf(!testAdminUrl())('changing a password', () => {
       ).statusCode,
     ).toBe(201);
 
-    // Age the session past the step-up window, then present the passkey.
+    // Age the session past the step-up window — making the passkey was
+    // one given (0.9.0), so both — then present the passkey.
     await withSystem(h.db, owner.household_id, (trx) =>
       trx
         .updateTable('session')
-        .set({ verified_at: new Date(Date.now() - 10 * 60 * 1000) })
+        .set({
+          verified_at: new Date(Date.now() - 10 * 60 * 1000),
+          factor_verified_at: new Date(Date.now() - 10 * 60 * 1000),
+        })
         .execute(),
     );
     expect((await change({ new_password: 'set by the passkey path' })).statusCode).toBe(403);

@@ -70,6 +70,7 @@ import { SealedSearchService } from './documents/sealed-search.js';
 import { deriveSealedKey } from './documents/sealed-token.js';
 import { deriveCursorKey } from './documents/table.js';
 import { PasskeyService, passkeyConfig } from './auth/passkeys.js';
+import { SetupToken } from './auth/setup-token.js';
 import { StepUpService } from './auth/step-up.js';
 import { PasswordService } from './auth/passwords.js';
 import { SuggestionService } from './suggestions/service.js';
@@ -94,6 +95,9 @@ import { serverVersion } from './version.js';
  * Integration tests build one per file.
  */
 export const TEST_MASTER = 'test-master-key-that-is-long-enough-0123456789';
+
+/** The setup code the harness's vault takes (0.9.0), as FDV_SETUP_TOKEN would give it. */
+export const TEST_SETUP_TOKEN = 'test-setup-code-of-the-harness-0001';
 
 export interface Harness {
   app: FastifyInstance;
@@ -240,6 +244,13 @@ export interface HarnessOptions {
    * family → its addresses. Unless a test stands in, no name is found.
    */
   appsResolve?: (name: string, family: 4 | 6) => Promise<Array<{ address: string; ttl: number }>>;
+  /**
+   * Two-step sign-in held to (0.9.0): an owner, or an adult where the
+   * household asks it, with neither a code nor a passkey may only set one
+   * up. Off unless a test says on — production always holds to it; the
+   * tests that are not about it sign owners in with a password alone.
+   */
+  twoStep?: boolean;
 }
 
 /** The key the harness's `mail.to_address` jobs are sealed under, as the worker's are. */
@@ -439,7 +450,9 @@ export async function createHarness(opts: HarnessOptions = {}): Promise<Harness>
     totp,
     push,
     textCodes,
+    { twoStep: opts.twoStep ?? false },
   );
+  auth.useSetupToken(new SetupToken(TEST_SETUP_TOKEN));
   const passkeys = new PasskeyService(
     db,
     auth,
@@ -674,6 +687,7 @@ export async function createHarness(opts: HarnessOptions = {}): Promise<Harness>
         method: 'POST',
         url: '/api/v1/setup',
         payload: {
+          setup_token: TEST_SETUP_TOKEN,
           household_name: 'The Test family',
           display_name: 'Owner',
           email: 'owner@example.test',

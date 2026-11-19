@@ -770,6 +770,9 @@ describe.skipIf(!testAdminUrl())("changing a person's details (5.25)", () => {
       payload: { response: device.register(options.json()), label: 'Laptop' },
     });
     expect(created.statusCode, created.body).toBe(201);
+    // Making it was a passkey given (0.9.0), fresh for five minutes: let
+    // that pass, as the rest of this asks about what comes after.
+    await goStale(owner);
 
     // A passkey now, but this session saw only a password: asked, for a passkey.
     const card = () =>
@@ -872,6 +875,9 @@ describe.skipIf(!testAdminUrl())("the owner's view of a sign-in (5.25, A54)", ()
       payload: { code: codeFor(secret) },
     });
     expect(confirm.statusCode).toBe(204);
+    // Confirming it was a code given (0.9.0), fresh for five minutes: let
+    // that pass, as the rest of this asks about what comes after.
+    await goStale();
 
     // That session saw a password, never a code: asked.
     const asked = await card(owner, adult.member_id);

@@ -18,6 +18,20 @@ PASSWORD=${FDV_E2E_PASSWORD:-correct horse battery staple}
 
 field() { node -e 'let s="";process.stdin.on("data",(d)=>(s+=d)).on("end",()=>console.log(JSON.parse(s)[process.argv[1]]))' "$1"; }
 titles() { node -e 'let s="";process.stdin.on("data",(d)=>(s+=d)).on("end",()=>console.log(JSON.parse(s).items.map((d)=>d.title).sort().join("|")))'; }
+# The owner's authenticator code now (RFC 6238), from the key the end-to-end
+# run kept in .e2e-owner-totp (or FDV_E2E_TOTP_SECRET).
+totp_code() {
+  node -e '
+    const fs = require("fs"); const { createHmac } = require("crypto");
+    const s = (process.env.FDV_E2E_TOTP_SECRET || fs.readFileSync(".e2e-owner-totp", "utf8")).trim().toUpperCase();
+    const a = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+    const bits = [...s.replace(/=+$/, "")].map((c) => a.indexOf(c).toString(2).padStart(5, "0")).join("");
+    const key = Buffer.from(bits.match(/.{8}/g).map((b) => parseInt(b, 2)));
+    const c = Buffer.alloc(8); c.writeBigUInt64BE(BigInt(Math.floor(Date.now() / 30000)));
+    const h = createHmac("sha1", key).update(c).digest(); const o = h[h.length - 1] & 15;
+    const n = ((h[o] & 127) << 24) | (h[o + 1] << 16) | (h[o + 2] << 8) | h[o + 3];
+    console.log(String(n % 1e6).padStart(6, "0"));'
+}
 # Signing in is limited to 10 a minute for each address, and the end-to-end
 # tests just before this, all from this one address, may have spent the
 # minute's: wait out a refusal (429) and try again, up to three times.
@@ -29,7 +43,17 @@ sign_in() {
       -d "{\"email\":\"$EMAIL\",\"password\":\"$PASSWORD\"}")
     status=$(printf '%s' "$body" | tail -n 1)
     if [ "$status" = 200 ]; then
-      printf '%s' "$body" | sed '$d' | field access_token
+      answer=$(printf '%s' "$body" | sed '$d')
+      mfa=$(printf '%s' "$answer" | field mfa_token)
+      if [ "$mfa" = undefined ]; then
+        printf '%s' "$answer" | field access_token
+        return 0
+      fi
+      # Owners have two-step sign-in (0.9.0): the code from the key the
+      # end-to-end run's first owner set up (e2e/vault.ts).
+      code=$(totp_code)
+      curl -s -X POST "$BASE/api/v1/auth/mfa" -H 'content-type: application/json' \
+        -d "{\"mfa_token\":\"$mfa\",\"code\":\"$code\"}" | field access_token
       return 0
     fi
     tries=$((tries + 1))

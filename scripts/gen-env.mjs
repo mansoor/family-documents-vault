@@ -49,6 +49,10 @@ FDV_MASTER_KEY=${secret(32)}
 FDV_DB_PASSWORD=${secret(24)}
 FDV_DB_APP_PASSWORD=${secret(24)}
 
+# The code the vault's first-run setup asks for, so that only somebody who
+# can read this file can make themselves its owner. Not needed once set up.
+FDV_SETUP_TOKEN=${secret(16)}
+
 # Web Push signing keys. Regenerating them means everyone has to turn
 # notifications on again; nothing else is affected.
 FDV_VAPID_PUBLIC_KEY=${vapid.publicKey}
@@ -63,3 +67,4 @@ FDV_VAPID_SUBJECT=mailto:vault@example.invalid
 writeFileSync(target, env, { mode: 0o600 });
 console.log(`wrote ${target}`);
 console.log('Back it up. Then: docker compose up -d');
+console.log('The setup code the first visit asks for is FDV_SETUP_TOKEN in it.');

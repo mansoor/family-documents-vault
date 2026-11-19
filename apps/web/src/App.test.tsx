@@ -74,6 +74,10 @@ describe('App', () => {
 
     await screen.findByRole('heading', { name: /Set up your family/ });
     await expectAccessible();
+    // The setup code (0.9.0): only whoever installed the vault has it.
+    fireEvent.change(screen.getByLabelText('Setup code'), {
+      target: { value: '  the-code-from-env  ' },
+    });
     fireEvent.change(screen.getByLabelText(/call your family/), {
       target: { value: 'The Seikh family' },
     });
@@ -85,6 +89,9 @@ describe('App', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Create my vault' }));
 
     await screen.findByRole('heading', { name: 'A few quick questions' });
+    expect(
+      state.calls.find((c) => c.method === 'POST' && c.url === '/api/v1/setup')?.body,
+    ).toMatchObject({ setup_token: 'the-code-from-env', household_name: 'The Seikh family' });
     fireEvent.click(screen.getByRole('button', { name: 'We own it' }));
     fireEvent.click(screen.getByRole('button', { name: '2' }));
     fireEvent.click(screen.getByRole('button', { name: 'Children' }));
@@ -546,13 +553,16 @@ describe('App', () => {
     expect(screen.getByText(/to export everything/)).toBeInTheDocument();
     await expectAccessible();
 
-    // The wrong password does not get through.
-    fireEvent.change(screen.getByLabelText('Or your password'), { target: { value: 'nope' } });
+    // A passkey or a code, never the password (0.9.0): no password is asked for.
+    expect(screen.queryByLabelText('Or your password')).not.toBeInTheDocument();
+    const code = screen.getByLabelText(/code from your authenticator app/i);
+    // The wrong code does not get through.
+    fireEvent.change(code, { target: { value: '000000' } });
     fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
-    await screen.findByText("That didn't match. Try again.");
+    await screen.findByText(/didn't match/);
 
-    fireEvent.change(screen.getByLabelText('Or your password'), {
-      target: { value: 'correct horse battery' },
+    fireEvent.change(screen.getByLabelText(/code from your authenticator app/i), {
+      target: { value: '123456' },
     });
     fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
 

@@ -91,6 +91,19 @@ RUN apk add --no-cache tesseract-ocr tesseract-ocr-data-eng tesseract-ocr-data-o
          ! -name NotoColorEmoji.ttf -delete \
     && fc-cache -f && magick -version >/dev/null && magick -list format | grep -q PANGO \
     && tesseract --version >/dev/null && pdftotext -v >/dev/null 2>&1 && pg_dump --version >/dev/null
+# ImageMagick's security policy (docker/imagemagick/policy.xml): no delegates,
+# no drawing scripts, SVG, text, fetching or PostScript coders, no @file, and
+# resource limits. Proved in force here: a one-line MVG drawing must be
+# refused by the policy, or the image is not built. The worker checks the
+# same as it starts.
+COPY docker/imagemagick/policy.xml /etc/ImageMagick-7/policy.xml
+RUN printf 'viewbox 0 0 1 1\n' > /tmp/probe.mvg \
+    && if magick mvg:/tmp/probe.mvg png:/tmp/probe.png 2>/tmp/probe.err; then \
+         echo 'ImageMagick read an MVG drawing: its security policy is not in force' >&2; exit 1; \
+       fi \
+    && grep -qE 'not (allowed|authorized) by the security policy' /tmp/probe.err \
+    && magick -list policy | grep -qi 'mvg' \
+    && rm -f /tmp/probe.mvg /tmp/probe.png /tmp/probe.err
 WORKDIR /app
 COPY --from=prod-deps /app/node_modules ./node_modules
 COPY --from=prod-deps /app/apps/worker/node_modules ./apps/worker/node_modules
