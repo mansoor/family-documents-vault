@@ -1528,6 +1528,31 @@ fieldset.limits-set {
   flex-shrink: 0;
 }
 
+/* The one dialog (0.9.0-dev.67, the owner's feedback of 18 Nov 2026): the
+   "are you sure?" and every other dialog are a card over the page — its
+   padding, edge and rounded corners, and a shadow to lift it — titled
+   alike, with one row of buttons. A sheet that holds a card of its own is
+   rounded and lifted as well, so no square corner shows behind the card. */
+.sheet.card,
+.sheet:not(.card) {
+  border-radius: var(--radius-m);
+  box-shadow: 0 8px 24px var(--scrim);
+}
+
+/* Wide, for one with a lot in it: a link's form, a card to print. */
+.sheet.dialog-wide {
+  width: min(680px, 100%);
+}
+
+.dialog-title {
+  font-size: 20px;
+  overflow-wrap: anywhere;
+}
+
+.dialog-actions {
+  align-items: center;
+}
+
 @media (min-width: 640px) {
   .scrim {
     align-items: center;
@@ -7876,17 +7901,6 @@ html:has(.shell-phone):has(.has-toast) {
   gap: 4px;
 }
 
-.collection-managers-form {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-.collection-managers-form h2,
-.collection-managers-form p {
-  margin: 0;
-}
-
 .manager-switches {
   display: flex;
   flex-direction: column;
@@ -8037,4 +8051,39 @@ html:has(.shell-phone):has(.has-toast) {
   grid-template-columns: repeat(auto-fill, minmax(min(100%, 200px), 1fr));
   column-gap: 12px;
   padding-inline-start: 26px;
+}
+
+/* A document's Activity panel (0.9.0-dev.67): its lines, newest first —
+   what happened, and when under it — then Show older and See all activity. */
+.doc-activity-lines {
+  list-style: none;
+  margin: 0 0 12px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.doc-activity-lines li {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+  overflow-wrap: anywhere;
+}
+
+.doc-activity-lines li:last-child {
+  border-bottom: 0;
+}
+
+.doc-activity-lines li.notable .doc-activity-what {
+  font-weight: 700;
+}
+
+.doc-activity-when {
+  font-variant-numeric: tabular-nums;
+}
+
+.doc-activity-foot {
+  align-items: center;
 }

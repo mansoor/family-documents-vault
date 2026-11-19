@@ -2,6 +2,7 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import axe from 'axe-core';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { App } from './App.js';
+import { expectSharedDialog } from './dialog-testing.js';
 import {
   fresh,
   installFakeApi,
@@ -70,6 +71,8 @@ describe('collection managers on the web (0.9.0)', () => {
     expect(screen.queryByRole('region', { name: 'Managers' })).toBeNull();
     fireEvent.click(open);
     const sheet = await screen.findByRole('dialog', { name: 'Add managers' });
+    // The app's one dialog (0.9.0-dev.67), as every other pop-up.
+    expectSharedDialog(sheet, 'Add managers');
     expect(within(sheet).getByText(/Nobody else manages it yet\./)).toBeInTheDocument();
     const pick = within(sheet).getByLabelText('Make someone a manager');
     // Sam and Tia, never Vic (a viewer) or the maker.

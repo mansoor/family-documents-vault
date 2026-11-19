@@ -63,6 +63,7 @@ import {
   VisibilityControl,
 } from './Visibility.js';
 import { ActionIcon, ActionRow, countBadge } from '../action-row.js';
+import { DocumentActivityPanel } from '../document-activity.js';
 import { createUploadKeys, whileInProgress } from '../upload-keys.js';
 import { exactWords, familyZoneNow } from '../family-time.js';
 
@@ -597,13 +598,6 @@ export function DocumentScreen() {
         onDownload={latest && !latest.file_removed ? () => void download(latest) : null}
         onTrash={mayChangeIt ? () => setConfirmingTrash(true) : null}
         trashRef={trashButton}
-        // Its lines in the activity log (0.9.0, DA): for whoever reads the
-        // log, never a caregiver, whose papers' lines it gives them none.
-        activity={
-          !caregiver && caps?.features.document_activity === true && can(storedRole(), 'audit.read')
-            ? `/activity?document=${encodeURIComponent(doc.id)}`
-            : null
-        }
         error={<ErrorNote message={actionError} />}
         sections={[
           // Its versions beside Download: the file's own actions together.
@@ -698,6 +692,29 @@ export function DocumentScreen() {
                       onClose={done}
                       onBusy={(on) => setBusy((b) => ({ ...b, share: on }))}
                       onCount={onLinks}
+                    />
+                  ),
+                },
+              ]
+            : []),
+          // Its lines in the activity log (0.9.0, DA), under the row since
+          // 0.9.0-dev.67: for whoever reads the log, never a caregiver, whose
+          // papers' lines it gives them none. Read once it is first opened.
+          ...(!caregiver &&
+          caps?.features.document_activity === true &&
+          can(storedRole(), 'audit.read')
+            ? [
+                {
+                  key: 'activity' as const,
+                  label: 'Activity',
+                  icon: <ActionIcon name="activity" />,
+                  lazy: true,
+                  render: () => (
+                    <DocumentActivityPanel
+                      key={`activity-${doc.id}`}
+                      documentId={doc.id}
+                      title={doc.title}
+                      sensitive={doc.sensitive_effective === true}
                     />
                   ),
                 },

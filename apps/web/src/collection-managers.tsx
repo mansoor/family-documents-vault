@@ -10,7 +10,7 @@ import {
 import { useRef, useState, type RefObject } from 'react';
 import { api } from './api.js';
 import { describeError, useApp, useLoad } from './app-context.js';
-import { Button, Check, ConfirmDialog, ErrorNote, Select, Sheet } from './ui.js';
+import { Button, Check, ConfirmDialog, Dialog, ErrorNote, Select } from './ui.js';
 
 /**
  * A collection's managers on the web (0.9.0, the owner's decision of 13 Nov
@@ -221,73 +221,60 @@ export function ManagersSection(props: {
         </section>
       )}
       {adding && props.addReturnFocus && (
-        <Sheet
-          label="Add managers"
+        <Dialog
+          title="Add managers"
           busy={busy}
           returnFocus={props.addReturnFocus}
           onClose={() => {
             setProblem(null);
             props.onAddClose?.();
           }}
-        >
-          <div className="collection-managers-form">
-            <h2>Add managers</h2>
-            <p className="muted">
-              {data.items.length === 0 ? 'Nobody else manages it yet. ' : ''}
-              {COLLECTION_MANAGERS_ALWAYS}
-            </p>
-            <ErrorNote message={problem} />
-            {data.eligible.length === 0 ? (
-              <p className="muted">
-                Nobody else can manage it: a manager is someone in the family with a sign-in who can
-                already see it.
-              </p>
-            ) : (
-              <>
-                <Select
-                  id="new-manager"
-                  label="Make someone a manager"
-                  value={person}
-                  options={[
-                    { value: '', label: 'Choose someone' },
-                    ...data.eligible.map((e) => ({ value: e.member_id, label: e.display_name })),
-                  ]}
-                  hint="Someone in the family who can already see this collection."
-                  onChange={setPerson}
-                />
-                <div className="manager-switches">
-                  {COLLECTION_MANAGER_SWITCHES.filter((s) => mayGive(s.key)).map((s) => (
-                    <Check
-                      key={s.key}
-                      id={`new-manager-${s.key}`}
-                      label={s.label}
-                      checked={asked[s.key]}
-                      disabled={busy}
-                      onChange={(on) => setAsked((a) => ({ ...a, [s.key]: on }))}
-                    />
-                  ))}
-                </div>
-              </>
-            )}
-            <div className="row">
-              {data.eligible.length > 0 && (
-                <Button disabled={busy || person === ''} onClick={() => void add()}>
-                  {busy ? 'Saving…' : 'Make a manager'}
-                </Button>
-              )}
-              <Button
-                kind="quiet"
-                disabled={busy}
-                onClick={() => {
-                  setProblem(null);
-                  props.onAddClose?.();
-                }}
-              >
-                Close
+          actions={
+            data.eligible.length > 0 && (
+              <Button disabled={busy || person === ''} onClick={() => void add()}>
+                {busy ? 'Saving…' : 'Make a manager'}
               </Button>
-            </div>
-          </div>
-        </Sheet>
+            )
+          }
+        >
+          <p className="muted">
+            {data.items.length === 0 ? 'Nobody else manages it yet. ' : ''}
+            {COLLECTION_MANAGERS_ALWAYS}
+          </p>
+          <ErrorNote message={problem} />
+          {data.eligible.length === 0 ? (
+            <p className="muted">
+              Nobody else can manage it: a manager is someone in the family with a sign-in who can
+              already see it.
+            </p>
+          ) : (
+            <>
+              <Select
+                id="new-manager"
+                label="Make someone a manager"
+                value={person}
+                options={[
+                  { value: '', label: 'Choose someone' },
+                  ...data.eligible.map((e) => ({ value: e.member_id, label: e.display_name })),
+                ]}
+                hint="Someone in the family who can already see this collection."
+                onChange={setPerson}
+              />
+              <div className="manager-switches">
+                {COLLECTION_MANAGER_SWITCHES.filter((s) => mayGive(s.key)).map((s) => (
+                  <Check
+                    key={s.key}
+                    id={`new-manager-${s.key}`}
+                    label={s.label}
+                    checked={asked[s.key]}
+                    disabled={busy}
+                    onChange={(on) => setAsked((a) => ({ ...a, [s.key]: on }))}
+                  />
+                ))}
+              </div>
+            </>
+          )}
+        </Dialog>
       )}
       {removing && (
         <ConfirmDialog

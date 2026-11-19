@@ -9,7 +9,7 @@ import {
   type RevealedUploadRequest,
   type UploadRequestView,
 } from '@fdv/shared';
-import { useRef, useState } from 'react';
+import { useRef, useState, type RefObject } from 'react';
 import { flushSync } from 'react-dom';
 import { Link, useLocation } from 'react-router';
 import { api, type RevealedShare, type Share } from '../api.js';
@@ -17,7 +17,7 @@ import { describeError, useApp, useLoad } from '../app-context.js';
 import { storedRole } from '../session.js';
 import { useShellMode } from '../shell.js';
 import { None, useGrid } from '../table-grid.js';
-import { Button, ConfirmDialog, ErrorNote, Sheet, TopBar } from '../ui.js';
+import { Button, ConfirmDialog, Dialog, ErrorNote, TopBar } from '../ui.js';
 import { EmailALink, EmailTheLink } from './Share.js';
 import { ChangeLink } from './ChangeLink.js';
 import { LinkOpens } from '../link-opens.js';
@@ -210,9 +210,8 @@ export function SharingScreen() {
     request: UploadRequestView;
     revealed: RevealedUploadRequest;
   } | null>(null);
-  // A link being changed (0.9.0, LK): its form, in a sheet.
+  // A link being changed (0.9.0, LK): its form, in the app's one dialog.
   const [changing, setChanging] = useState<Share | null>(null);
-  const [saving, setSaving] = useState(false);
   const [askingRequest, setAskingRequest] = useState<UploadRequestView | null>(null);
   // Every ended link, or request, once asked for: the first 20 until then.
   const [allEnded, setAllEnded] = useState(false);
@@ -517,49 +516,34 @@ export function SharingScreen() {
         </ConfirmDialog>
       )}
       {changing && (
-        <Sheet
-          label={`Change the link to ${linkTarget(changing, true)}`}
-          busy={saving}
+        <ChangeLink
+          link={changing}
+          target={linkTarget(changing, true)}
           returnFocus={returnTo}
-          onClose={() => setChanging(null)}
-        >
-          <ChangeLink
-            link={changing}
-            target={linkTarget(changing, true)}
-            onBusy={setSaving}
-            onCancel={() => setChanging(null)}
-            onDone={(words) => {
-              setChanging(null);
-              setSaid(words);
-              void reload();
-              status.current?.focus();
-            }}
-          />
-        </Sheet>
+          onCancel={() => setChanging(null)}
+          onDone={(words) => {
+            setChanging(null);
+            setSaid(words);
+            void reload();
+            status.current?.focus();
+          }}
+        />
       )}
       {shownRequest && (
-        <Sheet
-          label={`The link for ${requestTarget(shownRequest.request)}`}
-          busy={false}
+        <RequestShownAgain
+          request={shownRequest.request}
+          revealed={shownRequest.revealed}
           returnFocus={returnTo}
           onClose={() => setShownRequest(null)}
-        >
-          <RequestShownAgain
-            request={shownRequest.request}
-            revealed={shownRequest.revealed}
-            onClose={() => setShownRequest(null)}
-          />
-        </Sheet>
+        />
       )}
       {shown && (
-        <Sheet
-          label={`The link to ${linkTarget(shown.link, true)}`}
-          busy={false}
+        <ShownAgain
+          link={shown.link}
+          revealed={shown.revealed}
           returnFocus={returnTo}
           onClose={() => setShown(null)}
-        >
-          <ShownAgain link={shown.link} revealed={shown.revealed} onClose={() => setShown(null)} />
-        </Sheet>
+        />
       )}
       {asking && (
         <ConfirmDialog
@@ -664,6 +648,7 @@ const changeLabel = (s: Share) =>
 function RequestShownAgain(props: {
   request: UploadRequestView;
   revealed: RevealedUploadRequest;
+  returnFocus: RefObject<HTMLElement | null>;
   onClose: () => void;
 }) {
   const { revealed } = props;
@@ -676,8 +661,14 @@ function RequestShownAgain(props: {
     );
   };
   return (
-    <div className="card stack">
-      <h2 style={{ fontSize: 18 }}>The link for {requestTarget(props.request)}</h2>
+    <Dialog
+      title={`The link for ${requestTarget(props.request)}`}
+      wide
+      returnFocus={props.returnFocus}
+      onClose={props.onClose}
+      closeLabel="Hide it"
+      closePrimary
+    >
       <code style={{ wordBreak: 'break-all' }}>{link}</code>
       <Button kind="quiet" onClick={() => copy('link', link)}>
         {copied === 'link' ? 'Copied' : 'Copy the link'}
@@ -704,8 +695,7 @@ function RequestShownAgain(props: {
       <p className="muted">
         Only you can see this again, and only after confirming it’s you. Closing hides it.
       </p>
-      <Button onClick={props.onClose}>Hide it</Button>
-    </div>
+    </Dialog>
   );
 }
 
@@ -727,7 +717,12 @@ export function RequestEmail(props: { request: UploadRequestView; idPrefix: stri
  * the password the vault made up, each with Copy — as they were shown when
  * it was made. Nothing of it is kept on the page once it is closed.
  */
-function ShownAgain(props: { link: Share; revealed: RevealedShare; onClose: () => void }) {
+function ShownAgain(props: {
+  link: Share;
+  revealed: RevealedShare;
+  returnFocus: RefObject<HTMLElement | null>;
+  onClose: () => void;
+}) {
   const { revealed } = props;
   // As it was handed over (Share's HandOver): on the public-only site when
   // the vault has one, the secret after the #.
@@ -740,8 +735,14 @@ function ShownAgain(props: { link: Share; revealed: RevealedShare; onClose: () =
     );
   };
   return (
-    <div className="card stack">
-      <h2 style={{ fontSize: 18 }}>The link to {linkTarget(props.link, true)}</h2>
+    <Dialog
+      title={`The link to ${linkTarget(props.link, true)}`}
+      wide
+      returnFocus={props.returnFocus}
+      onClose={props.onClose}
+      closeLabel="Hide it"
+      closePrimary
+    >
       {props.link.recipient_label && (
         <p className="muted">Made for {props.link.recipient_label}.</p>
       )}
@@ -783,8 +784,7 @@ function ShownAgain(props: { link: Share; revealed: RevealedShare; onClose: () =
       <p className="muted">
         Only you can see this again, and only after confirming it’s you. Closing hides it.
       </p>
-      <Button onClick={props.onClose}>Hide it</Button>
-    </div>
+    </Dialog>
   );
 }
 

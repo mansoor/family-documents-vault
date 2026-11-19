@@ -2,6 +2,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 import axe from 'axe-core';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { App } from './App.js';
+import { expectSharedDialog } from './dialog-testing.js';
 import { fresh, installFakeApi, ME, PASSPORT, signedIn, type FakeState } from './test-api.js';
 
 /**
@@ -141,6 +142,9 @@ describe('a link changed from Sharing (0.9.0, LK)', () => {
     const sheet = await screen.findByRole('dialog', {
       name: `Change the link to “Mansoor's passport”`,
     });
+    // The app's one dialog (0.9.0-dev.67), wide: no longer a narrow panel.
+    expectSharedDialog(sheet, `Change the link to “Mansoor's passport”`, 'Cancel');
+    expect(sheet).toHaveClass('dialog-wide');
     expect(within(sheet).getByLabelText('Who is it for?')).toHaveValue('the visa agent');
     expect(within(sheet).getByLabelText('Can be opened')).toHaveValue('5');
     expect(within(sheet).getByLabelText('Keep its PIN')).toBeChecked();
@@ -265,6 +269,11 @@ describe('a request shown again and changed (0.9.0, LK)', () => {
     const sheet = await screen.findByRole('dialog', {
       name: 'The link for the request “Tax papers for 2025” to Jane, accountant',
     });
+    expectSharedDialog(
+      sheet,
+      'The link for the request “Tax papers for 2025” to Jane, accountant',
+      'Hide it',
+    );
     expect(
       within(sheet).getByText(`${window.location.origin}/drop#kept-drop-secret-0123456789`),
     ).toBeInTheDocument();

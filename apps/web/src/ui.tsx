@@ -282,6 +282,8 @@ export function Button({
   children: ReactNode;
   kind?: 'primary' | 'quiet' | 'link';
   type?: 'submit' | 'button';
+  /** The form it submits, when it is drawn outside it (a dialog's row of buttons). */
+  form?: string;
   disabled?: boolean;
   onClick?: () => void;
   ariaLabel?: string;
@@ -298,6 +300,7 @@ export function Button({
     <button
       ref={ref}
       type={props.type ?? 'button'}
+      form={props.form}
       className={`btn btn-${props.kind ?? 'primary'}${props.danger ? ' btn-danger-quiet' : ''}`}
       disabled={props.disabled}
       onClick={props.onClick}
@@ -677,7 +680,9 @@ export function useSheetFocus(
  * it open, as the "are you sure?" does: what comes back is shown only here.
  */
 export function Sheet(props: {
-  label: string;
+  /** Its name: said here, or by the id of its own title (`labelledBy`). */
+  label?: string;
+  labelledBy?: string;
   busy: boolean;
   returnFocus: RefObject<HTMLElement | null>;
   onClose: () => void;
@@ -699,13 +704,71 @@ export function Sheet(props: {
           className={props.className ? `sheet ${props.className}` : 'sheet'}
           role="dialog"
           aria-modal="true"
-          aria-label={props.label}
+          aria-label={props.labelledBy ? undefined : props.label}
+          aria-labelledby={props.labelledBy}
           aria-busy={props.busy}
         >
           {props.children}
         </section>
       </div>
     </OnTop>
+  );
+}
+
+/**
+ * The app's one dialog (0.9.0-dev.67, the owner's feedback of 18 Nov
+ * 2026): a Sheet drawn as the "are you sure?" is — a card, with its
+ * padding, edge, rounded corners and shadow — named by its title, then
+ * what it holds, then one row of buttons ending with the one that closes
+ * it. Wide for one with a lot in it (a link's form, a card to print);
+ * taller than the screen, it scrolls inside, and on a phone it fills the
+ * width. Its focus, Escape and Tab are the Sheet's.
+ */
+export function Dialog(props: {
+  title: ReactNode;
+  /** Something is on its way: Escape and the closing button wait for it. */
+  busy?: boolean;
+  /** Where focus goes afterwards when the browser remembered none (Safari). */
+  returnFocus: RefObject<HTMLElement | null>;
+  onClose: () => void;
+  /** Its own buttons, before the one that closes it. */
+  actions?: ReactNode;
+  /** What the closing button says: Close unless said. */
+  closeLabel?: string;
+  /** The closing button is the one to press (Done, Hide it). */
+  closePrimary?: boolean;
+  wide?: boolean;
+  /** More of its look. */
+  className?: string;
+  children: ReactNode;
+}) {
+  const id = useId();
+  const busy = props.busy === true;
+  return (
+    <Sheet
+      labelledBy={`${id}-h`}
+      busy={busy}
+      returnFocus={props.returnFocus}
+      onClose={props.onClose}
+      className={['card stack dialog', props.wide ? 'dialog-wide' : '', props.className ?? '']
+        .filter(Boolean)
+        .join(' ')}
+    >
+      <h2 id={`${id}-h`} className="dialog-title">
+        {props.title}
+      </h2>
+      {props.children}
+      <div className="row dialog-actions">
+        {props.actions}
+        <Button
+          kind={props.closePrimary ? 'primary' : 'quiet'}
+          disabled={busy}
+          onClick={props.onClose}
+        >
+          {props.closeLabel ?? 'Close'}
+        </Button>
+      </div>
+    </Sheet>
   );
 }
 
@@ -746,14 +809,14 @@ export function ConfirmDialog(props: {
       <div className="scrim" role="presentation">
         <section
           ref={box}
-          className="card stack sheet"
+          className="card stack sheet dialog"
           role="alertdialog"
           aria-modal="true"
           aria-labelledby="confirm-h"
           aria-describedby="confirm-body"
           aria-busy={busy}
         >
-          <h2 id="confirm-h" style={{ fontSize: 20 }}>
+          <h2 id="confirm-h" className="dialog-title">
             {props.title}
           </h2>
           <div id="confirm-body" className="muted">
