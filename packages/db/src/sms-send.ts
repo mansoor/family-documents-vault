@@ -4,7 +4,9 @@ import {
   phoneTail,
   type SmsKind,
   type SmsMode,
+  type SmsProviderKind,
   type SmsState,
+  type SmsVia,
 } from '@fdv/shared';
 import { sql } from 'kysely';
 import type { Db } from './client.js';
@@ -15,6 +17,7 @@ import {
   type SmsProvider,
   type SmsProviderFactory,
 } from './sms-gate.js';
+import { twilioErrorWords } from './sms-twilio.js';
 import { householdZone } from './zone.js';
 
 /**
@@ -26,9 +29,10 @@ import { householdZone } from './zone.js';
  * Every text is one row of sms_message — whom, what kind, what became of
  * it, never its words — counted against the household's monthly cap on the
  * family's own calendar, whatever its kind. Nothing is written, and nothing
- * sent, while the household has no SMS Gate, or one no test has passed (a
- * test excepted), or this month's texts are all sent. One household's sends
- * wait for each other, so the count holds however many ask at once.
+ * sent, while the household has no provider set up (SMS Gate or Twilio),
+ * or one no test has passed (a test excepted), or this month's texts are
+ * all sent. One household's sends wait for each other, so the count holds
+ * however many ask at once.
  *
  * Written as the vault (sms_message is the vault's to write, 0084), in the
  * household's scope: the API and the worker each say so themselves, as
@@ -48,41 +52,106 @@ export interface SmsRequest {
   text: string;
 }
 
-/** What a send did: the row it wrote, and SMS Gate's id and word for it. */
+/** What a send did: the row it wrote, and the provider's id and word for it. */
 export interface SmsDone {
   messageId: string;
-  providerId: string;
+  /**
+   * Null when the provider did not say whether it took the text
+   * (`unconfirmed`): it may have gone, so nothing can be asked after it.
+   */
+  providerId: string | null;
   state: SmsState;
 }
 
 /** A household's settings, as the vault itself reads them to send. */
 export interface SmsSending {
-  mode: SmsMode;
-  base_url: string;
-  username: string;
+  /** Who sends the texts (0.9.0-dev.71). */
+  provider: SmsProviderKind;
+  /** SMS Gate's; null for Twilio. */
+  mode: SmsMode | null;
+  base_url: string | null;
+  username: string | null;
   password_encrypted: Buffer | null;
+  /** Twilio's; null for SMS Gate. */
+  twilio_account_sid: string | null;
+  twilio_from: string | null;
+  twilio_messaging_service_sid: string | null;
+  twilio_token_encrypted: Buffer | null;
   country: string;
   monthly_cap: number;
   status: 'untested' | 'ok' | 'failed';
 }
 
+/** What a provider's sealed secret was sealed for: SMS Gate's sign-in, or Twilio's account. */
+export type SmsSealedFor =
+  | { provider?: 'sms_gate' | undefined; mode: SmsMode; baseUrl: string; username: string }
+  | { provider: 'twilio'; accountSid: string };
+
 /**
- * How a send reaches SMS Gate: the sealed password opened (openSmsPassword
+ * How a send reaches the provider: its sealed secret opened (openSmsSecret
  * under the key derived for it, from @fdv/crypto), and whatever sends —
- * SMS Gate, unless a test stands in.
+ * SMS Gate or Twilio, unless a test stands in.
  */
 export interface SmsWay {
-  open: (sealed: Buffer, householdId: string, to: Omit<SmsConnection, 'password'>) => string;
+  open: (sealed: Buffer, householdId: string, to: SmsSealedFor) => string;
   provider: SmsProviderFactory;
+}
+
+/** How a household's texts go, for the words said of a problem. */
+export function smsVia(s: { provider: SmsProviderKind; mode: SmsMode | null }): SmsVia {
+  return s.provider === 'twilio' ? 'twilio' : (s.mode ?? 'local');
+}
+
+/** The household's settings as the provider they chose, its secret opened; null without one. */
+export function smsConnection(
+  way: SmsWay,
+  householdId: string,
+  s: SmsSending,
+): SmsConnection | null {
+  if (s.provider === 'twilio') {
+    if (!s.twilio_token_encrypted || !s.twilio_account_sid) return null;
+    return {
+      provider: 'twilio',
+      accountSid: s.twilio_account_sid,
+      authToken: way.open(s.twilio_token_encrypted, householdId, {
+        provider: 'twilio',
+        accountSid: s.twilio_account_sid,
+      }),
+      from: s.twilio_from,
+      messagingServiceSid: s.twilio_messaging_service_sid,
+    };
+  }
+  if (!s.password_encrypted || !s.mode || s.base_url === null || s.username === null) return null;
+  return {
+    mode: s.mode,
+    baseUrl: s.base_url,
+    username: s.username,
+    password: way.open(s.password_encrypted, householdId, {
+      mode: s.mode,
+      baseUrl: s.base_url,
+      username: s.username,
+    }),
+  };
+}
+
+/** Whether the provider chosen has its secret: nothing is sent without it. */
+export function smsHasSecret(s: {
+  provider: SmsProviderKind;
+  password_encrypted: Buffer | null;
+  twilio_token_encrypted: Buffer | null;
+}): boolean {
+  return s.provider === 'twilio'
+    ? s.twilio_token_encrypted !== null
+    : s.password_encrypted !== null;
 }
 
 /**
  * What a send came to:
- *  - `refused`: nothing written, nothing sent — `not_set_up` (no SMS Gate,
+ *  - `refused`: nothing written, nothing sent — `not_set_up` (no provider,
  *    no password, or no test passed) or `cap_reached` (this month's are all
  *    sent).
- *  - `problem`: written, but SMS Gate never took it (its row says not_sent).
- *  - `sent`: SMS Gate took it.
+ *  - `problem`: written, but the provider never took it (its row says not_sent).
+ *  - `sent`: the provider took it.
  */
 export type SmsOutcome =
   | { refused: 'not_set_up' }
@@ -92,10 +161,57 @@ export type SmsOutcome =
    */
   | { refused: 'cap_reached'; cap: number; links?: true }
   | { problem: SmsProviderError; messageId: string; settings: SmsSending }
-  | { sent: SmsDone; provider: SmsProvider; settings: SmsSending };
+  /**
+   * `unconfirmed`: the send may have reached the provider and it did not say
+   * whether it took it (0.9.0-dev.71, Twilio's 5xx or a broken connection).
+   * Counted as sent — its row `pending`, no provider id, the words saying so
+   * — so nothing sends it again by itself: that could send it twice.
+   */
+  | { sent: SmsDone; provider: SmsProvider; settings: SmsSending; unconfirmed?: true };
 
-/** In plain words, what went wrong with SMS Gate: for Settings, and for whoever asked for a text. */
-export function smsProblemWords(problem: SmsProblem, mode: SmsMode, status?: number): string {
+/** What a text Twilio may or may not have taken is said as, in its row and to whoever asked. */
+export const UNCONFIRMED_TWILIO =
+  'Twilio didn’t say whether it took the text. It may still arrive: the vault won’t send it again by itself. Check the Twilio Console’s logs.';
+
+/** In plain words, what went wrong with Twilio: for Settings, and for whoever asked for a text. */
+function twilioProblemWords(problem: SmsProblem, status?: number, code?: number): string {
+  switch (problem) {
+    case 'unauthorised':
+      return 'Twilio refused the Account SID or Auth Token. Check them in the Twilio Console, and type the Auth Token again.';
+    case 'timeout':
+      return 'Twilio didn’t answer within 10 seconds. Check the vault can reach the internet, then try again.';
+    case 'unreachable':
+    case 'address_refused':
+      return 'The vault couldn’t reach Twilio. Check the vault can reach the internet (api.twilio.com).';
+    case 'not_found':
+      return 'Twilio no longer knows the text it was sent.';
+    case 'unconfirmed':
+      return UNCONFIRMED_TWILIO;
+    case 'refused': {
+      if (status === 429) {
+        return 'Twilio asked the vault to slow down (it answered 429). Try again in a minute.';
+      }
+      const why = twilioErrorWords(code);
+      return `Twilio didn’t take the text${status ? ` (it answered ${status})` : ''}.${
+        why ? ` ${why}.` : ' Check the number or Messaging Service it sends from.'
+      }`;
+    }
+  }
+}
+
+/**
+ * In plain words, what went wrong with the household's provider: for
+ * Settings, and for whoever asked for a text. `code` is the provider's own
+ * (Twilio's error codes).
+ */
+export function smsProblemWords(
+  problem: SmsProblem,
+  via: SmsVia,
+  status?: number,
+  code?: number,
+): string {
+  if (via === 'twilio') return twilioProblemWords(problem, status, code);
+  const mode = via;
   switch (problem) {
     case 'unauthorised':
       return 'SMS Gate refused the username or password. Check them in the SMS Gate app, and type them again.';
@@ -111,6 +227,8 @@ export function smsProblemWords(problem: SmsProblem, mode: SmsMode, status?: num
       return 'That address is inside the vault’s own network. Only the local server may be: choose Local server on your network for it.';
     case 'not_found':
       return 'SMS Gate no longer knows the text it was sent.';
+    case 'unconfirmed':
+      return 'SMS Gate didn’t say whether it took the text. It may still arrive: the vault won’t send it again by itself.';
     case 'refused':
       return `SMS Gate didn’t take the text${status ? ` (it answered ${status})` : ''}. Check the address points at SMS Gate’s API.`;
   }
@@ -137,7 +255,7 @@ export async function smsMonthCount(
   return r.rows[0]?.n ?? 0;
 }
 
-/** What became of a text, as SMS Gate said: the vault's to write. */
+/** What became of a text, as its provider said: the vault's to write. */
 export async function markSms(
   asVault: AsVault,
   messageId: string,
@@ -153,7 +271,7 @@ export async function markSms(
 }
 
 /**
- * Writes a text's row and asks SMS Gate to send it, or says why not. The
+ * Writes a text's row and asks the household's provider to send it, or says why not. The
  * vault's to do (sms_message is the vault's to write, 0084): whoever asks
  * has been checked first, as themselves.
  */
@@ -172,16 +290,21 @@ export async function sendSms(
     const s = await trx
       .selectFrom('sms_settings')
       .select([
+        'provider',
         'mode',
         'base_url',
         'username',
         'password_encrypted',
+        'twilio_account_sid',
+        'twilio_from',
+        'twilio_messaging_service_sid',
+        'twilio_token_encrypted',
         'country',
         'monthly_cap',
         'status',
       ])
       .executeTakeFirst();
-    if (!s || !s.password_encrypted) return { refused: 'not_set_up' };
+    if (!s || !smsHasSecret(s)) return { refused: 'not_set_up' };
     if (s.status !== 'ok' && r.kind !== 'test') return { refused: 'not_set_up' };
     if ((await smsMonthCount(trx)) >= s.monthly_cap) {
       return { refused: 'cap_reached', cap: s.monthly_cap };
@@ -209,16 +332,10 @@ export async function sendSms(
   });
   if ('refused' in held) return held;
   const s = held.settings;
-  const provider = way.provider({
-    mode: s.mode,
-    baseUrl: s.base_url,
-    username: s.username,
-    password: way.open(s.password_encrypted as Buffer, householdId, {
-      mode: s.mode,
-      baseUrl: s.base_url,
-      username: s.username,
-    }),
-  });
+  const connection = smsConnection(way, householdId, s);
+  // Checked under the lock above: what the chosen provider needs is there.
+  if (!connection) throw new Error('the household’s text messages lost their secret');
+  const provider = way.provider(connection);
   try {
     const sent = await provider.send(r.to, r.text);
     await markSms(asVault, held.messageId, { provider_id: sent.id, state: sent.state });
@@ -232,9 +349,22 @@ export async function sendSms(
       err instanceof SmsProviderError
         ? err
         : new SmsProviderError('unreachable', (err as Error).message);
+    if (problem.problem === 'unconfirmed') {
+      // It may have gone: counted, kept as sent with its delivery unknown
+      // (`pending`, no provider id), and told as sent, so neither the vault
+      // nor whoever asked sends it again by itself.
+      const words = smsProblemWords(problem.problem, smsVia(s), problem.status, problem.code);
+      await markSms(asVault, held.messageId, { state: 'pending', error: words });
+      return {
+        sent: { messageId: held.messageId, providerId: null, state: 'pending' },
+        provider,
+        settings: s,
+        unconfirmed: true,
+      };
+    }
     await markSms(asVault, held.messageId, {
       state: 'not_sent',
-      error: smsProblemWords(problem.problem, s.mode, problem.status),
+      error: smsProblemWords(problem.problem, smsVia(s), problem.status, problem.code),
     });
     return { problem, messageId: held.messageId, settings: s };
   }

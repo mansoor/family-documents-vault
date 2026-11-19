@@ -11,9 +11,15 @@ import {
   SMS_FACTOR_WARNING,
   SMS_MODE_WORDS,
   SMS_MODES,
+  SMS_PROVIDER_WORDS,
+  SMS_PROVIDERS,
+  TWILIO_ACCOUNT_SID,
+  TWILIO_MESSAGING_SERVICE_SID,
+  E164,
   type Member,
   type MemberPhoneView,
   type SmsMode,
+  type SmsProviderKind,
   type SmsSettingsView,
   type SmsTestResult,
 } from '@fdv/shared';
@@ -30,12 +36,13 @@ import { Button, Check, ConfirmDialog, ErrorNote, Field, LoadFailed } from './ui
  * messages, an owner's; and a person's mobile number on their profile.
  *
  * The vault sends texts through the household's own SMS Gate, an app on a
- * phone the family owns. An owner chooses how the vault reaches it — the
- * phone itself on the home network (recommended), SMS Gate's cloud relay,
- * or a server of their own — types its sign-in, saves, and sends a test to
- * a number: only once a test has gone does the vault send any other text.
- * For now the only other texts are the codes that confirm a mobile number;
- * reminders by text come later.
+ * phone the family owns, or (0.9.0-dev.71) through Twilio, a paid service.
+ * For SMS Gate an owner chooses how the vault reaches it — the phone itself
+ * on the home network (recommended), SMS Gate's cloud relay, or a server of
+ * their own — and types its sign-in; for Twilio, the account's SID and Auth
+ * Token and a number or Messaging Service to send from. Saved, they send a
+ * test to a number: only once a test has gone does the vault send any
+ * other text, and a new provider waits for a test of its own.
  */
 
 /**
@@ -95,7 +102,7 @@ function statusWords(v: SmsSettingsView): string {
 
 export function TextMessagesScreen() {
   return (
-    <SettingsPage title="Text messages" subtitle="Texts through your own SMS Gate">
+    <SettingsPage title="Text messages" subtitle="Texts through SMS Gate or Twilio">
       <TextMessagesPart />
     </SettingsPage>
   );
@@ -107,8 +114,9 @@ function TextMessagesPart() {
   return (
     <>
       <p className="lede">
-        The vault can send texts through SMS Gate for Android, an app on a phone your family owns.
-        For now it texts the codes that confirm each person’s mobile number.
+        The vault can send texts through SMS Gate for Android, an app on a phone your family owns,
+        or through Twilio, a paid service. It texts codes, the alerts and reminders people ask for,
+        and links you send.
       </p>
       {data === null && error ? (
         <LoadFailed message={error} what="text messages" onRetry={() => void reload()} />
@@ -140,14 +148,29 @@ function TextMessagesPart() {
   );
 }
 
+/** A number as typed for Twilio's From, as E.164: "+44 7700 900123" is "+447700900123". */
+const fromNumber = (typed: string) => typed.trim().replace(/[\s().-]/g, '');
+
 /**
- * The settings themselves. The password is sent once and kept sealed —
- * never shown again, only whether one is set; left blank, the one set is
- * kept, unless the address or username changed.
+ * The settings themselves: who sends the texts, and what that provider
+ * needs. The password or Auth Token is sent once and kept sealed — never
+ * shown again, only whether one is set; left blank, the one set is kept,
+ * unless the address or username (SMS Gate) or the Account SID (Twilio)
+ * changed, or the provider did.
  */
 function SmsForm(props: { view: SmsSettingsView; onSaved: () => Promise<void> }) {
   const { guarded } = useApp();
   const s = props.view.settings;
+  // An older vault says no provider: SMS Gate, the only one it had.
+  const saved: SmsProviderKind | null = s ? (s.provider ?? 'sms_gate') : null;
+  const gate = s && saved === 'sms_gate' ? s : null;
+  const tw = saved === 'twilio' ? (s?.twilio ?? null) : null;
+  const [provider, setProvider] = useState<SmsProviderKind>('sms_gate');
+  const [sid, setSid] = useState('');
+  const [token, setToken] = useState('');
+  const [sendFrom, setSendFrom] = useState<'number' | 'service'>('number');
+  const [fromNum, setFromNum] = useState('');
+  const [serviceSid, setServiceSid] = useState('');
   const [mode, setMode] = useState<SmsMode>('local');
   const [baseUrl, setBaseUrl] = useState('');
   const [user, setUser] = useState('');
@@ -162,8 +185,15 @@ function SmsForm(props: { view: SmsSettingsView; onSaved: () => Promise<void> })
   useEffect(() => {
     // The form starts from what the vault has, each time it is loaded.
     /* eslint-disable react-hooks/set-state-in-effect */
+    setProvider(s?.provider ?? 'sms_gate');
+    const t = s?.provider === 'twilio' ? (s.twilio ?? null) : null;
+    setSid(t?.account_sid ?? '');
+    setToken('');
+    setSendFrom(t?.messaging_service_sid ? 'service' : 'number');
+    setFromNum(t?.from ?? '');
+    setServiceSid(t?.messaging_service_sid ?? '');
     setMode(s?.mode ?? 'local');
-    setBaseUrl(s && s.mode !== 'cloud' ? s.base_url : '');
+    setBaseUrl(s && s.mode && s.mode !== 'cloud' ? (s.base_url ?? '') : '');
     setUser(s?.username ?? '');
     setPassword('');
     setCountry(s?.country ?? SMS_DEFAULT_COUNTRY);
@@ -178,25 +208,77 @@ function SmsForm(props: { view: SmsSettingsView; onSaved: () => Promise<void> })
   // The password was kept for this mode, address and username alone: any of
   // them changed, it is typed again.
   const moved =
-    s !== null &&
-    s.password === 'set' &&
-    (mode !== s.mode || address !== s.base_url || user.trim() !== s.username);
-  const passwordNeeded = (s === null || s.password !== 'set' || moved) && password === '';
+    gate !== null &&
+    gate.password === 'set' &&
+    (mode !== gate.mode || address !== gate.base_url || user.trim() !== gate.username);
+  const passwordNeeded = (gate === null || gate.password !== 'set' || moved) && password === '';
+  // Twilio's token was kept for this Account SID alone.
+  const sidMoved = tw !== null && tw.auth_token === 'set' && sid.trim() !== tw.account_sid;
+  const tokenNeeded = (tw === null || tw.auth_token !== 'set' || sidMoved) && token === '';
+  const switching = s !== null && provider !== saved;
   const changed =
     s === null ||
-    mode !== s.mode ||
-    (mode !== 'cloud' && baseUrl !== s.base_url) ||
-    user !== s.username ||
-    password !== '' ||
+    switching ||
     country !== s.country ||
-    cap !== String(s.monthly_cap);
+    cap !== String(s.monthly_cap) ||
+    (provider === 'twilio'
+      ? sid !== (tw?.account_sid ?? '') ||
+        token !== '' ||
+        (sendFrom === 'number'
+          ? fromNum !== (tw?.from ?? '') || tw?.messaging_service_sid != null
+          : serviceSid !== (tw?.messaging_service_sid ?? '') || tw?.from != null)
+      : mode !== s.mode ||
+        (mode !== 'cloud' && baseUrl !== s.base_url) ||
+        user !== s.username ||
+        password !== '');
   const countries = COUNTRIES.includes(country) ? COUNTRIES : [country, ...COUNTRIES];
+
+  /** What a Twilio save says is wrong first, or null. */
+  const twilioProblem = (): { words: string; field: string } | null => {
+    if (!TWILIO_ACCOUNT_SID.test(sid.trim())) {
+      return {
+        words:
+          'Type the Account SID the Twilio Console shows: AC followed by 32 letters and digits.',
+        field: 'sms-twilio-sid',
+      };
+    }
+    if (tokenNeeded) {
+      return {
+        words: sidMoved
+          ? 'Type the Auth Token again for the new Account SID.'
+          : 'Type the Auth Token the Twilio Console shows.',
+        field: 'sms-twilio-token',
+      };
+    }
+    if (sendFrom === 'number' && !E164.test(fromNumber(fromNum))) {
+      return {
+        words:
+          'Type the number texts come from with its country code, such as +447700900123: one of your Twilio numbers.',
+        field: 'sms-twilio-from',
+      };
+    }
+    if (sendFrom === 'service' && !TWILIO_MESSAGING_SERVICE_SID.test(serviceSid.trim())) {
+      return {
+        words:
+          'Type the Messaging Service SID the Twilio Console shows: MG followed by 32 letters and digits.',
+        field: 'sms-twilio-service',
+      };
+    }
+    return null;
+  };
 
   const save = async (e: FormEvent) => {
     e.preventDefault();
     if (busy) return;
     const capN = Number(cap);
-    if (mode !== 'cloud' && !baseUrl.trim()) {
+    if (provider === 'twilio') {
+      const wrong = twilioProblem();
+      if (wrong) {
+        setError(wrong.words);
+        document.getElementById(wrong.field)?.focus();
+        return;
+      }
+    } else if (mode !== 'cloud' && !baseUrl.trim()) {
       setError(
         mode === 'local'
           ? 'Type the address the SMS Gate app shows under Local server.'
@@ -204,11 +286,11 @@ function SmsForm(props: { view: SmsSettingsView; onSaved: () => Promise<void> })
       );
       return;
     }
-    if (!user.trim()) {
+    if (provider === 'sms_gate' && !user.trim()) {
       setError('Type the username the SMS Gate app shows.');
       return;
     }
-    if (passwordNeeded) {
+    if (provider === 'sms_gate' && passwordNeeded) {
       setError(
         moved
           ? 'Type the password again for the new address or username.'
@@ -226,17 +308,31 @@ function SmsForm(props: { view: SmsSettingsView; onSaved: () => Promise<void> })
     setSaid(null);
     try {
       const done = await guarded((t) =>
-        api.setSmsSettings(t, {
-          mode,
-          base_url: mode === 'cloud' ? null : baseUrl.trim(),
-          username: user.trim(),
-          ...(password !== '' ? { password } : {}),
-          country,
-          monthly_cap: capN,
-        }),
+        api.setSmsSettings(
+          t,
+          provider === 'twilio'
+            ? {
+                provider: 'twilio',
+                account_sid: sid.trim(),
+                ...(token !== '' ? { auth_token: token } : {}),
+                from: sendFrom === 'number' ? fromNumber(fromNum) : null,
+                messaging_service_sid: sendFrom === 'service' ? serviceSid.trim() : null,
+                country,
+                monthly_cap: capN,
+              }
+            : {
+                mode,
+                base_url: mode === 'cloud' ? null : baseUrl.trim(),
+                username: user.trim(),
+                ...(password !== '' ? { password } : {}),
+                country,
+                monthly_cap: capN,
+              },
+        ),
       );
       if (done !== null) {
         setPassword('');
+        setToken('');
         await props.onSaved();
         setSaid(
           done.ready
@@ -259,7 +355,11 @@ function SmsForm(props: { view: SmsSettingsView; onSaved: () => Promise<void> })
       setAsking(false);
       if (done !== null) {
         await props.onSaved();
-        setSaid('Removed, with its password. The vault sends no texts now.');
+        setSaid(
+          saved === 'twilio'
+            ? 'Removed, with its Auth Token. The vault sends no texts now.'
+            : 'Removed, with its password. The vault sends no texts now.',
+        );
       }
     } catch (err) {
       setAsking(false);
@@ -272,10 +372,215 @@ function SmsForm(props: { view: SmsSettingsView; onSaved: () => Promise<void> })
   return (
     <form className="stack" onSubmit={(e) => void save(e)} aria-labelledby="sms-set-h" noValidate>
       <h2 id="sms-set-h" className="section-h">
-        Set up SMS Gate
+        Set up text messages
       </h2>
       <fieldset className="stack">
-        <legend>How the vault reaches it</legend>
+        <legend>Who sends the texts</legend>
+        {SMS_PROVIDERS.map((p) => (
+          <div key={p} className="check check-noted">
+            <input
+              id={`sms-provider-${p}`}
+              type="radio"
+              name="sms-provider"
+              value={p}
+              checked={provider === p}
+              aria-describedby={`sms-provider-${p}-note`}
+              onChange={() => setProvider(p)}
+            />
+            <label htmlFor={`sms-provider-${p}`}>{SMS_PROVIDER_WORDS[p].name}</label>
+            <p id={`sms-provider-${p}-note`} className="muted check-note">
+              {SMS_PROVIDER_WORDS[p].hint}
+            </p>
+          </div>
+        ))}
+      </fieldset>
+      {switching && (
+        <p className="attention attention-warn" role="note" data-testid="sms-switching">
+          {provider === 'twilio'
+            ? 'Saving switches the vault to Twilio: SMS Gate’s settings and password are forgotten, and no text is sent until a test goes.'
+            : 'Saving switches the vault to SMS Gate: Twilio’s settings and Auth Token are forgotten, and no text is sent until a test goes.'}
+        </p>
+      )}
+      {provider === 'twilio' ? (
+        <>
+          <p className="muted" data-testid="sms-twilio-costs">
+            Twilio charges your own Twilio account for every text, at its prices; the vault adds
+            nothing and pays for nothing. The most texts in a month, below, keeps the count down.
+          </p>
+          <Field
+            id="sms-twilio-sid"
+            label="Account SID"
+            value={sid}
+            placeholder="AC…"
+            autoComplete="off"
+            autoCapitalize="off"
+            autoCorrect="off"
+            note="On the Twilio Console’s front page, under Account Info."
+            onChange={setSid}
+          />
+          <Field
+            id="sms-twilio-token"
+            label="Auth Token"
+            type="password"
+            value={token}
+            autoComplete="new-password"
+            required={false}
+            invalid={tokenNeeded && error !== null}
+            note={
+              sidMoved
+                ? 'You changed the Account SID: type its Auth Token. The one saved only ever signs in as the account it was typed for.'
+                : tw?.auth_token === 'set'
+                  ? 'One is saved, and never shown. Leave this empty to keep it, or type a new one.'
+                  : 'Beside the Account SID. It is kept encrypted, and never shown again.'
+            }
+            onChange={setToken}
+          />
+          <fieldset className="stack">
+            <legend>Texts come from</legend>
+            <div className="check">
+              <input
+                id="sms-from-number"
+                type="radio"
+                name="sms-from"
+                checked={sendFrom === 'number'}
+                onChange={() => setSendFrom('number')}
+              />
+              <label htmlFor="sms-from-number">One of your Twilio numbers</label>
+            </div>
+            <div className="check">
+              <input
+                id="sms-from-service"
+                type="radio"
+                name="sms-from"
+                checked={sendFrom === 'service'}
+                onChange={() => setSendFrom('service')}
+              />
+              <label htmlFor="sms-from-service">A Messaging Service</label>
+            </div>
+          </fieldset>
+          {sendFrom === 'number' ? (
+            <Field
+              id="sms-twilio-from"
+              label="From number"
+              type="tel"
+              value={fromNum}
+              placeholder="+447700900123"
+              autoComplete="off"
+              note="With its country code. It must be able to send texts to your family’s country."
+              onChange={setFromNum}
+            />
+          ) : (
+            <Field
+              id="sms-twilio-service"
+              label="Messaging Service SID"
+              value={serviceSid}
+              placeholder="MG…"
+              autoComplete="off"
+              autoCapitalize="off"
+              autoCorrect="off"
+              note="Under Messaging → Services in the Twilio Console. Twilio picks the number."
+              onChange={setServiceSid}
+            />
+          )}
+        </>
+      ) : (
+        <SmsGateFields
+          mode={mode}
+          setMode={setMode}
+          baseUrl={baseUrl}
+          setBaseUrl={setBaseUrl}
+          user={user}
+          setUser={setUser}
+          password={password}
+          setPassword={setPassword}
+          passwordInvalid={passwordNeeded && error !== null}
+          passwordNote={
+            moved
+              ? 'You changed the address or the username: type the password again for it. The one saved is only ever sent where it was typed for.'
+              : gate?.password === 'set'
+                ? 'One is saved, and never shown. Leave this empty to keep it, or type a new one.'
+                : 'As the SMS Gate app shows it. It is kept encrypted, and never shown again.'
+          }
+        />
+      )}
+      <div className="field">
+        <label htmlFor="sms-country">Country of your numbers</label>
+        <select
+          id="sms-country"
+          value={country}
+          aria-describedby="sms-country-note"
+          onChange={(e) => setCountry(e.target.value)}
+        >
+          {countries.map((c) => (
+            <option key={c} value={c}>
+              {countryName(c)}
+            </option>
+          ))}
+        </select>
+        <p id="sms-country-note" className="muted field-note">
+          A number typed without + is read as one from here.
+        </p>
+      </div>
+      <Field
+        id="sms-cap"
+        label="Most texts in a month"
+        value={cap}
+        inputMode="numeric"
+        note="The vault sends no more than this in a calendar month, whatever asks."
+        onChange={setCap}
+      />
+      <ErrorNote message={error} />
+      <div className="row">
+        <Button kind="primary" type="submit" disabled={busy || !changed}>
+          Save
+        </Button>
+        {s && (
+          <Button kind="quiet" danger disabled={busy} onClick={() => setAsking(true)}>
+            Turn off text messages
+          </Button>
+        )}
+      </div>
+      <p ref={line} className="status-line" role="status" tabIndex={-1}>
+        {said}
+      </p>
+      {asking && (
+        <ConfirmDialog
+          title="Turn off text messages?"
+          confirmLabel="Turn off"
+          busyLabel="Turning off…"
+          danger
+          busy={busy}
+          onConfirm={() => void remove()}
+          onCancel={() => setAsking(false)}
+        >
+          {saved === 'twilio'
+            ? 'The vault forgets Twilio and its Auth Token'
+            : 'The vault forgets SMS Gate and its password'}
+          , and sends no texts until it is set up again. The family’s mobile numbers are kept.
+        </ConfirmDialog>
+      )}
+    </form>
+  );
+}
+
+/** SMS Gate's own fields: how the vault reaches it, its address and its sign-in. */
+function SmsGateFields(props: {
+  mode: SmsMode;
+  setMode: (m: SmsMode) => void;
+  baseUrl: string;
+  setBaseUrl: (v: string) => void;
+  user: string;
+  setUser: (v: string) => void;
+  password: string;
+  setPassword: (v: string) => void;
+  passwordInvalid: boolean;
+  passwordNote: string;
+}) {
+  const { mode, setMode, baseUrl, setBaseUrl, user, setUser, password, setPassword } = props;
+  return (
+    <>
+      <fieldset className="stack">
+        <legend>How the vault reaches SMS Gate</legend>
         {SMS_MODES.map((m) => (
           <div key={m} className="check check-noted">
             <input
@@ -336,71 +641,11 @@ function SmsForm(props: { view: SmsSettingsView; onSaved: () => Promise<void> })
         value={password}
         autoComplete="new-password"
         required={false}
-        invalid={passwordNeeded && error !== null}
-        note={
-          moved
-            ? 'You changed the address or the username: type the password again for it. The one saved is only ever sent where it was typed for.'
-            : s?.password === 'set'
-              ? 'One is saved, and never shown. Leave this empty to keep it, or type a new one.'
-              : 'As the SMS Gate app shows it. It is kept encrypted, and never shown again.'
-        }
+        invalid={props.passwordInvalid}
+        note={props.passwordNote}
         onChange={setPassword}
       />
-      <div className="field">
-        <label htmlFor="sms-country">Country of your numbers</label>
-        <select
-          id="sms-country"
-          value={country}
-          aria-describedby="sms-country-note"
-          onChange={(e) => setCountry(e.target.value)}
-        >
-          {countries.map((c) => (
-            <option key={c} value={c}>
-              {countryName(c)}
-            </option>
-          ))}
-        </select>
-        <p id="sms-country-note" className="muted field-note">
-          A number typed without + is read as one from here.
-        </p>
-      </div>
-      <Field
-        id="sms-cap"
-        label="Most texts in a month"
-        value={cap}
-        inputMode="numeric"
-        note="The vault sends no more than this in a calendar month, whatever asks."
-        onChange={setCap}
-      />
-      <ErrorNote message={error} />
-      <div className="row">
-        <Button kind="primary" type="submit" disabled={busy || !changed}>
-          Save
-        </Button>
-        {s && (
-          <Button kind="quiet" danger disabled={busy} onClick={() => setAsking(true)}>
-            Turn off text messages
-          </Button>
-        )}
-      </div>
-      <p ref={line} className="status-line" role="status" tabIndex={-1}>
-        {said}
-      </p>
-      {asking && (
-        <ConfirmDialog
-          title="Turn off text messages?"
-          confirmLabel="Turn off"
-          busyLabel="Turning off…"
-          danger
-          busy={busy}
-          onConfirm={() => void remove()}
-          onCancel={() => setAsking(false)}
-        >
-          The vault forgets SMS Gate and its password, and sends no texts until it is set up again.
-          The family’s mobile numbers are kept.
-        </ConfirmDialog>
-      )}
-    </form>
+    </>
   );
 }
 

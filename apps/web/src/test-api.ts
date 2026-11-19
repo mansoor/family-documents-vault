@@ -2557,15 +2557,53 @@ export function installFakeApi(state: FakeState) {
           return json(sms.view);
         }
         if (method === 'PUT') {
-          const b = body as Record<string, unknown> & { password?: string };
+          const b = body as Record<string, unknown> & { password?: string; auth_token?: string };
           (sms.saves ??= []).push(b);
           const { password, ...rest } = b;
           const was = sms.view.settings;
+          // Twilio (0.9.0-dev.71): its own fields, SMS Gate's cleared.
+          if (rest.provider === 'twilio') {
+            const sameAccount =
+              was?.provider === 'twilio' && was.twilio?.account_sid === rest.account_sid;
+            sms.view = {
+              ...sms.view,
+              ready: false,
+              monthly_cap: Number(b.monthly_cap),
+              settings: {
+                provider: 'twilio',
+                mode: null,
+                base_url: null,
+                username: null,
+                password: 'not_set',
+                twilio: {
+                  account_sid: String(rest.account_sid),
+                  auth_token:
+                    b.auth_token !== undefined || (sameAccount && was.twilio?.auth_token === 'set')
+                      ? 'set'
+                      : 'not_set',
+                  from: typeof rest.from === 'string' ? rest.from : null,
+                  messaging_service_sid:
+                    typeof rest.messaging_service_sid === 'string'
+                      ? rest.messaging_service_sid
+                      : null,
+                },
+                country: String(rest.country),
+                monthly_cap: Number(rest.monthly_cap),
+                status: 'untested',
+                last_verified_at: null,
+                last_error: null,
+                updated_at: new Date().toISOString(),
+              },
+            };
+            return json(sms.view);
+          }
           sms.view = {
             ...sms.view,
             ready: false,
             monthly_cap: Number(b.monthly_cap),
             settings: {
+              provider: 'sms_gate',
+              twilio: null,
               mode: rest.mode as SmsMode,
               base_url:
                 rest.mode === 'cloud'
@@ -2574,7 +2612,10 @@ export function installFakeApi(state: FakeState) {
                     ? rest.base_url
                     : '',
               username: String(rest.username),
-              password: password !== undefined || was?.password === 'set' ? 'set' : 'not_set',
+              password:
+                password !== undefined || (was?.provider !== 'twilio' && was?.password === 'set')
+                  ? 'set'
+                  : 'not_set',
               country: String(rest.country),
               monthly_cap: Number(rest.monthly_cap),
               status: 'untested',

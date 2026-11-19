@@ -2,7 +2,7 @@ import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
 import type pg from 'pg';
 import { deriveKey, KEK_PURPOSE } from './master.js';
 import { mailboxPasswordAad } from './mailbox-password.js';
-import { smsPasswordAad } from './sms-password.js';
+import { smsPasswordAad, twilioTokenAad } from './sms-password.js';
 import { aiReaderKeyAad } from './ai-reader-key.js';
 import { shareLinkCopyAad } from './share-link-copy.js';
 import { uploadRequestCopyAad } from './upload-request-copy.js';
@@ -97,6 +97,21 @@ export const MASTER_SEALED = [
     bind: ['mode', 'base_url', 'username'],
     aad: (id: string, row: Readonly<Record<string, string>>) =>
       smsPasswordAad(id, row.mode ?? '', row.base_url ?? '', row.username ?? ''),
+  },
+  // packages/crypto/src/sms-password.ts (sealTwilioToken, used by the API's
+  // SmsService): the household's Twilio Auth Token, set in Settings
+  // (0.9.0-dev.71), under the same key as SMS Gate's password
+  {
+    name: 'twilioTokens',
+    purpose: 'sms-credentials',
+    table: 'sms_settings',
+    key: 'household_id',
+    column: 'twilio_token_encrypted',
+    // The Account SID it was typed for is bound in too: a token kept for one
+    // account never signs in as another.
+    bind: ['twilio_account_sid'],
+    aad: (id: string, row: Readonly<Record<string, string>>) =>
+      twilioTokenAad(id, row.twilio_account_sid ?? ''),
   },
   // packages/crypto/src/share-link-copy.ts (sealShareLinkCopy, used by the
   // API's ShareService): what a link's maker was handed as it was made, kept
@@ -469,6 +484,7 @@ async function rekey(
     smtpPasswords: 0,
     mailInPasswords: 0,
     smsPasswords: 0,
+    twilioTokens: 0,
     shareLinkCopies: 0,
     uploadRequestCopies: 0,
     aiReaderKeys: 0,

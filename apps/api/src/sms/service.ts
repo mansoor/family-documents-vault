@@ -1,14 +1,15 @@
 import { lookup } from 'node:dns/promises';
 import { isIP } from 'node:net';
-import { openSmsPassword, sealSmsPassword } from '@fdv/crypto';
+import { openSmsSecret, sealSmsPassword, sealTwilioToken } from '@fdv/crypto';
 import {
   appendAudit,
   markSms,
   sendSms,
-  smsGate,
   smsMonthCount,
   smsProblemWords,
+  smsProviders,
   SmsProviderError,
+  smsVia,
   withPrincipal,
   withSystem,
   type Db,
@@ -20,6 +21,7 @@ import {
   type SmsWay,
 } from '@fdv/db';
 import {
+  E164,
   isLoopbackName,
   isPhoneCountry,
   isPrivateAddress,
@@ -31,11 +33,16 @@ import {
   SMS_DEFAULT_COUNTRY,
   SMS_TEST_TEXT,
   SMS_TEST_WAIT_SECONDS,
+  TWILIO_ACCOUNT_SID,
+  TWILIO_MESSAGING_SERVICE_SID,
+  type SmsGateSettingsInput,
   type SmsMode,
   type SmsSettingsInput,
   type SmsSettingsView,
   type SmsState,
   type SmsTestResult,
+  type SmsVia,
+  type TwilioSettingsInput,
 } from '@fdv/shared';
 import { sql } from 'kysely';
 import type { AlertRequest } from '../alert-job.js';
@@ -61,6 +68,12 @@ import { cleanWords } from '@fdv/db';
  * never its words — counted against the household's monthly cap on the
  * family's own calendar. Since notifications by text (SMS2) the worker
  * sends too, through the same `sendSms` (@fdv/db): one cap, one log.
+ *
+ * Since 0.9.0-dev.71 an owner may choose Twilio instead of SMS Gate: its
+ * Account SID, its Auth Token (sealed as SMS Gate's password is, with the
+ * household and Account SID bound in), and a From number or a Messaging
+ * Service. One provider at a time: switching clears the other's settings,
+ * secret and all, and waits for a test of its own.
  */
 
 /** Where a cloud or private server's name is, as the vault would reach it. */
@@ -81,9 +94,17 @@ export const notSetUp = () =>
 /** A control character: never in a sign-in. */
 const CONTROL = /\p{Cc}/u;
 
-/** What a text that failed on the phone is said as: the phone's own words beside ours. */
-const failedWords = (error: string | undefined) =>
-  `The phone couldn’t send the text. Check it has signal and credit.${error ? ` SMS Gate said: ${error}` : ''}`;
+/** What a text that failed is said as: the provider's own words beside ours. */
+const failedWords = (via: SmsVia, error: string | undefined) =>
+  via === 'twilio'
+    ? `Twilio couldn’t deliver the text.${error ? ` ${error}.` : ' Check the number, and the logs in the Twilio Console.'}`
+    : `The phone couldn’t send the text. Check it has signal and credit.${error ? ` SMS Gate said: ${error}` : ''}`;
+
+/** A control character, or a space: never in a Twilio Auth Token. */
+const NOT_A_TOKEN = /[\p{Cc}\s]/u;
+
+/** A number as typed for Twilio's From, as E.164: "+44 7700 900123" is "+447700900123". */
+const fromNumber = (typed: string) => typed.replace(/[\s().-]/g, '');
 
 /** The message an owner, or whoever asked for a text, is given when it was not sent. */
 const notSent = (words: string) =>
@@ -122,7 +143,7 @@ export class SmsService {
     opts: SmsOptions = {},
   ) {
     this.key = opts.key ?? null;
-    this.provider = opts.provider ?? smsGate;
+    this.provider = opts.provider ?? smsProviders;
     this.resolve = opts.resolve ?? resolveHost;
     this.alert = opts.alert ?? (async () => undefined);
     this.testWaitMs = opts.testWaitMs ?? SMS_TEST_WAIT_SECONDS * 1000;
@@ -154,9 +175,13 @@ export class SmsService {
       const row = await trx
         .selectFrom('sms_settings')
         .select([
+          'provider',
           'mode',
           'base_url',
           'username',
+          'twilio_account_sid',
+          'twilio_from',
+          'twilio_messaging_service_sid',
           'country',
           'monthly_cap',
           'status',
@@ -164,16 +189,28 @@ export class SmsService {
           'last_error',
           'updated_at',
           sql<boolean>`password_encrypted is not null`.as('has_password'),
+          sql<boolean>`twilio_token_encrypted is not null`.as('has_token'),
         ])
         .executeTakeFirst();
       const sent = await smsMonthCount(trx);
+      const twilio = row?.provider === 'twilio';
       return {
         settings: row
           ? {
-              mode: row.mode,
-              base_url: row.base_url,
-              username: row.username,
-              password: row.has_password ? 'set' : 'not_set',
+              provider: row.provider,
+              mode: twilio ? null : row.mode,
+              base_url: twilio ? null : row.base_url,
+              username: twilio ? null : row.username,
+              password: !twilio && row.has_password ? 'set' : 'not_set',
+              twilio:
+                twilio && row.twilio_account_sid
+                  ? {
+                      account_sid: row.twilio_account_sid,
+                      auth_token: row.has_token ? 'set' : 'not_set',
+                      from: row.twilio_from,
+                      messaging_service_sid: row.twilio_messaging_service_sid,
+                    }
+                  : null,
               country: row.country,
               monthly_cap: row.monthly_cap,
               status: row.status,
@@ -182,7 +219,8 @@ export class SmsService {
               updated_at: row.updated_at.toISOString(),
             }
           : null,
-        ready: row !== undefined && row.status === 'ok' && row.has_password,
+        ready:
+          row !== undefined && row.status === 'ok' && (twilio ? row.has_token : row.has_password),
         sent_this_month: sent,
         monthly_cap: row?.monthly_cap ?? SMS_DEFAULT_CAP,
         cloud_url: SMS_CLOUD_URL,
@@ -244,21 +282,8 @@ export class SmsService {
     return href.replace(/\/+$/, '');
   }
 
-  /**
-   * PUT /sms/settings: the household's SMS Gate, as an owner sets it up.
-   * The password, when given, is sealed with the household, mode, address
-   * and sign-in bound in; left out, the one set is kept — unless one of
-   * those changed, when it is typed again. Saved, the settings wait for a
-   * test if anything that reaches SMS Gate changed; a new limit or country
-   * alone keeps a test that passed.
-   */
-  async put(p: Principal, input: SmsSettingsInput, meta: RequestMeta): Promise<SmsSettingsView> {
-    if (p.role !== 'owner') throw ownersOnly();
-    const mode = input.mode;
-    const baseUrl = await this.address(mode, input.base_url);
-    const username = input.username.trim();
-    if (!username) throw bad('Type the username the SMS Gate app shows.');
-    if (CONTROL.test(username)) throw bad('The username can’t have a line break or a tab in it.');
+  /** The country and the month's limit, as any provider's settings keep them, or why not. */
+  private common(input: { country: string; monthly_cap: number }): string {
     const country = input.country.trim().toUpperCase();
     if (!isPhoneCountry(country)) throw bad('Choose the country your family’s numbers are in.');
     if (
@@ -268,6 +293,39 @@ export class SmsService {
     ) {
       throw bad(`The most texts in a month is a number from ${SMS_CAP_MIN} to ${SMS_CAP_MAX}.`);
     }
+    return country;
+  }
+
+  /**
+   * PUT /sms/settings: the household's texts, as an owner sets them up —
+   * SMS Gate, or (0.9.0-dev.71) Twilio. Saved, the settings wait for a test
+   * if anything that reaches the provider changed, the provider itself
+   * among them; a new limit or country alone keeps a test that passed.
+   */
+  async put(p: Principal, input: SmsSettingsInput, meta: RequestMeta): Promise<SmsSettingsView> {
+    if (p.role !== 'owner') throw ownersOnly();
+    return input.provider === 'twilio'
+      ? this.putTwilio(p, input, meta)
+      : this.putSmsGate(p, input, meta);
+  }
+
+  /**
+   * The household's SMS Gate. The password, when given, is sealed with the
+   * household, mode, address and sign-in bound in; left out, the one set is
+   * kept — unless one of those changed, or texts went through Twilio, when
+   * it is typed again. Twilio's settings, its token among them, are cleared.
+   */
+  private async putSmsGate(
+    p: Principal,
+    input: SmsGateSettingsInput,
+    meta: RequestMeta,
+  ): Promise<SmsSettingsView> {
+    const mode = input.mode;
+    const baseUrl = await this.address(mode, input.base_url);
+    const username = input.username.trim();
+    if (!username) throw bad('Type the username the SMS Gate app shows.');
+    if (CONTROL.test(username)) throw bad('The username can’t have a line break or a tab in it.');
+    const country = this.common(input);
     const key = this.key;
     if (!key) throw new ApiError(503, 'unavailable', 'The vault can’t keep a password just now.');
     const password = input.password;
@@ -276,6 +334,7 @@ export class SmsService {
       const before = await trx
         .selectFrom('sms_settings')
         .select([
+          'provider',
           'mode',
           'base_url',
           'username',
@@ -284,10 +343,14 @@ export class SmsService {
         .forUpdate()
         .executeTakeFirst();
       // The password was kept for one mode, address and sign-in alone: any
-      // of them changed, it is typed again, for the new one.
+      // of them changed, it is typed again, for the new one. Coming from
+      // Twilio there is none: SMS Gate's went as Twilio was chosen.
       const moved =
         before !== undefined &&
-        (before.mode !== mode || before.base_url !== baseUrl || before.username !== username);
+        (before.provider !== 'sms_gate' ||
+          before.mode !== mode ||
+          before.base_url !== baseUrl ||
+          before.username !== username);
       if (password === undefined && (!before?.has_password || moved)) {
         throw new ApiError(
           422,
@@ -300,9 +363,15 @@ export class SmsService {
       // Anything that reaches SMS Gate changed: it waits for a test of its own.
       reached = before === undefined || moved || password !== undefined;
       const values = {
+        provider: 'sms_gate' as const,
         mode,
         base_url: baseUrl,
         username,
+        // One provider at a time: Twilio's settings go, its token with them.
+        twilio_account_sid: null,
+        twilio_from: null,
+        twilio_messaging_service_sid: null,
+        twilio_token_encrypted: null,
         country,
         monthly_cap: input.monthly_cap,
         updated_by: p.accountId,
@@ -350,11 +419,140 @@ export class SmsService {
   }
 
   /**
-   * Whoever controls SMS Gate reads every text the vault sends, the codes
-   * that confirm the family's numbers among them: the other owners are told
-   * when where it goes changes, as they are of the mail server.
+   * The household's Twilio account (0.9.0-dev.71): its Account SID, its
+   * Auth Token — sealed as SMS Gate's password is, with the household and
+   * the Account SID bound in; left out, the one set is kept, unless the
+   * Account SID changed or texts went through SMS Gate — and a From number
+   * or a Messaging Service, exactly one. SMS Gate's settings, its password
+   * among them, are cleared.
    */
-  private async tellOtherOwners(trx: Db, p: Principal, mode: SmsMode): Promise<void> {
+  private async putTwilio(
+    p: Principal,
+    input: TwilioSettingsInput,
+    meta: RequestMeta,
+  ): Promise<SmsSettingsView> {
+    const accountSid = input.account_sid.trim();
+    if (!TWILIO_ACCOUNT_SID.test(accountSid)) {
+      throw bad(
+        'Type the Account SID the Twilio Console shows: AC followed by 32 letters and digits.',
+      );
+    }
+    const typedFrom = (input.from ?? '').trim();
+    const typedService = (input.messaging_service_sid ?? '').trim();
+    if ((typedFrom === '') === (typedService === '')) {
+      throw bad('Type either the number texts come from, or a Messaging Service SID: one of them.');
+    }
+    const from = typedFrom ? fromNumber(typedFrom) : null;
+    if (from !== null && !E164.test(from)) {
+      throw bad(
+        'Type the number texts come from with its country code, such as +447700900123: one of your Twilio numbers.',
+      );
+    }
+    const service = typedService || null;
+    if (service !== null && !TWILIO_MESSAGING_SERVICE_SID.test(service)) {
+      throw bad(
+        'Type the Messaging Service SID the Twilio Console shows: MG followed by 32 letters and digits.',
+      );
+    }
+    const token = input.auth_token;
+    if (token !== undefined && (NOT_A_TOKEN.test(token) || token.length > 200)) {
+      throw bad('The Auth Token can’t have a space, a line break or a tab in it.');
+    }
+    const country = this.common(input);
+    const key = this.key;
+    if (!key) throw new ApiError(503, 'unavailable', 'The vault can’t keep a password just now.');
+    await withPrincipal(this.db, p, async (trx) => {
+      const before = await trx
+        .selectFrom('sms_settings')
+        .select([
+          'provider',
+          'twilio_account_sid',
+          'twilio_from',
+          'twilio_messaging_service_sid',
+          sql<boolean>`twilio_token_encrypted is not null`.as('has_token'),
+        ])
+        .forUpdate()
+        .executeTakeFirst();
+      // The token was kept for one account alone: another, or coming from
+      // SMS Gate (whose settings had none), it is typed again.
+      const moved =
+        before !== undefined &&
+        (before.provider !== 'twilio' || before.twilio_account_sid !== accountSid);
+      if (token === undefined && (!before?.has_token || moved)) {
+        throw new ApiError(
+          422,
+          'sms_password_needed',
+          before?.has_token
+            ? 'Type the Auth Token again for the new Account SID.'
+            : 'Type the Auth Token the Twilio Console shows.',
+        );
+      }
+      const senderChanged =
+        before === undefined ||
+        before.twilio_from !== from ||
+        before.twilio_messaging_service_sid !== service;
+      // Anything that reaches Twilio changed: it waits for a test of its own.
+      const reached = before === undefined || moved || senderChanged || token !== undefined;
+      const values = {
+        provider: 'twilio' as const,
+        // One provider at a time: SMS Gate's settings go, its password with them.
+        mode: null,
+        base_url: null,
+        username: null,
+        password_encrypted: null,
+        twilio_account_sid: accountSid,
+        twilio_from: from,
+        twilio_messaging_service_sid: service,
+        country,
+        monthly_cap: input.monthly_cap,
+        updated_by: p.accountId,
+        updated_at: new Date(),
+        ...(token !== undefined
+          ? {
+              twilio_token_encrypted: sealTwilioToken(key, token, p.householdId, { accountSid }),
+            }
+          : {}),
+        ...(reached
+          ? { status: 'untested' as const, last_verified_at: null, last_error: null }
+          : {}),
+      };
+      if (before) {
+        await trx.updateTable('sms_settings').set(values).execute();
+      } else {
+        await trx
+          .insertInto('sms_settings')
+          .values({ household_id: p.householdId, ...values })
+          .execute();
+      }
+      await appendAudit(trx, {
+        householdId: p.householdId,
+        actorAccountId: p.accountId,
+        action: 'sms.settings_saved',
+        objectType: 'household',
+        objectId: p.householdId,
+        // Which provider and how it sends, and whether the token, the account
+        // or the sender changed: never the token, the SID or the number.
+        detail: {
+          provider: 'twilio',
+          sender: service !== null ? 'messaging_service' : 'number',
+          token_changed: token !== undefined,
+          account_changed: before === undefined || moved,
+          sender_changed: senderChanged,
+          monthly_cap: input.monthly_cap,
+        },
+        ip: meta.ip,
+      });
+      if (reached) await this.tellOtherOwners(trx, p, 'twilio');
+    });
+    return this.get(p);
+  }
+
+  /**
+   * Whoever controls the provider reads every text the vault sends, the
+   * codes that confirm the family's numbers among them: the other owners
+   * are told when where it goes changes, as they are of the mail server.
+   */
+  private async tellOtherOwners(trx: Db, p: Principal, mode: SmsVia): Promise<void> {
     const me = await trx
       .selectFrom('member')
       .select('display_name')
@@ -372,7 +570,9 @@ export class SmsService {
         ? 'a phone on your home network'
         : mode === 'cloud'
           ? 'SMS Gate’s cloud relay'
-          : 'a server of your own';
+          : mode === 'twilio'
+            ? 'a Twilio account'
+            : 'a server of your own';
     await this.alert({
       householdId: p.householdId,
       accountIds: others.map((o) => o.account_id),
@@ -381,7 +581,7 @@ export class SmsService {
     });
   }
 
-  /** DELETE /sms/settings: SMS Gate forgotten, password and all. No text is sent after. */
+  /** DELETE /sms/settings: the provider forgotten, password or token and all. No text is sent after. */
   async remove(p: Principal, meta: RequestMeta): Promise<SmsSettingsView> {
     if (p.role !== 'owner') throw ownersOnly();
     await withPrincipal(this.db, p, async (trx) => {
@@ -408,11 +608,19 @@ export class SmsService {
     return (fn) => withSystem(this.db, householdId, fn);
   }
 
+  /** How a send opens the provider's secret, and whatever sends. */
+  private way(key: Buffer): SmsWay {
+    return {
+      open: (sealed, household, to) => openSmsSecret(key, sealed, household, to),
+      provider: this.provider,
+    };
+  }
+
   /**
-   * Writes a text's row and asks SMS Gate to send it (`sendSms`, @fdv/db,
-   * which the worker's texts go through too): refused, with nothing
-   * written, when the household has no SMS Gate, or one no test has passed
-   * (a test excepted), or this month's texts are all sent.
+   * Writes a text's row and asks the provider to send it (`sendSms`,
+   * @fdv/db, which the worker's texts go through too): refused, with
+   * nothing written, when the household has no provider set up, or one no
+   * test has passed (a test excepted), or this month's texts are all sent.
    */
   private async dispatch(
     householdId: string,
@@ -420,11 +628,7 @@ export class SmsService {
   ): Promise<Exclude<SmsOutcome, { refused: unknown }>> {
     const key = this.key;
     if (!key) throw notSetUp();
-    const way: SmsWay = {
-      open: (sealed, household, to) => openSmsPassword(key, sealed, household, to),
-      provider: this.provider,
-    };
-    const d = await sendSms(this.vault(householdId), way, householdId, r);
+    const d = await sendSms(this.vault(householdId), this.way(key), householdId, r);
     if ('refused' in d) {
       if (d.refused === 'cap_reached' && d.links === true) {
         throw new ApiError(
@@ -446,15 +650,18 @@ export class SmsService {
   }
 
   /**
-   * Sends one text through the household's SMS Gate: the one way the vault
+   * Sends one text through the household's provider: the one way the vault
    * sends any. Refused while text messages are not set up and tested
    * (`409 sms_not_set_up`), past the month's limit (`409 sms_cap_reached`),
-   * or when SMS Gate does not take it (`503 sms_not_sent`, in plain words).
+   * or when the provider does not take it (`503 sms_not_sent`, in plain
+   * words).
    */
   async send(householdId: string, r: SmsRequest): Promise<SmsDone> {
     const d = await this.dispatch(householdId, r);
     if ('problem' in d) {
-      throw notSent(smsProblemWords(d.problem.problem, d.settings.mode, d.problem.status));
+      throw notSent(
+        smsProblemWords(d.problem.problem, smsVia(d.settings), d.problem.status, d.problem.code),
+      );
     }
     return d.sent;
   }
@@ -464,7 +671,7 @@ export class SmsService {
    * for a code whose failure is told to somebody else, in their own words —
    * a link's recipient, or an invitation's maker. `not_set_up` and
    * `cap_reached` wrote nothing and sent nothing; `not_sent` was written,
-   * and SMS Gate never took it.
+   * and the provider never took it.
    */
   async attempt(
     householdId: string,
@@ -474,11 +681,7 @@ export class SmsService {
   > {
     const key = this.key;
     if (!key) return { failed: 'not_set_up', words: notSetUp().message };
-    const way: SmsWay = {
-      open: (sealed, household, to) => openSmsPassword(key, sealed, household, to),
-      provider: this.provider,
-    };
-    const d = await sendSms(this.vault(householdId), way, householdId, r);
+    const d = await sendSms(this.vault(householdId), this.way(key), householdId, r);
     if ('refused' in d) {
       return d.refused === 'cap_reached'
         ? {
@@ -490,7 +693,12 @@ export class SmsService {
     if ('problem' in d) {
       return {
         failed: 'not_sent',
-        words: smsProblemWords(d.problem.problem, d.settings.mode, d.problem.status),
+        words: smsProblemWords(
+          d.problem.problem,
+          smsVia(d.settings),
+          d.problem.status,
+          d.problem.code,
+        ),
       };
     }
     return { sent: d.sent };
@@ -498,10 +706,11 @@ export class SmsService {
 
   /**
    * POST /sms/settings/test: a test text to the number an owner types,
-   * through the settings saved. It passes once SMS Gate has sent it, within
-   * SMS_TEST_WAIT_SECONDS: then the vault sends other texts. Failed, or
-   * not sent in time, Settings says why in plain words, and nothing else
-   * is sent until a test passes.
+   * through the settings saved. It passes once the provider has sent it,
+   * within SMS_TEST_WAIT_SECONDS — asked after its text the same way for
+   * SMS Gate and Twilio — and then the vault sends other texts. Failed, or
+   * not sent in time, Settings says why in plain words, and nothing else is
+   * sent until a test passes.
    */
   async test(p: Principal, typed: string, meta: RequestMeta): Promise<SmsTestResult> {
     if (p.role !== 'owner') throw ownersOnly();
@@ -514,15 +723,23 @@ export class SmsService {
       );
     }
     const d = await this.dispatch(p.householdId, { to, kind: 'test', text: SMS_TEST_TEXT });
-    const mode = d.settings.mode;
+    const via = smsVia(d.settings);
     let state: SmsState;
     let words: string;
     let ok = false;
     if ('problem' in d) {
       state = 'not_sent';
-      words = smsProblemWords(d.problem.problem, mode, d.problem.status);
+      words = smsProblemWords(d.problem.problem, via, d.problem.status, d.problem.code);
+    } else if (d.unconfirmed === true || d.sent.providerId === null) {
+      // The provider did not say whether it took it: it may still arrive, and
+      // there is nothing to ask after. Not a pass; its row keeps its words.
+      state = d.sent.state;
+      words = smsProblemWords('unconfirmed', via);
     } else {
-      // Asked after until SMS Gate says it went, or failed, or the wait is over.
+      // Asked after until the provider says it went, or failed, or the wait
+      // is over: each ask within what is left of the wait, never tried again
+      // inside it, so the test answers in time.
+      const providerId = d.sent.providerId;
       state = d.sent.state;
       let error: string | undefined;
       let problem: SmsProviderError | null = null;
@@ -530,11 +747,15 @@ export class SmsService {
       while (state !== 'sent' && state !== 'delivered' && state !== 'failed') {
         if (Date.now() >= deadline) break;
         await new Promise((r) => setTimeout(r, Math.min(this.pollMs, deadline - Date.now())));
+        const left = deadline - Date.now();
+        if (left <= 0) break;
         try {
-          const now = await d.provider.state(d.sent.providerId);
+          const now = await d.provider.state(providerId, { timeoutMs: left, retry: false });
           state = now.state;
           error = now.error;
         } catch (err) {
+          // An ask cut short by the wait's end: still waiting, as the words below say.
+          if (err instanceof SmsProviderError && err.problem === 'timeout') break;
           problem =
             err instanceof SmsProviderError
               ? err
@@ -546,20 +767,24 @@ export class SmsService {
         ok = true;
         words = 'The test text went. The vault can send texts now.';
       } else if (problem) {
-        words = smsProblemWords(problem.problem, mode, problem.status);
+        words = smsProblemWords(problem.problem, via, problem.status, problem.code);
       } else if (state === 'failed') {
-        words = failedWords(cleanWords(error, 200));
+        words = failedWords(via, cleanWords(error, 200));
+      } else if (via === 'twilio') {
+        words = `Twilio took the text, but hadn’t sent it after ${Math.round(this.testWaitMs / 1000)} seconds. Check the message in the Twilio Console’s logs, then test again.`;
       } else {
         words = `SMS Gate took the text, but the phone hadn’t sent it after ${Math.round(this.testWaitMs / 1000)} seconds. Check the phone has signal and the app is running, then test again.`;
       }
       await markSms(this.vault(p.householdId), d.sent.messageId, {
         state,
-        ...(state === 'failed' ? { error: failedWords(cleanWords(error, 200)) } : {}),
+        ...(state === 'failed' ? { error: failedWords(via, cleanWords(error, 200)) } : {}),
       });
     }
+    const s = d.settings;
     await withSystem(this.db, p.householdId, async (trx) => {
-      // The settings tested, and no others: changed since, they wait for a
-      // test of their own.
+      // The settings tested, and no others: changed since — another provider,
+      // address, sign-in, sender, password or token — they wait for a test of
+      // their own.
       await trx
         .updateTable('sms_settings')
         .set(
@@ -567,10 +792,19 @@ export class SmsService {
             ? { status: 'ok', last_verified_at: new Date(), last_error: null }
             : { status: 'failed', last_error: words },
         )
-        .where('mode', '=', d.settings.mode)
-        .where('base_url', '=', d.settings.base_url)
-        .where('username', '=', d.settings.username)
-        .where('password_encrypted', '=', d.settings.password_encrypted as Buffer)
+        .where('provider', '=', s.provider)
+        .where('mode', 'is not distinct from', s.mode)
+        .where('base_url', 'is not distinct from', s.base_url)
+        .where('username', 'is not distinct from', s.username)
+        .where('password_encrypted', 'is not distinct from', s.password_encrypted)
+        .where('twilio_account_sid', 'is not distinct from', s.twilio_account_sid)
+        .where('twilio_from', 'is not distinct from', s.twilio_from)
+        .where(
+          'twilio_messaging_service_sid',
+          'is not distinct from',
+          s.twilio_messaging_service_sid,
+        )
+        .where('twilio_token_encrypted', 'is not distinct from', s.twilio_token_encrypted)
         .execute();
       await appendAudit(trx, {
         householdId: p.householdId,
@@ -578,7 +812,7 @@ export class SmsService {
         action: 'sms.settings_tested',
         objectType: 'household',
         objectId: p.householdId,
-        // Whether it went, and SMS Gate's word: never the number.
+        // Whether it went, and the provider's word: never the number.
         detail: { ok, state },
         ip: meta.ip,
       });

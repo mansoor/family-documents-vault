@@ -6,6 +6,23 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.9.0-dev.71] - 2026-11-19 — text messages through Twilio as well as SMS Gate
+
+### Added
+
+- **Twilio for text messages.** In **Settings → Text messages** an owner now chooses who sends the household's texts: **SMS Gate for Android**, as before, or **Twilio**, a paid service. For Twilio, paste the **Account SID** and **Auth Token** from the Twilio Console, and give either the **From number** or a **Messaging Service SID**. The Auth Token is kept encrypted as SMS Gate's password is, never shown again, and never in an export or a log. Twilio charges your own Twilio account for each text; the month's limit still applies, and links still take half of it at most. Everything the vault texts — codes, alerts, reminders, links — goes through whichever you chose.
+- How each text is doing is asked of Twilio, as it is of SMS Gate: no webhooks, nothing that has to reach the vault from the internet. Twilio's reasons a text failed (an unreachable phone, a STOP reply, a number that can't take texts, a sender not registered for the US) are said in plain words by their error code; Twilio's own words, which can hold the number, are never kept. A busy Twilio (429) is tried again, twice, after a short wait. A text is never sent twice: if Twilio answers a send with a server error, or the connection breaks or no answer comes, it may have taken the text, so the vault counts it as sent with its delivery unknown and doesn't send it again by itself. Send a test always answers within its 20 seconds, however slowly Twilio answers.
+
+### Changed
+
+- **Switching provider waits for a test.** Choosing another provider, or a new account, number, Messaging Service, password or token, turns texts off until **Send a test** goes through it. One provider at a time: switching forgets the other's settings, and its password or Auth Token.
+- **Turn off text messages** says which provider's secret it forgets.
+- `rotate-master-key` and a restore of an older backup move Twilio's Auth Token onto the current key with the other secrets ("text messages (Twilio) Auth Token").
+
+### Database
+
+- Migration 0118: `sms_settings` says which provider sends (`provider`: `sms_gate` or `twilio`); one provider's settings at a time, enforced by the database (SMS Gate's mode, address, username and password are empty for Twilio, and Twilio's columns for SMS Gate); Twilio's Account SID, From number or Messaging Service SID (exactly one), and its Auth Token, sealed with the household and the Account SID bound in. A new provider, sender or token waits for a test of its own, as a new address or password did; `sms_ready()` asks for the chosen provider's secret.
+
 ## [0.9.0-dev.70] - 2026-11-19 — the cabinet holds every document
 
 ### Fixed

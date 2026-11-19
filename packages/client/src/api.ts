@@ -2331,22 +2331,29 @@ export function createApi(http: Http) {
      * when `ready`.
      */
     smsStatus: (token: string) => request<SmsStatusView>('/api/v1/sms/status', { token }),
-    /** The household's SMS Gate, and this month's texts: an owner's (`403` for anybody else). */
+    /**
+     * Who sends the household's texts — SMS Gate, or (0.9.0-dev.71) Twilio,
+     * `settings.provider` — and this month's texts: an owner's (`403` for
+     * anybody else).
+     */
     smsSettings: (token: string) => request<SmsSettingsView>('/api/v1/sms/settings', { token }),
     /**
-     * SMS Gate set up or changed (the step-up first): saved untested when
-     * anything that reaches it changed. `password` left out keeps the one
-     * set (`422 sms_password_needed` for a new address or sign-in); it is
-     * never returned.
+     * SMS Gate, or (0.9.0-dev.71) Twilio with `provider: 'twilio'`, set up
+     * or changed (the step-up first): saved untested when anything that
+     * reaches the provider changed, the provider itself included, and the
+     * other provider's settings cleared. `password` (SMS Gate) or
+     * `auth_token` (Twilio) left out keeps the one set (`422
+     * sms_password_needed` for a new address, sign-in or Account SID, or
+     * another provider); neither is ever returned.
      */
     setSmsSettings: (token: string, body: SmsSettingsInput) =>
       request<SmsSettingsView>('/api/v1/sms/settings', { method: 'PUT', body, token }),
-    /** SMS Gate forgotten, password and all: no text is sent after. */
+    /** The provider forgotten, password or Auth Token and all: no text is sent after. */
     removeSmsSettings: (token: string) =>
       request<SmsSettingsView>('/api/v1/sms/settings', { method: 'DELETE', token }),
     /**
-     * A test text to `number`, through the settings saved: `ok` once SMS Gate
-     * has sent it (up to 20 seconds); then the vault sends other texts.
+     * A test text to `number`, through the settings saved: `ok` once the
+     * provider has sent it (up to 20 seconds); then the vault sends other texts.
      */
     testSms: (token: string, number: string) =>
       request<SmsTestResult>('/api/v1/sms/settings/test', {

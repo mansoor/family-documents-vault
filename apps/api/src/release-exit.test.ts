@@ -1347,19 +1347,32 @@ const RULES: Record<string, Rule> = {
   // Text messages (0.9.0, SMS1): the household's SMS Gate, the owners'
   // alone — one an attacker writes would carry the codes that confirm the
   // family's numbers, so last. Whether texts can be sent: anybody signed in.
+  // Twilio (0.9.0-dev.71) is the same PUT with `provider: 'twilio'`, tried
+  // too: an attacker's own Twilio account would carry the codes as well.
   'GET /api/v1/sms/status': { who: 'signedIn' },
   'GET /api/v1/sms/settings': { who: 'owners' },
   'PUT /api/v1/sms/settings': {
     who: 'owners',
     last: true,
-    body: () => ({
-      mode: 'local',
-      base_url: 'http://192.168.66.6:8080',
-      username: 'attacker',
-      password: 'attacker-pw',
-      country: 'GB',
-      monthly_cap: 100000,
-    }),
+    bodies: () => [
+      {
+        mode: 'local',
+        base_url: 'http://192.168.66.6:8080',
+        username: 'attacker',
+        password: 'attacker-pw',
+        country: 'GB',
+        monthly_cap: 100000,
+      },
+      {
+        provider: 'twilio',
+        account_sid: `AC${'a'.repeat(32)}`,
+        auth_token: 'attacker-twilio-token',
+        from: '+447700900666',
+        messaging_service_sid: null,
+        country: 'GB',
+        monthly_cap: 100000,
+      },
+    ],
   },
   'DELETE /api/v1/sms/settings': { who: 'owners', last: true },
   'POST /api/v1/sms/settings/test': { who: 'owners', body: () => ({ number: '+447700900666' }) },

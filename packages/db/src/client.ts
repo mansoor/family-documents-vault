@@ -2386,10 +2386,18 @@ export interface Schema {
    */
   sms_settings: {
     household_id: string;
-    mode: 'local' | 'cloud' | 'private';
-    base_url: string;
-    username: string;
+    /** Who sends the texts (0118, 0.9.0-dev.71). */
+    provider: Generated<'sms_gate' | 'twilio'>;
+    /** SMS Gate's; null for Twilio (0118). */
+    mode: 'local' | 'cloud' | 'private' | null;
+    base_url: string | null;
+    username: string | null;
     password_encrypted: Buffer | null;
+    /** Twilio's (0118): the Auth Token sealed as SMS Gate's password is. */
+    twilio_account_sid: string | null;
+    twilio_from: string | null;
+    twilio_messaging_service_sid: string | null;
+    twilio_token_encrypted: Buffer | null;
     country: Generated<string>;
     monthly_cap: Generated<number>;
     status: Generated<'untested' | 'ok' | 'failed'>;

@@ -54,3 +54,52 @@ export function openSmsPassword(
     smsPasswordAad(householdId, to.mode, to.baseUrl, to.username),
   ).toString('utf8');
 }
+
+/**
+ * The Auth Token of the household's Twilio account (0.9.0-dev.71), sealed
+ * exactly as SMS Gate's password is: under the same key, with the household
+ * and the Account SID it was typed for bound in, so a token kept as the
+ * Account SID is changed never signs in as another account. Where texts
+ * come from (a number or a Messaging Service) is not bound in: the token
+ * only ever goes to Twilio, whichever sends them.
+ */
+export interface TwilioTarget {
+  accountSid: string;
+}
+
+export const twilioTokenAad = (householdId: string, accountSid: string) =>
+  `sms-twilio:${householdId}\0${accountSid}`;
+
+export function sealTwilioToken(
+  key: Buffer,
+  token: string,
+  householdId: string,
+  to: TwilioTarget,
+): Buffer {
+  return sealBound(key, Buffer.from(token, 'utf8'), twilioTokenAad(householdId, to.accountSid));
+}
+
+export function openTwilioToken(
+  key: Buffer,
+  sealed: Buffer,
+  householdId: string,
+  to: TwilioTarget,
+): string {
+  return openBound(key, sealed, twilioTokenAad(householdId, to.accountSid)).toString('utf8');
+}
+
+/** What a provider's secret was sealed for: SMS Gate's password, or Twilio's token. */
+export type SmsSecretTarget =
+  (SmsTarget & { provider?: 'sms_gate' | undefined }) | (TwilioTarget & { provider: 'twilio' });
+
+/** Opens whichever provider's secret it is: what a send does with the household's settings. */
+export function openSmsSecret(
+  key: Buffer,
+  sealed: Buffer,
+  householdId: string,
+  to: SmsSecretTarget,
+): string {
+  return to.provider === 'twilio'
+    ? openTwilioToken(key, sealed, householdId, to)
+    : openSmsPassword(key, sealed, householdId, to);
+}
