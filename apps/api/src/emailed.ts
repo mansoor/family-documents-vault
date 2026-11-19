@@ -20,6 +20,8 @@ export async function lastEmailed(
   table: 'share_link_email' | 'upload_request_email',
   column: 'share_id' | 'request_id',
   ids: readonly string[],
+  /** By email, or (0117, 0.9.0-dev.69) by text: each said on its own. */
+  way: 'email' | 'sms' = 'email',
 ): Promise<Map<string, LastEmailed>> {
   if (ids.length === 0) return new Map();
   const key = sql.ref(`e.${column}`);
@@ -30,6 +32,7 @@ export async function lastEmailed(
         on ah.account_id = e.sent_by and ah.household_id = e.household_id
       left join member m on m.id = ah.member_id
      where ${key} = any(${[...ids]}::uuid[])
+       and e.way = ${way}
      order by ${key}, e.sent_at desc`.execute(trx);
   return new Map(rows.rows.map((r) => [r.id, { to: r.to_masked, by: r.by_name }]));
 }

@@ -1,4 +1,10 @@
-import { SHARE_CODE_TRUTH, SHARE_CODE_UNAVAILABLE, zonedParts } from '@fdv/shared';
+import {
+  LINK_TEXTS_NOT_SET_UP,
+  SHARE_CODE_TRUTH,
+  SHARE_CODE_UNAVAILABLE,
+  SHARE_LINK_EMAIL_UNAVAILABLE,
+  zonedParts,
+} from '@fdv/shared';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import axe from 'axe-core';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -686,5 +692,131 @@ describe('After a restore lists paused requests too (the 5.22 review)', () => {
     fireEvent.click(within(dialog).getByRole('button', { name: 'Take it back' }));
     await screen.findByText(/is taken back\. What was sent already stays\./);
     expect(state.calls.some((c) => c.method === 'DELETE' && c.url.endsWith('/req-a'))).toBe(true);
+  });
+});
+
+/** A household whose texts are set up and tested (0.9.0, SMS1). */
+const TEXTS_READY = {
+  settings: null,
+  ready: true,
+  sent_this_month: 0,
+  monthly_cap: 200,
+  cloud_url: 'https://api.sms-gate.app/3rdparty/v1',
+};
+
+describe('a request made as a share link is (0.9.0-dev.69; the owner’s feedback of 18 Nov 2026)', () => {
+  it('a PIN in the password’s place: never both, sent as with_pin, and shown once with Copy', async () => {
+    const state = await openForm();
+    fireEvent.change(screen.getByLabelText(/^Title/), { target: { value: 'Tax papers' } });
+    const protect = screen.getByRole('group', { name: 'Protect it' });
+    const pin = within(protect).getByLabelText(/ask for a four-digit PIN/);
+    const password = within(protect).getByLabelText(/ask for a password/);
+    fireEvent.click(password);
+    fireEvent.click(pin);
+    // One or the other.
+    expect(pin).toBeChecked();
+    expect(password).not.toBeChecked();
+    expect(screen.queryByRole('button', { name: 'Make one up for me' })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Make the link' }));
+    const shown = await screen.findByTestId('request-pin');
+    expect(shown).toHaveTextContent('4821');
+    expect(within(shown).getByRole('button', { name: 'Copy the PIN' })).toBeInTheDocument();
+    expect(madeBody(state)).toMatchObject({ with_pin: true });
+    expect(madeBody(state)).not.toHaveProperty('with_password');
+    expect(screen.queryByTestId('request-password')).not.toBeInTheDocument();
+    await expectAccessible();
+  });
+
+  it('an older vault offers no PIN on a request', async () => {
+    await openForm({ uploadRequestPin: false });
+    const protect = screen.getByRole('group', { name: 'Protect it' });
+    expect(within(protect).queryByLabelText(/four-digit PIN/)).not.toBeInTheDocument();
+  });
+
+  it('Who it is for: the vault emails and texts the link once made, then says where, Copy after', async () => {
+    const state = await openForm({ operatorMail: true, sms: { view: TEXTS_READY } });
+    fireEvent.change(screen.getByLabelText(/^Title/), { target: { value: 'Tax papers' } });
+    const who = screen.getByRole('region', { name: 'Who it is for' });
+    const email = within(who).getByLabelText('Email the link to');
+    const phone = within(who).getByLabelText('Text the link to');
+    expect(phone).toHaveAttribute('type', 'tel');
+    await waitFor(() => expect(phone).toBeEnabled());
+    // What can't be sent to is said under it, and Make the link waits.
+    fireEvent.change(email, { target: { value: 'jane@' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Make the link' }));
+    expect(await within(who).findByText(/That is not an email address/)).toBeInTheDocument();
+    expect(madeBody(state)).toBeUndefined();
+    fireEvent.change(email, { target: { value: 'jane.smith@example.com' } });
+    fireEvent.change(phone, { target: { value: '07700 900123' } });
+    // A code ticked with no address yet: the link's address, to change if need be.
+    fireEvent.click(screen.getByLabelText(/email them a code/));
+    expect(screen.getByLabelText('Their email address')).toHaveValue('jane.smith@example.com');
+    fireEvent.click(screen.getByLabelText(/ask for a password/));
+    await expectAccessible();
+    fireEvent.click(screen.getByRole('button', { name: 'Make the link' }));
+
+    const handover = await screen.findByTestId('request-handover');
+    const sent = within(handover).getByRole('list', { name: 'What the vault sent' });
+    expect(within(sent).getByText('Emailed to j•••@e•••.com')).toBeInTheDocument();
+    expect(within(sent).getByText('Texted to •••• •••123')).toBeInTheDocument();
+    // The password was not in either: said, and Copy follows as the fallback.
+    expect(within(handover).getByText(/Its password was not sent with it/)).toBeInTheDocument();
+    const copy = within(handover).getByRole('button', { name: 'Copy the link' });
+    expect(sent.compareDocumentPosition(copy) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(state.requestEmails).toEqual([
+      { request_id: 'req-1', to: 'jane.smith@example.com', message: null },
+    ]);
+    expect(state.requestTexts).toEqual([{ request_id: 'req-1', to: '07700 900123' }]);
+    // Neither address is a part of the request itself.
+    expect(madeBody(state)).toMatchObject({
+      email_code: true,
+      recipient_email: 'jane.smith@example.com',
+    });
+    expect(JSON.stringify(madeBody(state))).not.toContain('07700');
+    await expectAccessible();
+  });
+
+  it('a number the vault can’t read: said, and Text the link starts with it to put right', async () => {
+    const state = await openForm({ sms: { view: TEXTS_READY } });
+    fireEvent.change(screen.getByLabelText(/^Title/), { target: { value: 'Tax papers' } });
+    const phone = screen.getByLabelText('Text the link to');
+    await waitFor(() => expect(phone).toBeEnabled());
+    // Loosely a number to the page; not to the vault.
+    fireEvent.change(phone, { target: { value: '+44 (0) 1-2' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Make the link' }));
+    const handover = await screen.findByTestId('request-handover');
+    expect(
+      within(handover).getByText(/Not texted: The vault couldn’t read that number/),
+    ).toBeVisible();
+    const again = within(handover).getByLabelText('Text the link to');
+    expect(again).toHaveValue('+44 (0) 1-2');
+    expect(again).toHaveAttribute('aria-invalid', 'true');
+    expect(within(handover).getByText(/doesn’t look like a mobile number/)).toBeInTheDocument();
+    fireEvent.change(again, { target: { value: '+44 7700 900456' } });
+    fireEvent.click(within(handover).getByRole('button', { name: 'Text the link' }));
+    expect(await within(handover).findByText('Sent to •••• •••456.')).toBeInTheDocument();
+    expect(state.requestTexts).toEqual([{ request_id: 'req-1', to: '+44 7700 900456' }]);
+  });
+
+  it('without texts or the operator’s mail, each field is off and says why; Copy stays', async () => {
+    await openForm({ operatorMail: false });
+    const who = screen.getByRole('region', { name: 'Who it is for' });
+    expect(within(who).getByLabelText('Email the link to')).toBeDisabled();
+    expect(within(who).getByText(SHARE_LINK_EMAIL_UNAVAILABLE)).toBeInTheDocument();
+    expect(within(who).getByLabelText('Text the link to')).toBeDisabled();
+    expect(within(who).getByText(LINK_TEXTS_NOT_SET_UP)).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText(/^Title/), { target: { value: 'Tax papers' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Make the link' }));
+    const handover = await screen.findByTestId('request-handover');
+    expect(within(handover).queryByRole('list', { name: 'What the vault sent' })).toBeNull();
+    expect(within(handover).getByRole('button', { name: 'Copy the link' })).toBeVisible();
+    await expectAccessible();
+  });
+
+  it('the buttons in one order: Make the link first, Cancel last', async () => {
+    await openForm();
+    const make = screen.getByRole('button', { name: 'Make the link' });
+    const cancel = screen.getByRole('link', { name: 'Cancel' });
+    expect(make.compareDocumentPosition(cancel) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 });

@@ -162,6 +162,9 @@ describe('buildCapabilities', () => {
       // 0.9.0 (LK): links and requests changed, requests shown again.
       link_changes: true,
       upload_request_email: false,
+      // 0.9.0-dev.69: links and requests texted; a PIN for a request.
+      link_texts: true,
+      upload_request_pin: true,
       // 0.9.0 (C3): where the original is, as a place in a cabinet.
       original_place: true,
       // 0.9.0 (H5): health records kept as they are; who opened a link, when.

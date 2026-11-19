@@ -31,11 +31,18 @@ import { Link, useLocation, useNavigate, useParams, useSearchParams } from 'reac
 import { api, ApiRequestError } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
 import { storedRole } from '../session.js';
-import { Button, Check, ErrorNote, Field, Select, TextArea, TopBar } from '../ui.js';
+import { Button, Check, ErrorNote, Field, Select, TextArea } from '../ui.js';
+import {
+  ChangeTrouble,
+  changeTrouble,
+  FormActions,
+  FormCard,
+  FormPage,
+  PutRightFirst,
+} from '../form-page.js';
 import {
   DEVICE_ONLY_NOTE,
   EndPicker,
-  insecureLink,
   PasswordChoice,
   SECRET_KEPT,
   SecretChoice,
@@ -43,8 +50,21 @@ import {
   type SecretChoiceValue,
 } from './Share.js';
 import { NewSecret } from './ChangeLink.js';
-import { RequestEmail, requestTarget } from './Sharing.js';
+import {
+  LinkAndSend,
+  LinkSecret,
+  readSendTo,
+  requestLinkAddress,
+  RequestEmail,
+  RequestText,
+  requestTarget,
+  sendMadeLink,
+  SendFields,
+  SentSaid,
+  type LinkSent,
+} from './LinkHandOver.js';
 import { endWords, familyZoneNow } from '../family-time.js';
+import { useLinkTexts } from '../text-messages.js';
 
 /**
  * Ask for documents (5.22): somebody outside the family — the accountant,
@@ -58,6 +78,13 @@ import { endWords, familyZoneNow } from '../family-time.js';
  * visits — 5.20's patterns), how much it takes, what kinds, and who looks
  * at what comes in. Then a card with the link and a made-up password, shown
  * once: the vault keeps neither in a form it can show again.
+ *
+ * Since 0.9.0-dev.69 (the owner's feedback of 18 Nov 2026) a request is
+ * made, changed and handed over as a share link is: "Who it is for" asks
+ * for their email address and mobile number, and the vault sends the link
+ * to each once it is made; a request may ask for a four-digit PIN instead of
+ * a password (`features.upload_request_pin`); and its form, its change page
+ * and a link's change page share one layout (form-page.tsx).
  */
 
 /** A request's choices as they are being made. */
@@ -70,6 +97,8 @@ export interface AskValue {
   /** Whose documents they probably are: a hint for whoever reviews, never shown to the sender. */
   person: string;
   end: { date: string; time: string } | null;
+  /** A four-digit PIN the vault makes up (0.9.0-dev.69): never with a password. */
+  withPin: boolean;
   withPassword: boolean;
   passwordMode: 'made' | 'typed';
   password: string;
@@ -85,6 +114,9 @@ export interface AskValue {
   accept: UploadAcceptTypes;
   reviewBy: UploadReviewBy;
   closeAfter: boolean;
+  /** Where the vault sends the link once it is made (0.9.0-dev.69): not a part of the request. */
+  sendEmail: string;
+  sendPhone: string;
 }
 
 const MB = 1024 * 1024;
@@ -97,6 +129,7 @@ const START: AskValue = {
   label: '',
   person: '',
   end: null,
+  withPin: false,
   withPassword: false,
   passwordMode: 'made',
   password: '',
@@ -111,6 +144,8 @@ const START: AskValue = {
   accept: 'standard',
   reviewBy: 'me',
   closeAfter: false,
+  sendEmail: '',
+  sendPhone: '',
 };
 
 /** A whole number typed in a text field, within its range; null when it is not one. */
@@ -124,7 +159,16 @@ function count(typed: string, min: number, max: number): number | null {
 /** What the choices come to: the end, what is wrong, and what to send when nothing is. */
 export function readAsk(
   value: AskValue,
-  ctx: { timezone: string; maxDays: number; emailCode: boolean; now?: Date },
+  ctx: {
+    timezone: string;
+    maxDays: number;
+    emailCode: boolean;
+    now?: Date;
+    /** The vault takes a PIN on a request (0.9.0-dev.69, `features.upload_request_pin`). */
+    pin?: boolean;
+    /** Where it can send the link once made (0.9.0-dev.69); left out (Change), nowhere. */
+    send?: { email: boolean; text: boolean };
+  },
 ) {
   const now = ctx.now ?? new Date();
   const { timezone, maxDays } = ctx;
@@ -138,7 +182,9 @@ export function readAsk(
   const title = value.title.trim();
   const titleProblem = title ? null : 'Say what you are asking for.';
   const items = value.items.map((i) => i.trim()).filter(Boolean);
-  const password = value.withPassword;
+  // A PIN or a password, never both (0.9.0-dev.69), as a share link's.
+  const pin = ctx.pin === true && value.withPin;
+  const password = value.withPassword && !pin;
   const typed = value.password;
   const passwordProblem =
     password && value.passwordMode === 'typed' && typed.length < UPLOAD_PASSWORD_MIN
@@ -157,12 +203,19 @@ export function readAsk(
   const filesProblem = maxFiles === null ? `A number from 1 to ${UPLOAD_REQUEST_MAX_FILES}.` : null;
   const megabytes = count(value.maxMegabytes, 1, MAX_MB);
   const sizeProblem = megabytes === null ? `A number of MB from 1 to ${MAX_MB}.` : null;
+  // Where the vault sends it once made (18 Nov 2026): not a part of the request.
+  const sendTo = readSendTo(
+    { email: value.sendEmail, phone: value.sendPhone },
+    ctx.send ?? { email: false, text: false },
+  );
   const body: UploadRequestInput | null =
     endAt &&
     !endProblem &&
     !titleProblem &&
     !passwordProblem &&
     !codeProblem &&
+    !sendTo.emailProblem &&
+    !sendTo.phoneProblem &&
     !visitsProblem &&
     maxFiles !== null &&
     megabytes !== null
@@ -173,6 +226,7 @@ export function readAsk(
           ...(value.label.trim() ? { recipient_label: value.label.trim() } : {}),
           ...(code ? { email_code: true, recipient_email: address } : {}),
           expires_at: endAt.toISOString(),
+          ...(pin ? { with_pin: true } : {}),
           ...(password
             ? value.passwordMode === 'made'
               ? { with_password: true }
@@ -201,6 +255,7 @@ export function readAsk(
     visitsProblem,
     filesProblem,
     sizeProblem,
+    sendTo,
     body,
   };
 }
@@ -250,7 +305,11 @@ export function AskForDocumentsScreen() {
       : {}),
   }));
   const set = (change: Partial<AskValue>) => setValue((v) => ({ ...v, ...change }));
-  const [made, setMade] = useState<CreatedUploadRequest | null>(null);
+  const [made, setMade] = useState<{ created: CreatedUploadRequest; sent: LinkSent[] } | null>(
+    null,
+  );
+  // The link texted to whoever it is for (0.9.0-dev.69): while texts are set up.
+  const linkTexts = useLinkTexts();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [tried, setTried] = useState(false);
@@ -302,20 +361,25 @@ export function AskForDocumentsScreen() {
 
   if (!mayAsk) {
     return (
-      <main className="page page-top has-nav">
-        <TopBar title="Ask for documents" back="/" />
-        <p className="lede">Only an owner or an adult can ask someone to send documents.</p>
-      </main>
+      <FormPage
+        title="Ask for documents"
+        back="/"
+        lede="Only an owner or an adult can ask someone to send documents."
+      />
     );
   }
 
   // Until the vault answers, the family's zone as this tab knows it — never UTC (the TZ review).
   const timezone = data?.timezone ?? familyZoneNow();
   const emailCode = data?.emailCode === true;
+  const pinOffered = caps?.features.upload_request_pin === true;
+  const sendCan = { email: caps?.features.upload_request_email === true, text: linkTexts };
   const read = readAsk(value, {
     timezone,
     maxDays: caps?.limits.share_max_days ?? SHARE_MAX_DAYS,
     emailCode,
+    pin: pinOffered,
+    send: sendCan,
   });
 
   const submit = async (e: FormEvent) => {
@@ -331,7 +395,28 @@ export function AskForDocumentsScreen() {
       const created = await guarded((t) =>
         api.createUploadRequest(t, read.body as UploadRequestInput),
       );
-      if (created) setMade(created);
+      if (created) {
+        // Sent to whoever it is for, as typed (18 Nov 2026), then handed over.
+        const r = created.request;
+        const sent = await sendMadeLink({
+          guarded,
+          email: read.sendTo.email
+            ? {
+                to: read.sendTo.email,
+                can: caps?.features.upload_request_email === true && r.emailable === true,
+                send: (t, body) => api.emailUploadRequest(t, r.id, body),
+              }
+            : null,
+          text: read.sendTo.phone
+            ? {
+                to: read.sendTo.phone,
+                can: caps?.features.link_texts === true && r.textable === true,
+                send: (t, body) => api.textUploadRequest(t, r.id, body),
+              }
+            : null,
+        });
+        setMade({ created, sent });
+      }
     } catch (err) {
       const refused = addressRefusal(err);
       if (refused) set({ emailRefused: refused });
@@ -343,33 +428,28 @@ export function AskForDocumentsScreen() {
 
   if (made) {
     return (
-      <main className="page page-top has-nav">
-        <TopBar title="Ask for documents" back={back} />
+      <FormPage title="Ask for documents" back={back}>
         <RequestHandOver
-          created={made}
+          created={made.created}
+          sent={made.sent}
           timezone={timezone}
           onDone={() => void navigate(back, { replace: true })}
         />
-      </main>
+      </FormPage>
     );
   }
 
   const person = data?.members.find((m) => m.id === value.person) ?? null;
   const items = value.items;
   return (
-    <main className="page page-top has-nav">
-      <TopBar title="Ask for documents" back={back} />
-      <p className="lede">
-        Send someone outside the family a link to put files in — your accountant, a solicitor. They
-        see nothing in the vault, and what they send waits apart from your documents until it is
-        looked at.
-      </p>
+    <FormPage
+      title="Ask for documents"
+      back={back}
+      lede="Send someone outside the family a link to put files in — your accountant, a solicitor. They see nothing in the vault, and what they send waits apart from your documents until it is looked at."
+    >
       <ErrorNote message={loadError} />
       <form className="stack ask-form" ref={form} onSubmit={(e) => void submit(e)} noValidate>
-        <section className="card stack" aria-labelledby="ask-what-h">
-          <h2 id="ask-what-h" style={{ fontSize: 18 }}>
-            What you are asking for
-          </h2>
+        <FormCard id="ask-what" title="What you are asking for">
           <Field
             id="ask-title"
             label="Title"
@@ -438,12 +518,9 @@ export function AskForDocumentsScreen() {
               {items.length === 0 ? 'Name a thing to send' : 'Add another'}
             </Button>
           </fieldset>
-        </section>
+        </FormCard>
 
-        <section className="card stack" aria-labelledby="ask-who-h">
-          <h2 id="ask-who-h" style={{ fontSize: 18 }}>
-            Who it is for
-          </h2>
+        <FormCard id="ask-who" title="Who it is for">
           <Field
             id="ask-label"
             label="Who is it for?"
@@ -453,6 +530,16 @@ export function AskForDocumentsScreen() {
             placeholder="Jane, accountant"
             onChange={(label) => set({ label })}
             hint="For your own list, and the activity log. They do not see it."
+          />
+          {/* The vault sends the link, if you like (18 Nov 2026), as a share link's. */}
+          <SendFields
+            idPrefix="ask"
+            email={value.sendEmail}
+            phone={value.sendPhone}
+            onEmail={(sendEmail) => set({ sendEmail })}
+            onPhone={(sendPhone) => set({ sendPhone })}
+            can={sendCan}
+            read={read.sendTo}
           />
           <Select
             id="ask-person"
@@ -465,12 +552,9 @@ export function AskForDocumentsScreen() {
             onChange={(p) => set({ person: p })}
             hint="Only for whoever looks at what comes in. The person sending never sees it."
           />
-        </section>
+        </FormCard>
 
-        <section className="card stack" aria-labelledby="ask-when-h">
-          <h2 id="ask-when-h" style={{ fontSize: 18 }}>
-            Keeping it safe
-          </h2>
+        <FormCard id="ask-when" title="Keeping it safe">
           <EndPicker
             idPrefix="ask"
             timezone={timezone}
@@ -488,13 +572,26 @@ export function AskForDocumentsScreen() {
             <span id="ask-protect-h" className="field-label">
               Protect it
             </span>
+            {/* A PIN (0.9.0-dev.69), as a share link may: a PIN or a password, never both. */}
+            {pinOffered && (
+              <Check
+                id="ask-pin"
+                checked={value.withPin}
+                onChange={(withPin) =>
+                  set({ withPin, ...(withPin ? { withPassword: false } : {}) })
+                }
+                label="Also ask for a four-digit PIN, which you tell them separately"
+              />
+            )}
             <Check
               id="ask-with-password"
-              checked={value.withPassword}
-              onChange={(withPassword) => set({ withPassword })}
+              checked={value.withPassword && !(pinOffered && value.withPin)}
+              onChange={(withPassword) =>
+                set({ withPassword, ...(withPassword ? { withPin: false } : {}) })
+              }
               label="Also ask for a password, which you tell them separately"
             />
-            {value.withPassword && (
+            {value.withPassword && !(pinOffered && value.withPin) && (
               <PasswordChoice
                 id="ask-password"
                 mode={value.passwordMode}
@@ -511,7 +608,16 @@ export function AskForDocumentsScreen() {
               id="ask-with-code"
               checked={emailCode && value.withCode}
               disabled={!emailCode}
-              onChange={(withCode) => set({ withCode })}
+              // Ticked with no address yet for the code: where the link is
+              // emailed, as typed above (18 Nov 2026), to change if need be.
+              onChange={(withCode) =>
+                set({
+                  withCode,
+                  ...(withCode && !value.email.trim() && value.sendEmail.trim()
+                    ? { email: value.sendEmail.trim(), emailRefused: null }
+                    : {}),
+                })
+              }
               label="Also email them a code when they open it"
               note={
                 emailCode ? (
@@ -558,19 +664,13 @@ export function AskForDocumentsScreen() {
             />
             <AskVisits value={value} set={set} read={read} />
           </div>
-        </section>
+        </FormCard>
 
-        <section className="card stack" aria-labelledby="ask-takes-h">
-          <h2 id="ask-takes-h" style={{ fontSize: 18 }}>
-            What it takes
-          </h2>
+        <FormCard id="ask-takes" title="What it takes">
           <AskTakes value={value} set={set} read={read} />
-        </section>
+        </FormCard>
 
-        <section className="card stack" aria-labelledby="ask-review-h">
-          <h2 id="ask-review-h" style={{ fontSize: 18 }}>
-            Who looks at what comes in
-          </h2>
+        <FormCard id="ask-review" title="Who looks at what comes in">
           <div className="field" role="group" aria-label="Who looks at what comes in">
             <div className="pills">
               {(
@@ -597,24 +697,19 @@ export function AskForDocumentsScreen() {
               {person ? ` You will be told it is probably ${person.display_name}’s.` : ''}
             </span>
           </div>
-        </section>
+        </FormCard>
 
         <ErrorNote message={error} />
-        <div className="row">
-          <Button type="submit" disabled={busy || data === null}>
-            {busy ? 'Making the link…' : 'Make the link'}
-          </Button>
-          <Link to={back} className="btn btn-quiet">
-            Cancel
-          </Link>
-        </div>
-        {tried && !read.body && (
-          <p className="field-error" role="alert">
-            Something above needs putting right first.
-          </p>
-        )}
+        <FormActions
+          label="Make the link"
+          busyLabel="Making the link…"
+          busy={busy}
+          disabled={data === null}
+          cancelTo={back}
+        />
+        <PutRightFirst show={tried && !read.body} />
       </form>
-    </main>
+    </FormPage>
   );
 }
 
@@ -753,20 +848,24 @@ function AskTakes(props: {
     </>
   );
 }
-
 /**
  * A request changed after it was made (0.9.0, LK; the owner's decision of 15
  * Nov 2026), at /sharing/ask/{id}: the form it was made with, filled in as it
  * is now, for whoever asked, while it works or is only paused. Whom it is
- * for, when it stops, its password, its visits, what it takes and whether it
- * closes once sent can change; what it asks for, who looks at what comes in,
- * its emailed code and "this browser only" stay as they were made, and are
- * said, not offered. Anything that lets it do more asks to confirm it's you.
+ * for, when it stops, its PIN or password, its visits, what it takes and
+ * whether it closes once sent can change; what it asks for, who looks at
+ * what comes in, its emailed code and "this browser only" stay as they were
+ * made, and are said, not offered. Anything that lets it do more asks to
+ * confirm it's you.
+ *
+ * Since 0.9.0-dev.69 laid out as a link's change page is (form-page.tsx),
+ * and changed somewhere else meanwhile, or ended, said the same way: Load it
+ * again starts the form afresh from the request as it is now.
  */
 export function ChangeRequestScreen() {
   const { id = '' } = useParams();
   const { authVersion } = useApp();
-  const { data, error } = useLoad(
+  const { data, error, reload } = useLoad(
     async (t) => {
       const [requests, profile] = await Promise.all([
         api.uploadRequests(t),
@@ -779,34 +878,48 @@ export function ChangeRequestScreen() {
     },
     [authVersion, id],
   );
+  // Each Load it again starts the form afresh.
+  const [round, setRound] = useState(0);
   if (!data) {
     return (
-      <main className="page page-top has-nav">
-        <TopBar title="Change a request" back="/sharing" />
+      <FormPage title="Change a request" back="/sharing">
         <ErrorNote message={error} />
-      </main>
+      </FormPage>
     );
   }
   if (!data.request || data.request.changeable !== true) {
     return (
-      <main className="page page-top has-nav">
-        <TopBar title="Change a request" back="/sharing" />
-        <p className="lede">
-          That request can’t be changed: it has ended, or it isn’t one you made. Make a new one if
-          you need to.
-        </p>
+      <FormPage
+        title="Change a request"
+        back="/sharing"
+        lede="That request can’t be changed: it has ended, or it isn’t one you made. Make a new one if you need to."
+      >
         <Link to="/sharing/ask" className="btn btn-primary">
           Ask for documents
         </Link>
-      </main>
+      </FormPage>
     );
   }
-  return <ChangeRequestForm request={data.request} timezone={data.timezone} />;
+  return (
+    <ChangeRequestForm
+      key={round}
+      request={data.request}
+      timezone={data.timezone}
+      onReload={async () => {
+        await reload();
+        setRound((n) => n + 1);
+      }}
+    />
+  );
 }
 
-function ChangeRequestForm(props: { request: UploadRequestView; timezone: string }) {
+function ChangeRequestForm(props: {
+  request: UploadRequestView;
+  timezone: string;
+  onReload: () => Promise<void>;
+}) {
   const { request: r, timezone } = props;
-  const { guarded } = useApp();
+  const { guarded, caps } = useApp();
   const navigate = useNavigate();
   const [startEnd] = useState(() => {
     const p = zonedParts(new Date(r.expires_at), timezone);
@@ -831,8 +944,9 @@ function ChangeRequestForm(props: { request: UploadRequestView; timezone: string
   const [secret, setSecret] = useState<SecretChoiceValue>(SECRET_KEPT);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [trouble, setTrouble] = useState<'conflict' | 'ended' | null>(null);
   const [tried, setTried] = useState(false);
-  const [newPassword, setNewPassword] = useState<ChangedUploadRequest | null>(null);
+  const [newSecret, setNewSecret] = useState<ChangedUploadRequest | null>(null);
 
   const now = new Date();
   const latest = r.latest_end ? new Date(r.latest_end) : null;
@@ -847,7 +961,13 @@ function ChangeRequestForm(props: { request: UploadRequestView; timezone: string
       : read.endProblem;
   // Exactly as typed, as making a request reads it.
   const passwordProblem = secretChoiceProblem(secret, UPLOAD_PASSWORD_MIN, false);
-  const has = r.protection.includes('password') ? 'password' : null;
+  // A PIN (0.9.0-dev.69) where the vault takes one on a request.
+  const pinOffered = caps?.features.upload_request_pin === true;
+  const has = r.protection.includes('password')
+    ? 'password'
+    : r.protection.includes('pin')
+      ? 'pin'
+      : null;
 
   // Only what is changed.
   const body: UploadRequestChangeInput = {};
@@ -871,6 +991,7 @@ function ChangeRequestForm(props: { request: UploadRequestView; timezone: string
   if (value.accept !== r.accept_types) body.accept_types = value.accept;
   if (value.closeAfter !== r.close_after_submit) body.close_after_submit = value.closeAfter;
   if (secret.choice === 'none' && has) body.secret = 'none';
+  if (secret.choice === 'pin') body.secret = 'pin';
   if (secret.choice === 'password') {
     body.secret = 'password';
     if (secret.mode === 'typed') body.password = secret.password;
@@ -896,30 +1017,32 @@ function ChangeRequestForm(props: { request: UploadRequestView; timezone: string
     if (nothing || problem) return;
     setBusy(true);
     setError(null);
+    setTrouble(null);
     try {
       const done = await guarded((t) => api.changeUploadRequest(t, r.id, body, r.version));
       if (!done) return;
-      if (done.password) setNewPassword(done);
+      if (done.pin || done.password) setNewSecret(done);
       else back(done.request);
     } catch (err) {
-      setError(describeError(err));
+      const moved = changeTrouble(err);
+      if (moved) setTrouble(moved);
+      else setError(describeError(err));
     } finally {
       setBusy(false);
     }
   };
 
-  if (newPassword) {
+  if (newSecret) {
     return (
-      <main className="page page-top has-nav">
-        <TopBar title="Change a request" back="/sharing" />
+      <FormPage title="Change a request" back="/sharing">
         <NewSecret
           what="request"
-          pin={null}
-          password={newPassword.password ?? null}
-          showAgain={newPassword.request.revealable === true}
-          onDone={() => back(newPassword.request)}
+          pin={newSecret.pin ?? null}
+          password={newSecret.password ?? null}
+          showAgain={newSecret.request.revealable === true}
+          onDone={() => back(newSecret.request)}
         />
-      </main>
+      </FormPage>
     );
   }
 
@@ -937,17 +1060,13 @@ function ChangeRequestForm(props: { request: UploadRequestView; timezone: string
       : []),
   ];
   return (
-    <main className="page page-top has-nav">
-      <TopBar title="Change a request" back="/sharing" />
-      <p className="lede">
-        It stays the same link. Change what you like; anything that lets it do more asks you to
-        confirm it’s you.
-      </p>
+    <FormPage
+      title="Change a request"
+      back="/sharing"
+      lede="It stays the same link. Change what you like; anything that lets it do more asks you to confirm it’s you."
+    >
       <form className="stack ask-form" onSubmit={(e) => void submit(e)} noValidate>
-        <section className="card stack" aria-labelledby="ask-what-h">
-          <h2 id="ask-what-h" style={{ fontSize: 18 }}>
-            What you are asking for
-          </h2>
+        <FormCard id="ask-what" title="What you are asking for">
           <Field
             id="ask-title"
             label="Title"
@@ -988,12 +1107,9 @@ function ChangeRequestForm(props: { request: UploadRequestView; timezone: string
             The things to send, and who looks at what comes in, stay as they are. To change those,
             take this request back and make a new one.
           </p>
-        </section>
+        </FormCard>
 
-        <section className="card stack" aria-labelledby="ask-who-h">
-          <h2 id="ask-who-h" style={{ fontSize: 18 }}>
-            Who it is for
-          </h2>
+        <FormCard id="ask-who" title="Who it is for">
           <Field
             id="ask-label"
             label="Who is it for?"
@@ -1004,12 +1120,9 @@ function ChangeRequestForm(props: { request: UploadRequestView; timezone: string
             onChange={(l) => set({ label: l })}
             hint="For your own list, and the activity log. They do not see it."
           />
-        </section>
+        </FormCard>
 
-        <section className="card stack" aria-labelledby="ask-when-h">
-          <h2 id="ask-when-h" style={{ fontSize: 18 }}>
-            Keeping it safe
-          </h2>
+        <FormCard id="ask-when" title="Keeping it safe">
           <EndPicker
             idPrefix="ask"
             timezone={timezone}
@@ -1019,7 +1132,7 @@ function ChangeRequestForm(props: { request: UploadRequestView; timezone: string
           <SecretChoice
             idPrefix="ask"
             has={has}
-            pin={false}
+            pin={pinOffered}
             value={secret}
             onChange={setSecret}
             problem={passwordProblem}
@@ -1029,32 +1142,33 @@ function ChangeRequestForm(props: { request: UploadRequestView; timezone: string
             what="request"
           />
           <AskVisits value={value} set={set} read={read} />
-        </section>
+        </FormCard>
 
-        <section className="card stack" aria-labelledby="ask-takes-h">
-          <h2 id="ask-takes-h" style={{ fontSize: 18 }}>
-            What it takes
-          </h2>
+        <FormCard id="ask-takes" title="What it takes">
           <AskTakes value={value} set={set} read={read} />
-        </section>
+        </FormCard>
 
-        <ErrorNote message={error} />
-        <div className="row">
-          <Button type="submit" disabled={busy || nothing}>
-            {busy ? 'Saving…' : 'Save the changes'}
-          </Button>
-          <Link to="/sharing" className="btn btn-quiet">
-            Cancel
-          </Link>
-        </div>
-        {nothing && <p className="muted">Nothing is changed yet.</p>}
-        {tried && problem && (
-          <p className="field-error" role="alert">
-            Something above needs putting right first.
-          </p>
+        {trouble ? (
+          <ChangeTrouble
+            trouble={trouble}
+            what="request"
+            busy={busy}
+            onReload={() => void props.onReload()}
+          />
+        ) : (
+          <ErrorNote message={error} />
         )}
+        <FormActions
+          label="Save the changes"
+          busyLabel="Saving…"
+          busy={busy}
+          disabled={nothing}
+          cancelTo="/sharing"
+        />
+        {nothing && <p className="muted">Nothing is changed yet.</p>}
+        <PutRightFirst show={tried && problem !== null} />
       </form>
-    </main>
+    </FormPage>
   );
 }
 
@@ -1068,23 +1182,32 @@ const filesWord = (n: number) => (n === 1 ? '1 file' : `${n} files`);
  * link's token and the password only as hashes, so this card is the only
  * place either is ever shown. What the request will do is said back under
  * them.
+ *
+ * Since 0.9.0-dev.69 (the owner's feedback of 18 Nov 2026) drawn with a
+ * share link's pieces, so the two hand over alike: what the vault sent to
+ * whoever it is for first, then the link with Copy and Send as the way to
+ * send it yourself, its PIN or password with Copy, what it does, and Email
+ * the link and Text the link to send it again. A vault that keeps a sealed
+ * copy shows the PIN or password again from Sharing.
  */
 export function RequestHandOver(props: {
   created: CreatedUploadRequest;
   timezone: string;
   onDone: () => void;
+  /** What the vault sent as it was made (18 Nov 2026). */
+  sent?: LinkSent[];
 }) {
   // The secret after the #: a browser never sends it to a server, and the
   // page it opens takes it out of the address bar. On the vault's
   // public-only site when it has one, so whoever it is for can reach it.
-  const link =
-    props.created.link_url ?? `${window.location.origin}/drop#${props.created.link_token}`;
-  const [copied, setCopied] = useState(false);
+  const link = requestLinkAddress(props.created);
   const heading = useRef<HTMLHeadingElement>(null);
   const r = props.created.request;
+  const sent = props.sent ?? [];
   useEffect(() => {
     heading.current?.focus();
   }, []);
+  const again = r.revealable === true;
   return (
     <section className="card stack" aria-labelledby="handover-h" data-testid="request-handover">
       <h2
@@ -1097,37 +1220,34 @@ export function RequestHandOver(props: {
         {r.recipient_label ? `The link for ${r.recipient_label}` : 'The link to send them'}
       </h2>
       <p className="muted handover-title">“{r.title}”</p>
-      <code style={{ wordBreak: 'break-all' }}>{link}</code>
-      {insecureLink(link) && (
-        <p className="status status-warn" role="alert">
-          This link starts with http://, not https://, so whoever you send it to will not be able to
-          send anything: their browser will not open it over a connection that is not secure. Ask
-          whoever looks after the vault to give it an https:// address first.
-        </p>
+      <SentSaid
+        sent={sent}
+        secret={props.created.pin ? 'pin' : props.created.password ? 'password' : null}
+      />
+      <LinkAndSend link={link} what="request" />
+      {props.created.pin && (
+        <LinkSecret
+          kind="pin"
+          value={props.created.pin}
+          testId="request-pin"
+          note={
+            again
+              ? 'Tell them this some other way — a phone call, not the same message. You can see it again from Sharing, after confirming it’s you.'
+              : 'Tell them this some other way — a phone call, not the same message.'
+          }
+        />
       )}
-      <Button
-        kind="quiet"
-        onClick={() => {
-          void navigator.clipboard?.writeText(link).then(
-            () => setCopied(true),
-            () => setCopied(false),
-          );
-        }}
-      >
-        {copied ? 'Copied' : 'Copy the link'}
-      </Button>
       {props.created.password && (
-        <div className="field" data-testid="request-password">
-          <span className="field-label">The password</span>
-          <code style={{ fontSize: 22, letterSpacing: 2, wordBreak: 'break-all' }}>
-            {props.created.password}
-          </code>
-          <span className="muted">
-            Tell them this some other way — a phone call, not the same message. Capitals, spaces and
-            dashes do not matter when they type it. It is shown only now: the vault keeps a
-            scrambled copy it cannot show again.
-          </span>
-        </div>
+        <LinkSecret
+          kind="password"
+          value={props.created.password}
+          testId="request-password"
+          note={
+            again
+              ? 'Tell them this some other way — a phone call, not the same message. Capitals, spaces and dashes do not matter when they type it. You can see it again from Sharing, after confirming it’s you.'
+              : 'Tell them this some other way — a phone call, not the same message. Capitals, spaces and dashes do not matter when they type it. It is shown only now: the vault keeps a scrambled copy it cannot show again.'
+          }
+        />
       )}
       <ul className="share-terms">
         <li>Until {endWords(r.expires_at, props.timezone)}.</li>
@@ -1165,8 +1285,13 @@ export function RequestHandOver(props: {
         Anyone with the link can send files until it ends, and see nothing in the vault. You will
         see when it is opened, and you can take it back from Sharing whenever you like.
       </p>
-      {/* Or the vault emails it (16 Nov 2026), beside Copy, never in its place. */}
+      {/* Other ways to send it, beside Copy: never in its place. */}
       <RequestEmail request={r} idPrefix="made-request" />
+      <RequestText
+        request={r}
+        idPrefix="made-request"
+        start={sent.find((s) => s.refused)?.refused}
+      />
       <Button onClick={props.onDone}>Done</Button>
     </section>
   );

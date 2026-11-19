@@ -1,5 +1,13 @@
 import type { ReactNode } from 'react';
-import { BrowserRouter, Navigate, Route, Routes, useLocation, useParams } from 'react-router';
+import {
+  BrowserRouter,
+  Navigate,
+  Route,
+  Routes,
+  useLocation,
+  useParams,
+  useSearchParams,
+} from 'react-router';
 import { AppProvider, useApp } from './app-context.js';
 import { BatchUploadProvider } from './batch-store.js';
 import { AddScreen, ConfirmScreen } from './screens/AddConfirm.js';
@@ -28,6 +36,7 @@ import { NotesScreen } from './screens/Notes.js';
 import { ForgotPasswordScreen, ResetPasswordScreen } from './screens/Password.js';
 import { SharedScreen } from './screens/Shared.js';
 import { SharingScreen } from './screens/Sharing.js';
+import { ChangeLinkScreen } from './screens/ChangeLink.js';
 import { PrivacyScreen } from './screens/Household.js';
 import { TimeZoneScreen } from './screens/TimeZone.js';
 import { CaregiversScreen } from './caregivers.js';
@@ -134,6 +143,22 @@ const MOVED: ReadonlyArray<readonly [from: string, to: string]> = [
  * (so Back does not bounce): what was asked (?person=…), where on the page
  * (#…) and what the last screen said there come with it.
  */
+/**
+ * A link's change page (0.9.0-dev.69): Sharing's, for those who may share.
+ * A clinician's link (`?person=`, H4) is changed from that person's page,
+ * by them or an owner — a teen's own among them — so it is not held to
+ * Sharing's rule; the vault answers for it, and lists nothing else.
+ */
+function LinkChangeRoute() {
+  const [params] = useSearchParams();
+  if (params.get('person')) return <ChangeLinkScreen />;
+  return (
+    <Only rule={SCREEN_RULES.sharing}>
+      <ChangeLinkScreen />
+    </Only>
+  );
+}
+
 function Moved({ to }: { to: string }) {
   const location = useLocation();
   const state: unknown = location.state;
@@ -331,6 +356,8 @@ export function App() {
                   </Only>
                 }
               />
+              {/* A link changed (0.9.0-dev.69): on a page of its own, as a request is. */}
+              <Route path="/sharing/links/:id" element={<LinkChangeRoute />} />
               {/* A request changed (0.9.0, LK): the form it was made with, filled in. */}
               <Route
                 path="/sharing/ask/:id"

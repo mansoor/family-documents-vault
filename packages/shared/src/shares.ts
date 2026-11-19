@@ -506,7 +506,7 @@ export const SHARE_LINK_EMAIL_NOTE =
 
 /** The same, beside a request's "Email the link" (0.9.0, LK; 16 Nov 2026). */
 export const UPLOAD_REQUEST_EMAIL_NOTE =
-  'The vault emails the link, who it is from and when it stops working — never what you ask for, and never its password. Tell them the password another way.';
+  'The vault emails the link, who it is from and when it stops working — never what you ask for, and never its PIN or password. Tell them those another way.';
 
 /**
  * A sharer's short message as it goes in the email, or why it cannot:
@@ -785,4 +785,103 @@ export function lastEmailedWords(to: string, mine: boolean | undefined): string 
   return mine === true
     ? `You last had the vault email it to ${to}.`
     : `It was last emailed to ${to}.`;
+}
+
+/** Where a link or a request was last texted by the vault (0.9.0-dev.69), as `emailedToWords`. */
+export function textedToWords(
+  to: string,
+  by: string | null | undefined,
+  mine: boolean | undefined,
+): string {
+  return `Texted to ${to}${by && mine !== true ? ` by ${by}` : ''}`;
+}
+
+/** The same, as Show the link says it. */
+export function lastTextedWords(to: string, mine: boolean | undefined): string {
+  return mine === true
+    ? `You last had the vault text it to ${to}.`
+    : `It was last texted to ${to}.`;
+}
+
+// ------------------------------------ a link texted (0.9.0-dev.69, 18 Nov 2026)
+
+/**
+ * A link, or a request, texted to whoever it is for by the vault, through
+ * the household's own text messages (the owner's decision of 18 Nov 2026):
+ * at most 3 texts a link or request, and 20 a person — links and requests
+ * together — in any day; besides the household's monthly cap, which every
+ * text counts towards.
+ */
+export const LINK_TEXTS = { perLinkPerDay: 3, perAccountPerDay: 20 } as const;
+
+/** The kinds of text that carry a link or a request (0.9.0-dev.69). */
+export const LINK_TEXT_KINDS = ['share_link', 'request_link'] as const;
+
+/**
+ * The share of the household's monthly texts links and requests may take
+ * (the dev.69 review): at most half, so the codes people sign in, confirm
+ * it's them and reset a password with always have room.
+ */
+export const LINK_TEXTS_CAP_SHARE = 0.5;
+
+/** Beside "Text the link": what goes in the text, and what never does. */
+export const LINK_TEXT_NOTE =
+  'The vault texts the link, who it is from and when it stops working — never what it is to, and never its PIN or password. It counts towards your household’s texts this month.';
+
+/** Beside a request's "Text the link". */
+export const UPLOAD_REQUEST_TEXT_NOTE =
+  'The vault texts the link, who it is from and when it stops working — never what you ask for, and never its PIN or password. It counts towards your household’s texts this month.';
+
+/** Said where a mobile number would be asked for, while the household's texts are not set up. */
+export const LINK_TEXTS_NOT_SET_UP =
+  'Text messages aren’t set up for this household, so the vault can’t text it. Give their email address instead, or copy the link and send it yourself. An owner can set texts up in Settings, under Text messages.';
+
+/** Who a link's text is from, and from where: "Aisha from the Khan family", or "Somebody". */
+function textFrom(householdName: string | null | undefined, by: string | null | undefined) {
+  const household = plainName(householdName);
+  const who = plainName(by);
+  return `${who ?? 'Somebody'}${household ? ` from ${household}` : ''}`;
+}
+
+/**
+ * The text that carries a share link (0.9.0-dev.69): who it is from, "a
+ * document" or "some documents" — never its title (H2's neutral words) —
+ * the link, and when it stops working. Never its PIN, password or a code:
+ * those are told another way.
+ */
+export function shareLinkText(t: {
+  householdName: string | null;
+  sharedBy: string | null;
+  collection: boolean;
+  /** A person's emergency information (H4): "some information", never what. */
+  emergency?: boolean;
+  link: string;
+  expiresAt: Date;
+  timezone: string;
+}): string {
+  const what = t.emergency ? 'some information' : t.collection ? 'some documents' : 'a document';
+  return (
+    `Family Vault: ${textFrom(t.householdName, t.sharedBy)} has shared ${what} with you. ` +
+    `Open it here: ${t.link} — it stops working on ${shareEndWords(t.expiresAt, t.timezone)}. ` +
+    'If it asks for a PIN or password, they will tell you separately.'
+  );
+}
+
+/**
+ * The text that carries a request to send documents (0.9.0-dev.69): who it
+ * is from, that they are asked to send some documents — never what — the
+ * link, and when it stops working. Never its PIN, password or a code.
+ */
+export function requestLinkText(t: {
+  householdName: string | null;
+  askedBy: string | null;
+  link: string;
+  expiresAt: Date;
+  timezone: string;
+}): string {
+  return (
+    `Family Vault: ${textFrom(t.householdName, t.askedBy)} has asked you to send some documents. ` +
+    `Send them here: ${t.link} — it stops working on ${shareEndWords(t.expiresAt, t.timezone)}. ` +
+    'If it asks for a PIN or password, they will tell you separately.'
+  );
 }

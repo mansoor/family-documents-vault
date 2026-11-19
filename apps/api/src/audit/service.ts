@@ -308,6 +308,11 @@ const RULES: ReadonlyMap<string, Audience | typeof BY_TYPE> = new Map<
   // address masked (never the link): to whoever may see what it is to, as
   // its other lines are.
   ['share_link.emailed', BY_TYPE],
+  // 0.9.0-dev.69: a link texted to its recipient by the vault, the number
+  // masked (never the link): as an email of it.
+  ['share_link.texted', BY_TYPE],
+  // And not sent after all, why in a word (the dev.69 review).
+  ['share_link.text_not_sent', BY_TYPE],
   // 0.9.0 (LK): a link's properties changed by whoever made it, never its
   // PIN or password: to whoever may see what it is to, as its other lines are.
   ['share.changed', BY_TYPE],
@@ -540,6 +545,9 @@ const RULES: ReadonlyMap<string, Audience | typeof BY_TYPE> = new Map<
   ['upload_request.changed', BY_TYPE],
   // 16 Nov 2026: a request emailed by the vault, the address masked.
   ['upload_request.emailed', BY_TYPE],
+  // 0.9.0-dev.69: a request texted by the vault, the number masked.
+  ['upload_request.texted', BY_TYPE],
+  ['upload_request.text_not_sent', BY_TYPE],
   // what came in, looked at (5.23): a file's lines name its request in
   // their detail, and go to the request's reviewers; what the vault did to
   // a request's files, its purge and its move to the owners, is the
@@ -1093,7 +1101,12 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
  * other line; an empty id for a line that names none it can be found by.
  */
 function linkNamed(r: Row): { id: string; collections: boolean } | undefined {
-  const emailed = r.action === 'share_link.emailed' && r.object_type === 'collection';
+  // Texted (0.9.0-dev.69) as emailed.
+  const emailed =
+    (r.action === 'share_link.emailed' ||
+      r.action === 'share_link.texted' ||
+      r.action === 'share_link.text_not_sent') &&
+    r.object_type === 'collection';
   if (!r.action.startsWith('share.') && !emailed) return undefined;
   const collections =
     r.object_type === 'collection' ||

@@ -426,6 +426,13 @@ export class SmsService {
     };
     const d = await sendSms(this.vault(householdId), way, householdId, r);
     if ('refused' in d) {
+      if (d.refused === 'cap_reached' && d.links === true) {
+        throw new ApiError(
+          409,
+          'sms_cap_reached',
+          `This month’s ${d.cap} texts for sending links have all been sent: the rest are kept for the codes people sign in with. Email the link, or copy it and send it yourself. An owner can raise the limit in Settings, under Text messages.`,
+        );
+      }
       if (d.refused === 'cap_reached') {
         throw new ApiError(
           409,

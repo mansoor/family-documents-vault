@@ -49,6 +49,8 @@ export interface RequestEmailInput {
   message: string | null;
   /** It asks for a password: said, never the password. */
   password: boolean;
+  /** Or a PIN (0.9.0-dev.69): said, never the PIN. */
+  pin?: boolean;
   /** It asks for an emailed code: said, never the code. */
   code: boolean;
 }
@@ -72,7 +74,9 @@ export function requestEmail(e: RequestEmailInput): { subject: string; text: str
     '',
     `The link stops working on ${shareEndWords(e.expiresAt, e.timezone)}.`,
   );
-  if (e.password) {
+  if (e.pin) {
+    lines.push('', 'It asks for a PIN. The person who asked will give it to you separately.');
+  } else if (e.password) {
     lines.push('', 'It asks for a password. The person who asked will give it to you separately.');
   }
   if (e.code) {

@@ -53,6 +53,23 @@ export function useSmsCodes(): boolean {
   return offered && data?.ready === true;
 }
 
+/**
+ * Whether the vault can text a link or a request to whoever it is for now
+ * (0.9.0-dev.69; the owner's feedback of 18 Nov 2026): it offers link texts
+ * (`features.link_texts`) and the household's texts are set up and tested
+ * (GET /sms/status). False until it is known, and when it cannot be asked:
+ * the forms then say texts aren't set up, and offer email or Copy instead.
+ */
+export function useLinkTexts(): boolean {
+  const { authVersion, caps } = useApp();
+  const offered = caps?.features.link_texts === true;
+  const { data } = useLoad(
+    async (t) => (offered ? api.smsStatus(t).catch(() => null) : null),
+    [authVersion, offered],
+  );
+  return offered && data?.ready === true;
+}
+
 /** Countries offered first for numbers typed without +; the one saved is always there too. */
 const COUNTRIES = ['GB', 'IE', 'US', 'CA', 'AU', 'NZ', 'FR', 'DE', 'ES', 'IT', 'NL', 'IN', 'PK'];
 

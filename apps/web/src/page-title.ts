@@ -44,6 +44,7 @@ const PAGES: ReadonlyArray<readonly [pattern: string, title: string]> = [
   ['/sharing', 'Sharing'],
   ['/sharing/ask', 'Ask for documents'],
   ['/sharing/ask/:id', 'Change a request'],
+  ['/sharing/links/:id', 'Change a link'],
   ['/activity', 'Activity'],
   ['/trash', 'Trash'],
   ['/after-restore', 'After a restore'],

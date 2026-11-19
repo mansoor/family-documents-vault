@@ -1,3 +1,4 @@
+import { LINK_TEXTS_NOT_SET_UP, SHARE_LINK_EMAIL_UNAVAILABLE } from '@fdv/shared';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import axe from 'axe-core';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -226,5 +227,101 @@ describe('Email the link from Sharing, for a link the reader made (0.9.0)', () =
     const sheet = await screen.findByRole('dialog', { name: /^The link to/ });
     expect(within(sheet).getByRole('button', { name: 'Copy the link' })).toBeVisible();
     expect(within(sheet).queryByRole('button', { name: 'Email the link' })).toBeNull();
+  });
+});
+
+describe('a new link sent by the vault from “Who is it for?” (0.9.0-dev.69; 18 Nov 2026)', () => {
+  const READY = {
+    settings: null,
+    ready: true,
+    sent_this_month: 0,
+    monthly_cap: 200,
+    cloud_url: 'https://api.sms-gate.app/3rdparty/v1',
+  };
+
+  async function sheet(over: Partial<FakeState>) {
+    const state = fresh({ documents: [PASSPORT], ...over });
+    installFakeApi(state);
+    signedIn();
+    window.history.replaceState({}, '', `/documents/${PASSPORT.id}`);
+    render(<App />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Share a link' }));
+    await screen.findByLabelText('Who is it for?');
+    return state;
+  }
+
+  it('emails and texts it once made, says where, and gives Copy and Send after', async () => {
+    const shared = vi.fn(() => Promise.resolve());
+    vi.stubGlobal('navigator', { ...navigator, share: shared });
+    const state = await sheet({ operatorMail: true, sms: { view: READY } });
+    const email = screen.getByLabelText('Email the link to');
+    const phone = screen.getByLabelText('Text the link to');
+    await waitFor(() => expect(phone).toBeEnabled());
+    fireEvent.change(email, { target: { value: 'visa@agent.example' } });
+    fireEvent.change(phone, { target: { value: '07700 900123' } });
+    fireEvent.click(screen.getByLabelText(/Also ask for a four-digit PIN/));
+    await expectAccessible();
+    fireEvent.click(screen.getByRole('button', { name: 'Make the link' }));
+
+    const handover = await screen.findByTestId('share-handover');
+    const sent = within(handover).getByRole('list', { name: 'What the vault sent' });
+    expect(within(sent).getByText('Emailed to v•••@a•••.example')).toBeInTheDocument();
+    expect(within(sent).getByText('Texted to •••• •••123')).toBeInTheDocument();
+    expect(within(handover).getByText(/Its PIN was not sent with it/)).toBeInTheDocument();
+    expect(state.linkEmails).toEqual([
+      { share_id: 'sh-0', to: 'visa@agent.example', message: null },
+    ]);
+    expect(state.linkTexts).toEqual([{ share_id: 'sh-0', to: '07700 900123' }]);
+    // Neither went in the link itself.
+    const made = state.calls.find((c) => c.method === 'POST' && c.url.endsWith('/share'));
+    expect(JSON.stringify(made?.body)).not.toContain('visa@agent');
+    expect(JSON.stringify(made?.body)).not.toContain('07700');
+    // Copy, and Send through the browser's own share sheet: the link alone.
+    const copy = within(handover).getByRole('button', { name: 'Copy the link' });
+    expect(sent.compareDocumentPosition(copy) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    fireEvent.click(
+      within(handover).getByRole('button', { name: 'Send the link from another app' }),
+    );
+    expect(shared).toHaveBeenCalledWith({
+      title: 'A shared link',
+      url: `${window.location.origin}/s#share-secret-0123456789abcdef`,
+    });
+    expect(JSON.stringify(shared.mock.calls)).not.toContain('4821');
+    // The PIN, with Copy, as Show the link gives it.
+    expect(within(handover).getByRole('button', { name: 'Copy the PIN' })).toBeInTheDocument();
+    await expectAccessible();
+  });
+
+  it('a code ticked with nowhere yet to go starts at the address the link goes to', async () => {
+    await sheet({ operatorMail: true });
+    fireEvent.change(screen.getByLabelText('Email the link to'), {
+      target: { value: 'visa@agent.example' },
+    });
+    fireEvent.click(screen.getByLabelText(/email them a code/));
+    expect(screen.getByLabelText('Their email address')).toHaveValue('visa@agent.example');
+  });
+
+  it('without texts set up the number is off and says so; nothing is sent where nothing was typed', async () => {
+    const state = await sheet({ operatorMail: true });
+    const phone = screen.getByLabelText('Text the link to');
+    expect(phone).toBeDisabled();
+    expect(screen.getByText(LINK_TEXTS_NOT_SET_UP)).toBeInTheDocument();
+    // Not an address: said under it, and the link waits.
+    fireEvent.change(screen.getByLabelText('Email the link to'), { target: { value: 'visa@' } });
+    expect(screen.getByText(/That is not an email address/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Make the link' })).toBeDisabled();
+    fireEvent.change(screen.getByLabelText('Email the link to'), { target: { value: '' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Make the link' }));
+    const handover = await screen.findByTestId('share-handover');
+    expect(within(handover).queryByRole('list', { name: 'What the vault sent' })).toBeNull();
+    expect(state.linkEmails ?? []).toEqual([]);
+    expect(within(handover).queryByLabelText('Text the link to')).toBeNull();
+  });
+
+  it('without the operator’s mail, the address is off and says why', async () => {
+    await sheet({ operatorMail: false });
+    expect(screen.getByLabelText('Email the link to')).toBeDisabled();
+    expect(screen.getByText(SHARE_LINK_EMAIL_UNAVAILABLE)).toBeInTheDocument();
+    await expectAccessible();
   });
 });

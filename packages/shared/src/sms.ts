@@ -51,7 +51,11 @@ export type SmsKind =
   | 'invite_code'
   | 'reset_code'
   | 'sign_in_code'
-  | 'step_up_code';
+  | 'step_up_code'
+  // 0.9.0-dev.69: a share link, or a request to send documents, texted to
+  // whoever it is for.
+  | 'share_link'
+  | 'request_link';
 
 /** SMS Gate's cloud relay: the one address of `cloud`. */
 export const SMS_CLOUD_URL = 'https://api.sms-gate.app/3rdparty/v1';

@@ -657,6 +657,21 @@ export interface CapabilityFeatures {
    */
   upload_request_email?: boolean;
   /**
+   * A link or a request texted to whoever it is for by the vault
+   * (0.9.0-dev.69; the owner's decision of 18 Nov 2026): `POST
+   * /shares/{id}/text` and `POST /upload-requests/{id}/text`, through the
+   * household's own text messages, while they are set up and tested
+   * (`Share.textable`, `UploadRequestView.textable` say which). Never its
+   * PIN, password, or what it is to. Absent from older vaults.
+   */
+  link_texts?: boolean;
+  /**
+   * A request may ask for a four-digit PIN (0.9.0-dev.69), as a share link
+   * may: `with_pin` when it is made, `secret: 'pin'` when it is changed, and
+   * `pin` on the sender's Open. Absent from older vaults: a password only.
+   */
+  upload_request_pin?: boolean;
+  /**
    * Where the original is, as a place in somebody's cabinet (0.9.0, C3):
    * a document's `original_place` — Cabinet › Drawer › Folder, picked from
    * the setter's own layout, its names kept on the document so everybody

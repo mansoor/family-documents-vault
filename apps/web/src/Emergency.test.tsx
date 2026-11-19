@@ -294,32 +294,35 @@ describe('Emergency information on a person’s page (0.9.0, H4)', () => {
         within(c).getByRole('button', { name: 'Share with a clinician' }),
       ),
     );
-    // Changed (0.9.0, LK): the form it was made with, to view always.
+    // Changed (0.9.0, LK): the form it was made with, to view always — on a
+    // page of its own since 0.9.0-dev.69, as every link's change is.
     fireEvent.click(
-      await within(c).findByRole('button', { name: 'Change the link for St Mary’s A&E' }),
+      await within(c).findByRole('link', { name: 'Change the link for St Mary’s A&E' }),
     );
-    // Named by its title, as every dialog is (0.9.0-dev.67).
-    const change = await screen.findByRole('dialog', {
-      name: /^Change the link to .*’s emergency information$/,
-    });
-    expectSharedDialog(change, /^Change the link to .*’s emergency information$/, 'Cancel');
-    expect(within(change).getByLabelText('Who is it for?')).toHaveValue('St Mary’s A&E');
-    expect(within(change).getByText(/It is to view, always/)).toBeInTheDocument();
-    expect(within(change).queryByRole('button', { name: 'View and download' })).toBeNull();
+    await screen.findByRole('heading', { name: 'Change a link' });
+    expect(window.location.pathname).toBe('/sharing/links/old-link');
+    expect(
+      screen.getByText(/^The link to .*’s emergency information\. It stays the same link/),
+    ).toBeInTheDocument();
+    expect(await screen.findByLabelText('Who is it for?')).toHaveValue('St Mary’s A&E');
+    expect(screen.getByText(/It is to view, always/)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'View and download' })).toBeNull();
     await expectAccessible();
-    fireEvent.change(within(change).getByLabelText('Who is it for?'), {
+    fireEvent.change(screen.getByLabelText('Who is it for?'), {
       target: { value: 'Dr Patel at St Mary’s' },
     });
-    fireEvent.click(within(change).getByRole('button', { name: 'Save the changes' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save the changes' }));
+    // Back on the person's page, saying so.
     expect(
-      await within(c).findByText(/^The link to .*’s emergency information is changed.$/),
+      await screen.findByText(/^The link to .*’s emergency information is changed.$/),
     ).toBeInTheDocument();
+    expect(window.location.pathname).toBe('/people/me');
     expect(state.calls.filter((x) => x.method === 'PATCH').map((x) => [x.url, x.body])).toEqual([
       ['/api/v1/shares/old-link', { recipient_label: 'Dr Patel at St Mary’s' }],
     ]);
     // Taken back, after asking.
     fireEvent.click(
-      await within(c).findByRole('button', {
+      await screen.findByRole('button', {
         name: 'Take back the link for Dr Patel at St Mary’s',
       }),
     );

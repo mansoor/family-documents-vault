@@ -966,6 +966,12 @@ const RULES: Record<string, Rule> = {
     who: 'signedIn',
     body: () => ({ to: 'attacker@example.test' }),
   },
+  // Texted by the vault (0.9.0-dev.69): by whoever made it alone, through the
+  // household's own text messages.
+  'POST /api/v1/shares/:id/text': {
+    who: 'signedIn',
+    body: () => ({ to: '+447700900123' }),
+  },
   'GET /api/v1/after-restore': { who: 'signedIn' },
 
   // Reminders.
@@ -1250,6 +1256,11 @@ const RULES: Record<string, Rule> = {
   'POST /api/v1/upload-requests/:id/email': {
     who: 'adults',
     body: () => ({ to: 'attacker@example.test' }),
+  },
+  // Texted by the vault (0.9.0-dev.69): by whoever asked alone.
+  'POST /api/v1/upload-requests/:id/text': {
+    who: 'adults',
+    body: () => ({ to: '+447700900123' }),
   },
   'PATCH /api/v1/upload-requests/:id': {
     who: 'adults',

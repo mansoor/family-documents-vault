@@ -246,6 +246,10 @@ export function buildCapabilities(config: CapabilityConfig): Capabilities {
       // 0.9.0 (LK, 16 Nov 2026): a request's link emailed by the vault, as
       // a share link's is: with the operator's mail server alone.
       upload_request_email: config.operatorMail === true,
+      // 0.9.0-dev.69 (18 Nov 2026): a link or a request texted to whoever it
+      // is for, through the household's text messages; and a PIN for a request.
+      link_texts: true,
+      upload_request_pin: true,
       // 0.9.0 (C3): where the original is, as a folder of somebody's cabinet.
       original_place: true,
       // 0.9.0 (H5): health records kept as they are (XML, JSON, DICOM,

@@ -42,6 +42,8 @@ import {
   type Preferences,
   maskPhone,
   parsePhone,
+  LINK_TEXTS,
+  type LinkTexted,
   PHONE_CODE_MINUTES,
   PHONE_CODE_TRIES,
   phoneCodeText,
@@ -634,7 +636,10 @@ export interface FakeVaultState {
    * a sealed copy, to show whoever asked again. A request with none here
    * stands for one made before copies were kept: shown once.
    */
-  uploadRequestCopies?: Record<string, { token: string; password: string | null }>;
+  uploadRequestCopies?: Record<
+    string,
+    { token: string; password: string | null; pin?: string | null }
+  >;
   /**
    * Files sent through a request and waiting to be looked at (0.5.23), as
    * GET /incoming answers them, with their bytes: a test puts one here as a
@@ -788,6 +793,8 @@ export interface FakeShare {
    * whom and with what message, in the clear as only a fake may, and when.
    */
   emailed?: { to: string; message: string | null; at: string }[];
+  /** The texts the vault sent of it (0.9.0-dev.69, `POST /shares/{id}/text`), as emailed. */
+  texted?: { to: string; at: string }[];
   /**
    * Whether its page shows the document's title (0.9.0, H1a): as its maker
    * chose, or null — as the document is (`linkShowsTitle`).
@@ -2807,7 +2814,7 @@ export function createFakeVault(): {
   ): ResponseLike | null => {
     const making = /^\/api\/v1\/documents\/([^/]+)\/share$/.exec(path);
     const stopping = /^\/api\/v1\/documents\/([^/]+)\/stop-sharing$/.exec(path);
-    const one = /^\/api\/v1\/shares\/([^/]+)(\/reveal|\/email)?$/.exec(path);
+    const one = /^\/api\/v1\/shares\/([^/]+)(\/reveal|\/email|\/text)?$/.exec(path);
     // A link's properties changed (0.9.0, LK): whoever made it, with no
     // confirming it's you, which the fake asks nowhere.
     const lkLatest = (l: FakeShare) =>
@@ -2900,6 +2907,12 @@ export function createFakeVault(): {
         emailable: revealable(l) && l.share.state === 'active' && state.operatorMail,
         emailed_to: last ? maskEmail(last.to) : null,
         emailed_by_name: last
+          ? (state.members.find((m) => m.id === l.made_by)?.display_name ?? null)
+          : null,
+        // 0.9.0-dev.69: texted by the vault, while the household's texts are set up.
+        textable: revealable(l) && l.share.state === 'active' && (state.smsReady ?? true),
+        texted_to: l.texted?.at(-1) ? maskPhone((l.texted.at(-1) as { to: string }).to) : null,
+        texted_by_name: l.texted?.at(-1)
           ? (state.members.find((m) => m.id === l.made_by)?.display_name ?? null)
           : null,
         mine: l.made_by === who.memberId,
@@ -3048,6 +3061,66 @@ export function createFakeVault(): {
     const link = one
       ? links.find((l) => l.share.id === decodeURIComponent(one[1] as string))
       : null;
+    if (one && one[2] === '/text' && init.method === 'POST') {
+      // As the vault answers (0.9.0-dev.69): the household's texts first,
+      // then the number, whose it is, that it opens, the copy, and the day's count.
+      if (!(state.smsReady ?? true)) {
+        return fail(
+          409,
+          'sms_not_set_up',
+          'Text messages aren’t set up for this household yet. An owner can set them up in Settings, under Text messages.',
+        );
+      }
+      const number = parsePhone(typeof body.to === 'string' ? body.to : '', 'GB');
+      if (!number) {
+        return fail(
+          422,
+          'phone_number_invalid',
+          'That doesn’t look like a mobile number. Type it with its country code, such as +44 7700 900123.',
+        );
+      }
+      if (!link || link.made_by !== who.memberId) {
+        return fail(404, 'not_found', 'That link does not exist.');
+      }
+      if (ended(link) || link.share.state === 'used_up') {
+        return fail(
+          410,
+          'share_ended',
+          'That link no longer opens, so there is nothing to send. Make a new one if you need to.',
+        );
+      }
+      if (link.share.state === 'paused') {
+        return fail(
+          409,
+          'share_paused',
+          'That link is paused just now, so it would not open for them. Once it works again, you can text it.',
+        );
+      }
+      if (link.shown_once) {
+        return fail(
+          409,
+          'share_not_revealable',
+          'That link was made before the vault kept a copy, so the vault cannot text it. Send it yourself, or take it back and make a new one.',
+        );
+      }
+      const dayAgo = Date.now() - 864e5;
+      const today = (link.texted ?? []).filter((e) => Date.parse(e.at) > dayAgo);
+      if (today.length >= LINK_TEXTS.perLinkPerDay) {
+        return fail(
+          429,
+          'text_link_limit',
+          `This link has been texted ${LINK_TEXTS.perLinkPerDay} times today, which is as many as the vault sends. Copy the link and send it yourself, or try again tomorrow.`,
+        );
+      }
+      const at = new Date().toISOString();
+      (link.texted ??= []).push({ to: number, at });
+      const sent: LinkTexted = {
+        sent_to: maskPhone(number),
+        sent_at: at,
+        sends_left: LINK_TEXTS.perLinkPerDay - today.length - 1,
+      };
+      return ok(sent);
+    }
     if (one && one[2] === '/email' && init.method === 'POST') {
       // As the vault answers (0.9.0): no mail server, none; then the address,
       // whose it is, that it opens, the copy, and the day's count.
@@ -3731,6 +3804,9 @@ export function createFakeVault(): {
           // A link emailed to its recipient (0.9.0): with the operator's mail server alone.
           share_link_email: state.operatorMail,
           upload_request_email: state.operatorMail,
+          // 0.9.0-dev.69: links and requests texted; a PIN for a request.
+          link_texts: true,
+          upload_request_pin: true,
           // A person's details, and the owner's view of a sign-in (5.25).
           member_edit: true,
           // Asking somebody to send documents, and looking before filing (5.23).
@@ -8120,9 +8196,8 @@ export function createFakeVault(): {
     }
     // Asking somebody to send documents (0.5.21): the family's side. A teen
     // or a viewer is told there is nothing here, as the vault tells them.
-    const uploadAt = /^\/api\/v1\/upload-requests(?:\/([^/]+)(\/resume|\/reveal|\/email)?)?$/.exec(
-      path,
-    );
+    const uploadAt =
+      /^\/api\/v1\/upload-requests(?:\/([^/]+)(\/resume|\/reveal|\/email|\/text)?)?$/.exec(path);
     if (uploadAt) {
       const s = session();
       if (!('id' in s)) return s;
@@ -8142,6 +8217,11 @@ export function createFakeVault(): {
           r.mine && r.state === 'active' && copies[r.id] !== undefined && state.operatorMail,
         emailed_to: r.emailed_to ?? null,
         emailed_by_name: r.emailed_by_name ?? null,
+        // 0.9.0-dev.69: texted by the vault, while the household's texts are set up.
+        textable:
+          r.mine && r.state === 'active' && copies[r.id] !== undefined && (state.smsReady ?? true),
+        texted_to: r.texted_to ?? null,
+        texted_by_name: r.texted_by_name ?? null,
         latest_end: new Date(Date.parse(r.created_at) + 90 * 864e5).toISOString(),
         version: r.version ?? 1,
       });
@@ -8158,6 +8238,17 @@ export function createFakeVault(): {
         }
         if (end.getTime() > now + 90 * 864e5 + 5 * 60_000) {
           return fail(422, 'expiry_out_of_range', 'A request can last 90 days at most.');
+        }
+        // One secret at most (0.9.0-dev.69): a PIN, or a password.
+        if (
+          body.with_pin === true &&
+          (body.with_password === true || body.password !== undefined)
+        ) {
+          return fail(
+            422,
+            'validation_failed',
+            'Choose one: a PIN, a password made up for you, or a password of your own.',
+          );
         }
         if (body.email_code === true) {
           return fail(
@@ -8181,7 +8272,12 @@ export function createFakeVault(): {
           mine: true,
           created_at: new Date(now).toISOString(),
           expires_at: end.toISOString(),
-          protection: body.with_password || body.password ? ['password'] : [],
+          protection:
+            body.with_pin === true
+              ? ['pin']
+              : body.with_password || body.password
+                ? ['password']
+                : [],
           max_visits: typeof body.max_visits === 'number' ? body.max_visits : null,
           visits_used: 0,
           max_files: typeof body.max_files === 'number' ? body.max_files : 10,
@@ -8202,12 +8298,16 @@ export function createFakeVault(): {
         state.uploadRequests.unshift(made);
         const token = next('drop-token');
         const password = body.with_password ? 'abcd-efgh-jkmn' : null;
-        copies[made.id] = { token, password };
+        // A PIN (0.9.0-dev.69): four digits, as the vault makes up.
+        const pin =
+          body.with_pin === true ? String(1000 + (state.uploadRequests.length % 9000)) : null;
+        copies[made.id] = { token, password, pin };
         return ok(
           {
             request: lk(made),
             link_token: token,
             link_url: null,
+            ...(pin ? { pin } : {}),
             ...(password ? { password } : {}),
           },
           201,
@@ -8219,6 +8319,49 @@ export function createFakeVault(): {
         Object.assign(r, { state: 'revoked', recipient_email: null });
         delete copies[r.id];
         return empty();
+      }
+      if (after === '/text' && init.method === 'POST') {
+        // As the vault answers (0.9.0-dev.69): texts set up, the number,
+        // whose it is, that it opens, and the copy.
+        if (!(state.smsReady ?? true)) {
+          return fail(
+            409,
+            'sms_not_set_up',
+            'Text messages aren’t set up for this household yet. An owner can set them up in Settings, under Text messages.',
+          );
+        }
+        const number = parsePhone(typeof body.to === 'string' ? body.to : '', 'GB');
+        if (!number) {
+          return fail(
+            422,
+            'phone_number_invalid',
+            'That doesn’t look like a mobile number. Type it with its country code, such as +44 7700 900123.',
+          );
+        }
+        if (!r.mine) return fail(404, 'not_found', 'That request does not exist.');
+        if (r.state !== 'active') {
+          return fail(
+            410,
+            'request_ended',
+            'That request no longer opens, so there is nothing to send. Make a new one if you need to.',
+          );
+        }
+        if (!copies[r.id]) {
+          return fail(
+            409,
+            'request_not_revealable',
+            'That request was made before the vault kept a copy, so the vault cannot text it. Send it yourself, or take it back and make a new one.',
+          );
+        }
+        r.texted_to = maskPhone(number);
+        r.texted_by_name =
+          state.members.find((m) => m.id === whoOf(s).memberId)?.display_name ?? null;
+        const sent: LinkTexted = {
+          sent_to: maskPhone(number),
+          sent_at: new Date().toISOString(),
+          sends_left: LINK_TEXTS.perLinkPerDay - 1,
+        };
+        return ok(sent);
       }
       if (after === '/email' && init.method === 'POST') {
         // As the vault answers (16 Nov 2026): no mail server, none; then the
@@ -8286,6 +8429,7 @@ export function createFakeVault(): {
         const shown: RevealedUploadRequest = {
           link_token: copy.token,
           link_url: null,
+          ...(copy.pin ? { pin: copy.pin } : {}),
           ...(copy.password ? { password: copy.password } : {}),
         };
         return ok(shown);
@@ -8307,7 +8451,7 @@ export function createFakeVault(): {
           return fail(
             403,
             'request_secret_makers_only',
-            'Only whoever asked can give this request a new password. Take it back and make a new one if you need to.',
+            'Only whoever asked can give this request a new PIN or password. Take it back and make a new one if you need to.',
           );
         }
         const changes: string[] = [];
@@ -8387,24 +8531,36 @@ export function createFakeVault(): {
           changes.push('close_after_submit');
         }
         let password: string | null = null;
-        const had = r.protection.includes('password');
-        if (body.secret === 'password' || (body.secret === 'none' && had)) {
+        let pin: string | null = null;
+        // A PIN or a password (0.9.0-dev.69: a request may have a PIN).
+        const had = r.protection.includes('password') || r.protection.includes('pin');
+        if (
+          body.secret === 'password' ||
+          body.secret === 'pin' ||
+          (body.secret === 'none' && had)
+        ) {
           changes.push('secret');
           password =
             body.secret === 'password' && typeof body.password !== 'string'
               ? `fake-${next('pw')}-word`
               : null;
+          pin = body.secret === 'pin' ? String(1000 + (Number(version) % 9000)) : null;
           r.protection = [
-            ...(body.secret === 'password' ? (['password'] as const) : []),
-            ...r.protection.filter((p) => p !== 'password'),
+            ...(body.secret === 'password'
+              ? (['password'] as const)
+              : body.secret === 'pin'
+                ? (['pin'] as const)
+                : []),
+            ...r.protection.filter((p) => p !== 'password' && p !== 'pin'),
           ];
           const copy = copies[r.id];
-          if (copy) copy.password = password;
+          if (copy) Object.assign(copy, { password, pin });
         }
         if (changes.length) r.version = version + 1;
         const answer: ChangedUploadRequest = {
           request: lk(r),
           changed: changes,
+          ...(pin ? { pin } : {}),
           ...(password ? { password } : {}),
         };
         return ok(answer);

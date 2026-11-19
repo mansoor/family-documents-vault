@@ -44,8 +44,11 @@ export type UploadAcceptTypes = 'standard' | 'office';
 /** Who looks at what comes in (A43): the person who asked, or any adult. */
 export type UploadReviewBy = 'me' | 'adults';
 
-/** What Open asks of the sender, beyond the link: a password, an emailed code, or this device. */
-export type UploadProtection = 'password' | 'email_code' | 'this_device';
+/**
+ * What Open asks of the sender, beyond the link: a PIN (0.9.0-dev.69) or a
+ * password, an emailed code, or this device. Never both a PIN and a password.
+ */
+export type UploadProtection = 'pin' | 'password' | 'email_code' | 'this_device';
 
 const STANDARD_TYPES = [
   'application/pdf',
@@ -87,6 +90,11 @@ export interface UploadRequestInput {
   recipient_email?: string | null;
   /** When it ends: at least 5 minutes ahead, at most `limits.share_max_days` (A20). */
   expires_at: string;
+  /**
+   * A four-digit PIN the vault makes up and shows once (0.9.0-dev.69,
+   * `features.upload_request_pin`), as a share link's: never with a password.
+   */
+  with_pin?: boolean;
   /** A password the vault makes up and shows once. */
   with_password?: boolean;
   /** Or one typed, of at least 8 characters. */
@@ -188,6 +196,17 @@ export interface UploadRequestView {
   emailed_to?: string | null;
   /** Who had the vault email it last, by name as the reader is given it; null for none. Absent before 0.9.0-dev.54. */
   emailed_by_name?: string | null;
+  /**
+   * The reader asked for it, it opens now, a copy was kept and the
+   * household's text messages are set up (0.9.0-dev.69,
+   * `features.link_texts`): `POST /upload-requests/{id}/text` texts its
+   * link. Absent from older vaults.
+   */
+  textable?: boolean;
+  /** Where the vault last texted it, masked (`•••• •••123`); null for none. Absent from older vaults. */
+  texted_to?: string | null;
+  /** Who had the vault text it last, by name as the reader is given it; null for none. */
+  texted_by_name?: string | null;
 }
 
 /**
@@ -202,6 +221,8 @@ export interface UploadRequestView {
 export interface RevealedUploadRequest {
   link_token: string;
   link_url: string | null;
+  /** Its PIN (0.9.0-dev.69), kept with the link as a share link's is. */
+  pin?: string;
   password?: string;
 }
 
@@ -212,9 +233,10 @@ export interface RevealedUploadRequest {
  * title, message and things to send), who looks at what comes in, its
  * emailed code nor "this browser only".
  *
- * `secret`: `none` takes the password away; `password` a new one — the
- * vault's, or the one typed in `password` — and every page opened with the
- * old one closes. Making it reach further — a later end, the password taken
+ * `secret`: `none` takes the PIN or password away; `pin` gives it a new
+ * four-digit PIN (0.9.0-dev.69); `password` a new password — the vault's, or
+ * the one typed in `password` — and every page opened with the old one
+ * closes. Making it reach further — a later end, the password taken
  * away, more visits, files or room, Word and Excel taken too, or no longer
  * closing once sent — asks to confirm it's you (`403 step_up_required`,
  * action `change_share`). `If-Match: "<version>"` (optional): `409
@@ -227,7 +249,8 @@ export interface UploadRequestChangeInput {
   message?: string | null;
   recipient_label?: string | null;
   expires_at?: string;
-  secret?: 'none' | 'password';
+  /** `pin` (0.9.0-dev.69): a new four-digit PIN, made up by the vault. */
+  secret?: 'none' | 'pin' | 'password';
   password?: string;
   max_visits?: number | null;
   max_files?: number;
@@ -240,6 +263,8 @@ export interface UploadRequestChangeInput {
 export interface ChangedUploadRequest {
   request: UploadRequestView;
   changed: string[];
+  /** A new PIN (0.9.0-dev.69), once. */
+  pin?: string;
   password?: string;
 }
 
@@ -252,6 +277,8 @@ export interface CreatedUploadRequest {
    * site; null when it has none, and the app puts its own address first.
    */
   link_url: string | null;
+  /** Its PIN (0.9.0-dev.69), when it asks for one: told to them some other way. */
+  pin?: string;
   /** Present only when the vault made one up. */
   password?: string;
 }

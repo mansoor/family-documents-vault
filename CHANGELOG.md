@@ -6,6 +6,23 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.9.0-dev.69] - 2026-11-19 — Sharing and Ask for documents alike
+
+### Added
+
+- **The vault sends the link.** When you share a document or a collection, or ask somebody for documents, **Who it is for** now asks for their email address and/or their mobile number, and the vault sends them the link as soon as it is made — by email, as before, or by text through your household's own text messages (Settings → Text messages), counted towards the month's texts — links and requests take half of them at most, so sign-in and other codes always have room. Only mobile numbers in your household's country are texted. The message says who it is from and when it stops working; never what it is to, what you ask for, or its PIN or password, which you tell them another way. Copying the link and sending it yourself is still there, after. If text messages aren't set up, the mobile field says so and offers email or copy. Each text is written to the activity log with the number mostly hidden (•••• •••123), never the link; at most 3 texts a link or request, and 20 a person (links and requests together), in a day.
+- **Text the link** beside **Email the link**, wherever the link is shown, and **Send** (your device's own share sheet) beside **Copy the link**.
+- **A PIN for requests.** Ask for documents offers a four-digit PIN as well as a password, as sharing does: made up by the vault, shown once (and again with Show the link), never both. Ten wrong tries stop the request, however many arrive at once. The page the person sending documents opens asks for the PIN.
+
+### Changed
+
+- **Show the link, the same everywhere.** A link listed on a document's own page now has **Show the link** too, as in Sharing and for requests: the link, Copy, Send, its PIN or password, and Email or Text the link, after confirming it's you.
+- **One way to change a link or a request.** **Change** on a link now opens a full page in cards, as changing a request does — a pop-up couldn't hold a long form well — from Sharing, a document's page and the emergency page alike. Both pages have the same layout and buttons (Save the changes first, Cancel last), and say the same when it was changed somewhere else meanwhile (with **Load it again**) or has ended.
+
+### Database
+
+- Migration 0117: a request's secret may be a PIN, and a sender's session may say it was opened with one; a link's and a request's sends say whether they went by email or by text, or were a text not sent (`way`), each counted apart; two new kinds of text message (`share_link`, `request_link`).
+
 ## [0.9.0-dev.68] - 2026-11-19 — connected apps: privacy follow-ups
 
 ### Changed

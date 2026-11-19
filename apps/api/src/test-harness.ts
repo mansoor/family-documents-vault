@@ -600,6 +600,7 @@ export async function createHarness(opts: HarnessOptions = {}): Promise<Harness>
       deviceKey: deviceCookieKey(TEST_MASTER, UPLOAD_DEVICE_KEY_PURPOSE),
       copyKey: deriveKey(TEST_MASTER, UPLOAD_REQUEST_COPY_PURPOSE),
       baseUrl: config.FDV_BASE_URL,
+      sms,
       enqueue,
       alert,
       ...(opts.incomingMaxBytes ? { householdMaxBytes: opts.incomingMaxBytes } : {}),

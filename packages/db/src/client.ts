@@ -577,6 +577,8 @@ export interface Schema {
     to_masked: string;
     with_message: Generated<boolean>;
     sent_at: GeneratedTimestamp;
+    /** By email, or (0117) by text through the household's text messages; or a text not sent. */
+    way: Generated<'email' | 'sms' | 'sms_not_sent'>;
   };
 
   /**
@@ -592,6 +594,8 @@ export interface Schema {
     to_masked: string;
     with_message: Generated<boolean>;
     sent_at: GeneratedTimestamp;
+    /** By email, or (0117) by text through the household's text messages; or a text not sent. */
+    way: Generated<'email' | 'sms' | 'sms_not_sent'>;
   };
 
   /**
@@ -707,9 +711,10 @@ export interface Schema {
      * What the password is (0048): `generated`, made up by the vault and
      * hashed and checked in its canonical form (lower case, no dashes or
      * spaces); `password`, typed, checked exactly; null, none, or one made
-     * before 0048, checked as typed.
+     * before 0048, checked as typed; `pin` (0117), four digits the vault
+     * made up, checked as typed.
      */
-    secret_kind: 'password' | 'generated' | null;
+    secret_kind: 'pin' | 'password' | 'generated' | null;
     email_code: Generated<boolean>;
     this_device_only: Generated<boolean>;
     device_hash: Buffer | null;

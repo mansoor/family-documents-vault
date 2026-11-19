@@ -702,6 +702,21 @@ export interface Share {
    */
   emailed_by_name?: string | null;
   /**
+   * The vault can text it to its recipient for the caller (0.9.0-dev.69,
+   * `features.link_texts`): `revealable`, it opens now, and the household's
+   * text messages are set up and tested. `POST /shares/{id}/text` sends it.
+   * Absent from older vaults: nothing is texted.
+   */
+  textable?: boolean;
+  /**
+   * Where the vault last texted it, masked (`•••• •••123`): never the
+   * number. For whoever sees the link, as `emailed_to` is. Null when it has
+   * not been texted. Absent from older vaults.
+   */
+  texted_to?: string | null;
+  /** Who had the vault text it last, by name as the reader is given it; null for none. */
+  texted_by_name?: string | null;
+  /**
    * The caller made it and it still works, or is only paused (0.9.0, LK,
    * `features.link_changes`): `PATCH /shares/{id}` changes its properties.
    * False for anybody else's, for one that has ended or been opened as often
@@ -766,6 +781,39 @@ export interface ShareEmailed {
   sent_to: string;
   sent_at: string;
   /** How many more this link may be emailed today. */
+  sends_left: number;
+}
+
+/**
+ * `POST /shares/{id}/text` and `POST /upload-requests/{id}/text`
+ * (0.9.0-dev.69, `features.link_texts`): the vault texts the link to `to`, a
+ * mobile number in the household's country, through the household's own
+ * text messages (Settings → Text messages). The text says who it is from
+ * and when it stops working, in neutral words — never what it is to, what
+ * is asked for, its PIN, its password or a code.
+ *
+ * Whoever made it alone, and only while `textable`: `404 not_found` for
+ * anybody else's, `410` for one that has ended, `409` paused or made before
+ * copies were kept, `409 sms_not_set_up` while the household's texts are
+ * not set up and tested, `409 sms_cap_reached` past the month's texts or
+ * links' and requests' half of them, `422 phone_number_invalid` for
+ * anything but a mobile number in the household's country (never a
+ * landline, premium-rate, shared-cost, freephone, UAN or VoIP one), `503
+ * sms_not_sent` when SMS Gate does not take it. Within 15 minutes of making
+ * it, it asks what making it asked; later, `403 step_up_required` with
+ * action `email_share`. At most 3 a link or request, and 20 a person —
+ * links and requests together — in a day (`429 text_link_limit`). Written
+ * to the activity log with the number masked, never the link.
+ */
+export interface LinkTextInput {
+  to: string;
+}
+
+export interface LinkTexted {
+  /** The number, masked (`•••• •••123`), as the list and the activity log say it. */
+  sent_to: string;
+  sent_at: string;
+  /** How many more times this one may be texted today. */
   sends_left: number;
 }
 
