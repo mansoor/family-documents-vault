@@ -170,6 +170,28 @@ export interface CabinetCounts {
    * where originals are kept; absent otherwise, and from older vaults.
    */
   new_folders?: boolean;
+  /**
+   * How many documents the cabinet holds for the caller, each once however
+   * many folders hold it (19 Nov 2026): exactly the Documents table's
+   * unfiltered total — what they see, out of the Trash, notes left out.
+   * With a saved layout only; absent from older vaults.
+   */
+  documents?: number;
+  /** How many of them no shown folder holds, by its question or a pin (GET /cabinet/unfiled). */
+  unfiled?: number;
+  /** How many of them more than one shown folder holds: why the folders add up to more. */
+  in_several?: number;
+}
+
+/**
+ * What a cabinet holds, in words beside its total (19 Nov 2026): "2 aren't
+ * in any folder", "3 are in more than one folder". Null for none.
+ */
+export function unfiledWords(n: number): string | null {
+  return n <= 0 ? null : `${n} ${n === 1 ? 'isn’t' : 'aren’t'} in any folder`;
+}
+export function inSeveralWords(n: number): string | null {
+  return n <= 0 ? null : `${n} ${n === 1 ? 'is' : 'are'} in more than one folder`;
 }
 
 /** A folder a document is in, as GET /documents/{id}/also-in names it. */

@@ -6319,6 +6319,30 @@ export function installFakeApi(state: FakeState) {
           dividers,
         });
       }
+      // Every paper the table lists, each with how many shown folders hold it
+      // (19 Nov 2026): by its question, or a pin.
+      const placed = () => {
+        const all = tabled({ notes: 'exclude' })?.items ?? [];
+        const holding = new Map<string, number>(all.map((d) => [d.id, 0]));
+        for (const { f } of folders) {
+          const ids = new Set([
+            ...(tabled(f.filter)?.items ?? []).map((d) => d.id),
+            ...livePins(f.id),
+          ]);
+          for (const id of ids) {
+            const had = holding.get(id);
+            if (had !== undefined) holding.set(id, had + 1);
+          }
+        }
+        return all.map((doc) => ({ doc, folders: holding.get(doc.id) ?? 0 }));
+      };
+      if (path === '/api/v1/cabinet/unfiled' && method === 'GET') {
+        const items = placed()
+          .filter((x) => x.folders === 0)
+          .map((x) => x.doc as { id: string } & Parameters<typeof datedOf>[0])
+          .sort((a, b) => datedOf(b).localeCompare(datedOf(a)));
+        return json({ items, total: items.length, has_more: false, next_cursor: null });
+      }
       if (path === '/api/v1/cabinet' && method === 'GET') return json(held);
       if (path === '/api/v1/cabinet' && method === 'PUT') {
         const sent = body as { layout: CabinetLayout; version: number; pins_moved?: PinsMoved[] };
@@ -6374,6 +6398,17 @@ export function installFakeApi(state: FakeState) {
           ),
           // Folders papers came from, not in the cabinet yet (C4): as the drawing says.
           ...(state.fromFolders ? { new_folders: state.fromFolders.added.folders > 0 } : {}),
+          // What it holds in all (19 Nov 2026): each paper once; none, and several.
+          ...(held.layout
+            ? (() => {
+                const all = placed();
+                return {
+                  documents: all.length,
+                  unfiled: all.filter((x) => x.folders === 0).length,
+                  in_several: all.filter((x) => x.folders > 1).length,
+                };
+              })()
+            : {}),
         });
       }
       if (alsoInAt && method === 'GET') {

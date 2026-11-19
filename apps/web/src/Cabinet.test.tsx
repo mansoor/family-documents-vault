@@ -309,6 +309,77 @@ describe('browsing my cabinet', () => {
   });
 });
 
+describe('what the cabinet holds in all (19 Nov 2026)', () => {
+  /** Identity for everyone; Mansoor's financial; his passport pinned there too; a scan with no topic. */
+  const HELD: CabinetLayout = {
+    arranged_by: null,
+    cabinets: [
+      {
+        id: 'c',
+        name: 'Papers',
+        hidden: false,
+        drawers: [
+          {
+            id: 'd',
+            name: 'Drawer',
+            hidden: false,
+            folders: [
+              { id: 'f-a', name: 'Identity', hidden: false, filter: { category: 'identity' } },
+              {
+                id: 'f-b',
+                name: 'My money',
+                hidden: false,
+                filter: { member_id: 'me', category: 'financial' },
+              },
+            ],
+          },
+        ],
+      },
+    ],
+  };
+  const SCAN = {
+    ...PASSPORT,
+    id: 'doc-scan',
+    title: 'A scan to sort',
+    type_key: null,
+    category: null,
+    etag: '"scan"',
+  };
+
+  it('says how many documents it holds, as the table does; which are in no folder; which in several', async () => {
+    at('/documents?show=cabinet', {
+      documents: [...DOCS, SCAN].map((d) => ({ ...d })),
+      cabinet: { layout: HELD, version: 1, updated_at: new Date().toISOString() },
+      cabinetPins: [{ folder_id: 'f-b', document_id: PASSPORT.id }],
+    });
+    // Each paper once: four, though the folders hold three and two.
+    expect(await screen.findByText(/^· 4 documents$/)).toBeVisible();
+    const tree = screen.getByRole('navigation', { name: 'Drawers and folders in Papers' });
+    expect(
+      await within(tree).findByRole('button', { name: /^Identity, ?2 documents$/ }),
+    ).toBeVisible();
+    expect(within(tree).getByRole('button', { name: /^My money, ?2 documents$/ })).toBeVisible();
+    expect(
+      screen.getByText(
+        '1 is in more than one folder, so the folders add up to more than 4 documents.',
+        {
+          exact: false,
+        },
+      ),
+    ).toBeVisible();
+    // Those in no folder, listed.
+    fireEvent.click(screen.getByRole('link', { name: '1 isn’t in any folder' }));
+    await waitFor(() => expect(window.location.search).toContain('unfiled=1'));
+    const pane = await screen.findByRole('region', { name: 'Not in any folder' });
+    expect(await within(pane).findByText('A scan to sort')).toBeVisible();
+    expect(within(pane).queryByText("Mansoor's passport")).toBeNull();
+    await expectAccessible();
+    // The table says the same total.
+    fireEvent.click(within(await toggle()).getByRole('button', { name: 'Table' }));
+    expect(await screen.findByText('4 documents')).toBeVisible();
+  });
+});
+
 describe('arranging my cabinet', () => {
   it('draws it, lets each part be renamed, hidden, moved and merged, and saves it', async () => {
     const state = at('/documents?show=cabinet');

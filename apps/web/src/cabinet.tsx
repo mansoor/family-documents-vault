@@ -6,6 +6,8 @@ import {
   folderTreeWords,
   FOLDERS_CABINET,
   daySpanWords,
+  inSeveralWords,
+  unfiledWords,
   dividerMode,
   dividersProblemOf,
   layoutProblem,
@@ -57,7 +59,13 @@ import { storedRole } from './session.js';
 
 /** The address of the cabinet, with these choices. */
 export function cabinetHref(
-  over: { cabinet?: string; folder?: string; arrange?: boolean; fromFolders?: boolean } = {},
+  over: {
+    cabinet?: string;
+    folder?: string;
+    arrange?: boolean;
+    fromFolders?: boolean;
+    unfiled?: boolean;
+  } = {},
 ): string {
   const p = new URLSearchParams({ show: 'cabinet' });
   if (over.cabinet) p.set('cabinet', over.cabinet);
@@ -65,6 +73,8 @@ export function cabinetHref(
   if (over.arrange) p.set('arrange', '1');
   // Keep this folder tree as my cabinet (0.9.0, C4): its drawing, to look over first.
   if (over.fromFolders) p.set('from', 'folders');
+  // The papers no folder holds (19 Nov 2026).
+  if (over.unfiled) p.set('unfiled', '1');
   return `/documents?${p.toString()}`;
 }
 
@@ -208,6 +218,12 @@ export function CabinetDocuments() {
     [authVersion, version, layout !== null, loaded, treeOffered],
   );
   const counts = { ...told, data: told.data?.counts ?? null };
+  // What the cabinet holds in all, each paper once (19 Nov 2026): the
+  // table's own total; those in no folder; those in more than one.
+  const whole = told.data?.documents;
+  const unfiled = told.data?.unfiled ?? 0;
+  const inSeveral = told.data?.in_several ?? 0;
+  const showingUnfiled = params.get('unfiled') === '1';
   // Offered, never added unasked.
   const treeToAdd = treeOffered && !keepingTree && told.data?.new_folders === true;
   const names = useNames();
@@ -218,6 +234,7 @@ export function CabinetDocuments() {
     folder?: string;
     arrange?: boolean;
     fromFolders?: boolean;
+    unfiled?: boolean;
   }) => setParams(new URLSearchParams(cabinetHref(over).split('?')[1]));
 
   let body: ReactNode;
@@ -276,6 +293,8 @@ export function CabinetDocuments() {
         </div>
       </section>
     );
+  } else if (showingUnfiled) {
+    body = <UnfiledPane names={names} count={told.data?.unfiled} onBack={() => go({})} />;
   } else {
     body = (
       <Browse
@@ -315,6 +334,8 @@ export function CabinetDocuments() {
         <div className="cab-bar">
           <p className="muted">
             <strong className="cab-mine">My cabinet</strong>
+            {/* The total it holds, each paper once, in the table's own words. */}
+            {layout && typeof whole === 'number' && <span>{` · ${documentsCount(whole)}`}</span>}
             {layout?.arranged_by && (
               <span>
                 {' · '}
@@ -339,6 +360,14 @@ export function CabinetDocuments() {
           </p>
         </div>
       )}
+      {!arranging && !keepingTree && layout && (unfiled > 0 || inSeveral > 0) && (
+        <p className="muted cab-held">
+          {unfiled > 0 && <Link to={cabinetHref({ unfiled: true })}>{unfiledWords(unfiled)}</Link>}
+          {unfiled > 0 && inSeveral > 0 && ' · '}
+          {inSeveral > 0 &&
+            `${inSeveralWords(inSeveral) ?? ''}, so the folders add up to more than ${documentsCount(whole ?? 0)}.`}
+        </p>
+      )}
       <ErrorNote message={counts.error} />
       {body}
     </main>
@@ -346,6 +375,97 @@ export function CabinetDocuments() {
 }
 
 // ------------------------------------------------------------- browsing
+
+/**
+ * The papers no shown folder holds (19 Nov 2026): those with no topic or
+ * kind yet, those only a hidden folder holds, and those a cabinet arranged
+ * by hand asks for nowhere — newest first, a page at a time.
+ */
+function UnfiledPane(props: {
+  names: ReturnType<typeof useNames>;
+  count: number | undefined;
+  onBack: () => void;
+}) {
+  const { names } = props;
+  const { withToken } = useApp();
+  const navigate = useNavigate();
+  const [items, setItems] = useState<DocumentView[] | null>(null);
+  const [next, setNext] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [asked, setAsked] = useState(0);
+  const page = (cursor?: string) =>
+    withToken((t) => api.cabinetUnfiled(t, { limit: 50, ...(cursor ? { cursor } : {}) }));
+  useEffect(() => {
+    let cancelled = false;
+    void page()
+      .then((p) => {
+        if (cancelled || !p) return;
+        setItems(p.items);
+        setNext(p.next_cursor);
+        setError(null);
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) setError(describeError(err));
+      });
+    return () => {
+      cancelled = true;
+    };
+    // Asked again after a paper changed.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [asked]);
+  const more = async () => {
+    if (!next) return;
+    try {
+      const p = await page(next);
+      if (!p) return;
+      setItems((had) => [...(had ?? []), ...p.items]);
+      setNext(p.next_cursor);
+    } catch (err) {
+      setError(describeError(err));
+    }
+  };
+  return (
+    <section className="cab-pane" aria-labelledby="cab-unfiled-h">
+      <div className="cab-pane-head">
+        <h2 id="cab-unfiled-h" className="cab-tab">
+          <FolderIcon />
+          <span>Not in any folder</span>
+        </h2>
+        <Button kind="quiet" onClick={props.onBack}>
+          Back to my cabinet
+        </Button>
+      </div>
+      <p className="muted">
+        Papers none of your shown folders hold: those with no topic or kind yet, those only a hidden
+        folder holds, and those your folders don’t ask for.
+        {typeof props.count === 'number' && ` ${documentsCount(props.count)}.`}
+      </p>
+      <ErrorNote message={error} />
+      {items === null && !error && <p className="muted">Opening…</p>}
+      {items !== null && items.length === 0 && (
+        <p className="cab-none">Every document is in a folder.</p>
+      )}
+      {items !== null && items.length > 0 && (
+        <ul className="list doclist">
+          {items.map((d) => (
+            <DocRow
+              key={d.id}
+              doc={d}
+              types={names.types}
+              onOpen={() => void navigate(`/documents/${d.id}`)}
+              onChanged={() => setAsked((n) => n + 1)}
+            />
+          ))}
+        </ul>
+      )}
+      {next && (
+        <Button kind="quiet" onClick={() => void more()}>
+          Show more
+        </Button>
+      )}
+    </section>
+  );
+}
 
 /** Never shown: what Browse falls back to were it given no cabinet to show. */
 const NO_CABINET: Cabinet = { id: '', name: '', hidden: false, drawers: [] };

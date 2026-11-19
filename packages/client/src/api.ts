@@ -1040,6 +1040,13 @@ export function createApi(http: Http) {
       }),
     /** How many documents each shown folder holds for the caller, by the list's own rules. */
     cabinetCounts: (token: string) => request<CabinetCounts>('/api/v1/cabinet/counts', { token }),
+    /**
+     * The papers no shown folder of the caller's holds (19 Nov 2026), newest
+     * first, a page at a time: what the counts' `unfiled` counts. Absent
+     * from older vaults (404): ask only when the counts carry `unfiled`.
+     */
+    cabinetUnfiled: (token: string, params: { cursor?: string; limit?: number } = {}) =>
+      request<DocumentPage>(`/api/v1/cabinet/unfiled${qs(params)}`, { token }),
     /** The caller's shown folders this document is in ("Also in"); 404 for one they may not see. */
     documentAlsoIn: (token: string, documentId: string) =>
       request<AlsoIn>(`/api/v1/documents/${enc(documentId)}/also-in`, { token }),

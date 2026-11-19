@@ -7,6 +7,7 @@ import {
   LOCATION_SORT_REFUSAL,
   maySortByLocation,
   NOBODY_MEMBER_FILTER,
+  NOTE_KIND,
   PLACE_SEPARATOR,
   seesLocation,
   STATUS_ORDER,
@@ -356,6 +357,160 @@ export async function documentMatches(
     }
   }
   return out;
+}
+
+/** A document the table lists, and how many of a cabinet's folders hold it. */
+export interface PlacedDocument {
+  id: string;
+  owner_member_id: string | null;
+  household_owned: boolean;
+  category: string | null;
+  type_key: string | null;
+  /** The year it is about: issued, else added (`datedSql`). */
+  year: number;
+  /** How many of the folders hold it, by their question or a pin: each folder once. */
+  folders: number;
+}
+
+/** What a cabinet's folders hold, worked out in one pass (`documentPlaces`). */
+export interface CabinetPlaces {
+  /** Every document the table lists, unfiltered, with how many folders hold it. */
+  documents: PlacedDocument[];
+  /**
+   * Each folder's count, as GET /cabinet/counts gives it: what its question
+   * lists besides its pins — exactly the table's total for it, notes
+   * included if it asks them — and its pins; null for one the table would
+   * refuse, or with no question left.
+   */
+  counts: Array<number | null>;
+}
+
+/** What one reading of a paper gives: what it is, and what a status is made from if asked. */
+type PlaceRow = Partial<StatusRow> & {
+  id: string;
+  owner_member_id: string | null;
+  household_owned: boolean;
+  category: string | null;
+  type_key: string | null;
+  year: number;
+  is_note: boolean;
+} & Record<string, unknown>;
+
+/**
+ * What a cabinet's `folders` hold for this reader (19 Nov 2026), worked
+ * out in one pass over what they may see, out of the Trash: a reading of
+ * every paper for each hundred folders, each folder a column of whether its
+ * question lists the paper by the table's own conditions (`whereOf`), each
+ * column folded into its folder's count and the paper's folders as it is
+ * read. A status is worked out only for the papers a folder that asks one
+ * would list. A folder holds a paper its question lists or one pinned into
+ * it; one the table would refuse (or with no question left) holds only its
+ * pins. The documents are the table's unfiltered list — notes left out: its
+ * `total` — each with how many folders hold it: the cabinet's total, those
+ * in no folder and those in more than one.
+ */
+export async function documentPlaces(
+  trx: Db,
+  p: Principal,
+  folders: ReadonlyArray<{ q: ListQuery | null; pins: readonly string[] }>,
+): Promise<CabinetPlaces> {
+  const asked = folders.flatMap(({ q }, i) =>
+    q && !tableRefuses(p, q)
+      ? [{ i, allowed: asksStatus(q, q.status) ? statusAllowed(q, q.status) : null, q }]
+      : [],
+  );
+  const statusAsked = asked.some((a) => a.allowed !== null);
+  const pinned = folders.map(({ pins }) => new Set(pins));
+  // Each paper's folders, as indexes; each folder's count besides its pins.
+  const papers = new Map<string, PlaceRow>();
+  const holding = new Map<string, Set<number>>();
+  const besidePins = folders.map(() => 0);
+  // Papers a folder asking a status would list: [paper, the folder's place in `asked`].
+  const byStatus: Array<[string, number]> = [];
+  const hold = (id: string, n: number) => {
+    const { i } = asked[n] as (typeof asked)[number];
+    if (!pinned[i]?.has(id)) besidePins[i] = (besidePins[i] ?? 0) + 1;
+    const set = holding.get(id);
+    if (set) set.add(i);
+    else holding.set(id, new Set([i]));
+  };
+  for (let at = 0; at === 0 || at < asked.length; at += COUNTS_AT_ONCE) {
+    const some = asked.slice(at, at + COUNTS_AT_ONCE);
+    const columns = [
+      at === 0
+        ? sql`${statusAsked ? STATUS_COLUMNS : sql`d.id, d.type_key, d.owner_member_id, d.household_owned`},
+              d.category, extract(year from ${datedSql('d')})::int as year,
+              d.type_key is not distinct from ${NOTE_KIND} as is_note`
+        : sql`d.id`,
+      ...some.map(({ q }, n) => sql`coalesce(${whereOf(p, q)}, false) as ${sql.ref(`m${n}`)}`),
+    ];
+    const read = (
+      await sql<PlaceRow>`/* documentPlaces */ select ${sql.join(columns, sql`, `)}
+          from document d
+         where ${readDocument(p)} and d.deleted_at is null`.execute(trx)
+    ).rows;
+    for (const r of read) {
+      if (at === 0) {
+        const { id, owner_member_id, household_owned, category, type_key, year, is_note } = r;
+        papers.set(id, {
+          ...(statusAsked ? r : {}),
+          id,
+          owner_member_id,
+          household_owned,
+          category,
+          type_key,
+          year,
+          is_note,
+        });
+      }
+      some.forEach((a, n) => {
+        if (r[`m${n}`] !== true) return;
+        if (a.allowed === null) hold(r.id, at + n);
+        else byStatus.push([r.id, at + n]);
+      });
+      if (at === 0 && some.length > 0) {
+        // Kept only as what a paper is: each folder's column is folded already.
+        const kept = papers.get(r.id) as PlaceRow;
+        for (let n = 0; n < some.length; n += 1) delete kept[`m${n}`];
+      }
+    }
+  }
+  if (byStatus.length > 0) {
+    const ids = [...new Set(byStatus.map(([id]) => id))];
+    const ranked = await withStatus(
+      trx,
+      ids.map((id) => papers.get(id) as StatusRow & PlaceRow),
+      seesLocation(p.role),
+    );
+    const statusOf = new Map(ranked.map((r) => [r.row.id, r.status]));
+    for (const [id, n] of byStatus) {
+      if ((asked[n] as (typeof asked)[number]).allowed?.(statusOf.get(id) ?? '')) hold(id, n);
+    }
+  }
+  // Pins: each paper pinned once into each folder.
+  pinned.forEach((ids, i) => {
+    for (const id of ids) {
+      if (!papers.has(id)) continue;
+      const set = holding.get(id);
+      if (set) set.add(i);
+      else holding.set(id, new Set([i]));
+    }
+  });
+  const counted = new Set(asked.map((a) => a.i));
+  return {
+    documents: [...papers.values()]
+      .filter((r) => !r.is_note)
+      .map((r) => ({
+        id: r.id,
+        owner_member_id: r.owner_member_id,
+        household_owned: r.household_owned,
+        category: r.category,
+        type_key: r.type_key,
+        year: r.year,
+        folders: holding.get(r.id)?.size ?? 0,
+      })),
+    counts: folders.map((f, i) => (counted.has(i) ? (besidePins[i] ?? 0) + f.pins.length : null)),
+  };
 }
 
 /** The columns of a document a list is made from (`DocRow`): never its search index. */

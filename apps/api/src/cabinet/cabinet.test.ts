@@ -872,6 +872,7 @@ describe.skipIf(!testAdminUrl())('my cabinet', () => {
       // came from folders the cabinet has none for yet.
       const flag = statements.filter((q) => /source_folder/.test(q) && /exists/.test(q));
       expect(flag).toHaveLength(1);
+      // The same readings give what the whole cabinet holds (19 Nov 2026).
       const reads = statements.filter((q) => /from document d/.test(q) && !flag.includes(q));
       expect(reads.length).toBeLessThanOrEqual(2);
       expect(statements.length).toBeLessThan(40);

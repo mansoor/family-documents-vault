@@ -6,6 +6,18 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.9.0-dev.70] - 2026-11-19 — the cabinet holds every document
+
+### Fixed
+
+- **A cabinet drawn by Arrange by holds papers added after it was drawn.** A cabinet arranged by topic, then year, then person (or either other way) only had folders for the topics, years and people there were when it was drawn, so a paper of a new topic — a first bank statement or payslip, say — had no folder, and the Cabinet held fewer documents than the Table. Now, each time you open your cabinet, a paper no folder holds gets the folder the arrangement would have given it, in its place: a Financial cabinet before Tax, a new year's drawer, a new person's folder. Everything you renamed, hid or merged stays as it is, and a paper of a topic you merged into another drawer goes into that drawer; folders are added up to what a cabinet can hold, and any past that stay in no folder; a cabinet you arranged by hand is never changed. A name with " › " in it is drawn with " - " instead. Sensitive and Adults-only papers were never the cause.
+
+### Added
+
+- **The Cabinet says how many documents it holds**, in the same words as the Table ("15 documents"): each document once, however many folders hold it, so the two always agree for the same person.
+- **"2 aren't in any folder"**, when some papers are in none of your shown folders — no topic or kind yet, only in a hidden folder, or not asked for by a cabinet you arranged by hand — with a link that lists them, newest first.
+- **"3 are in more than one folder"**, when a paper is pinned into another folder, or more than one of your folders asks for it, so the folders' numbers adding up to more than the total make sense.
+
 ## [0.9.0-dev.69] - 2026-11-19 — Sharing and Ask for documents alike
 
 ### Added
