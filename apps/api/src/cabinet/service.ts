@@ -2,6 +2,7 @@ import { randomBytes } from 'node:crypto';
 import { withPrincipal, type Db } from '@fdv/db';
 import {
   addFolderTree,
+  addToDrawing,
   askedFolders,
   compareFolders,
   drawCabinet,
@@ -36,6 +37,7 @@ import {
   type CabinetFromFolders,
   type CabinetGroup,
   type CabinetLayout,
+  type CabinetNames,
   type CabinetPreview,
   type CabinetView,
   type DocumentPage,
@@ -61,8 +63,11 @@ import {
 import {
   documentCounts,
   documentMatches,
+  documentPlaces,
   documentYears,
   refusedForCabinet,
+  type CabinetPlaces,
+  type PlacedDocument,
 } from '../documents/table.js';
 
 /** The most folders one drawing reads: past what any cabinet can hold (CABINET_LIMITS.folders_total). */
@@ -228,23 +233,89 @@ export class CabinetService {
     private readonly docs: DocumentService,
   ) {}
 
-  /** GET /cabinet: the caller's layout; none until they save one. */
+  /**
+   * GET /cabinet: the caller's layout; none until they save one. One drawn
+   * by Arrange by is kept up to date first (19 Nov 2026): a paper no
+   * folder of it holds, shown or hidden, by its question or a pin — one of
+   * a topic, year or person there was none of when it was drawn — gets the
+   * folder the drawing would have given it (`addToDrawing`), up to what a
+   * cabinet may hold, saved as a new version made to the one read. A layout
+   * arranged by hand is never changed. The papers are only looked over when
+   * one the caller sees was added or changed since the layout was saved, and
+   * not again while nothing has changed since they last were.
+   */
   async get(p: Principal): Promise<CabinetView> {
-    return withPrincipal(this.db, p, async (trx) => {
+    const read = await withPrincipal(this.db, p, async (trx) => {
       const row = await trx
         .selectFrom('cabinet_layout')
         .select(['layout', 'version', 'updated_at'])
         .where('household_id', '=', p.householdId)
         .where('member_id', '=', p.memberId)
         .executeTakeFirst();
-      return row
-        ? {
-            layout: row.layout as CabinetLayout,
-            version: row.version,
-            updated_at: row.updated_at.toISOString(),
-          }
-        : { layout: null, version: 0, updated_at: null };
+      if (!row) return null;
+      const layout = row.layout as CabinetLayout;
+      const view: CabinetView = {
+        layout,
+        version: row.version,
+        updated_at: row.updated_at.toISOString(),
+      };
+      if (!Array.isArray(layout?.cabinets) || !layout.arranged_by) return { view, unheld: [] };
+      const stamp = await stampOf(trx, p);
+      const key = `${p.householdId}:${p.memberId}`;
+      const looked = `${row.version}|${stamp.key}`;
+      // Nothing added or changed since it was saved, or since it was last looked over.
+      if (
+        LOOKED_OVER.get(key) === looked ||
+        stamp.last === null ||
+        stamp.last.getTime() <= row.updated_at.getTime()
+      ) {
+        return { view, unheld: [] };
+      }
+      const placed = await placesOf(trx, p, layout, 'every');
+      remember(LOOKED_OVER, key, looked);
+      return { view, unheld: placed.documents.filter((d) => d.folders === 0) };
     });
+    if (!read) return { layout: null, version: 0, updated_at: null };
+    const { view, unheld } = read;
+    const layout = view.layout as CabinetLayout;
+    if (unheld.length === 0) return view;
+    // Folders to add: named as the caller is given people and kinds, and
+    // saved only over the version read — a change made meanwhile wins.
+    const kinds = await this.kindNames(p);
+    return withPrincipal(this.db, p, async (trx) => {
+      const kept = addToDrawing(layout, groupsOf(unheld), await namesFor(trx, p, kinds), () =>
+        randomBytes(6).toString('base64url'),
+      );
+      if (kept.added === 0) return view;
+      const json = JSON.stringify(kept.layout);
+      // Checked again as PUT /cabinet checks it: never saved past its limits.
+      if (
+        layoutProblemOf(kept.layout) !== null ||
+        Buffer.byteLength(json) > CABINET_LIMITS.layout_bytes
+      ) {
+        return view;
+      }
+      const saved = await trx
+        .updateTable('cabinet_layout')
+        .set({ layout: json, version: sql<number>`version + 1`, updated_at: sql<Date>`now()` })
+        .where('household_id', '=', p.householdId)
+        .where('member_id', '=', p.memberId)
+        .where('version', '=', view.version)
+        .returning(['version', 'updated_at'])
+        .executeTakeFirst();
+      // Changed meanwhile, somewhere else: that version is what is read next.
+      if (!saved) return view;
+      return {
+        layout: kept.layout,
+        version: saved.version,
+        updated_at: saved.updated_at.toISOString(),
+      };
+    });
+  }
+
+  /** Each kind's name, as `types()` gives it to the caller. */
+  private async kindNames(p: Principal): Promise<Map<string, string>> {
+    return new Map((await this.docs.types(p, { all: true })).map((t) => [t.key, t.label] as const));
   }
 
   /**
@@ -337,10 +408,8 @@ export class CabinetService {
    * the caller is given them, a kind as `types()` gives it.
    */
   async preview(p: Principal, by: ArrangeBy): Promise<CabinetPreview> {
-    const kinds = new Map(
-      (await this.docs.types(p, { all: true })).map((t) => [t.key, t.label] as const),
-    );
-    const { groups, people } = await withPrincipal(this.db, p, async (trx) => {
+    const kinds = await this.kindNames(p);
+    const { groups, names } = await withPrincipal(this.db, p, async (trx) => {
       const rows = (
         await sql<{
           owner_member_id: string | null;
@@ -357,13 +426,10 @@ export class CabinetService {
              and d.type_key is distinct from ${NOTE_KIND}
            group by 1, 2, 3, 4, 5`.execute(trx)
       ).rows;
-      const people = await trx.selectFrom('member').select(['id', 'display_name']).execute();
       return {
-        people,
+        names: await namesFor(trx, p, kinds),
         groups: rows.map((r): CabinetGroup => ({
-          person: r.household_owned
-            ? HOUSEHOLD_MEMBER_FILTER
-            : (r.owner_member_id ?? NOBODY_MEMBER_FILTER),
+          person: personOf(r),
           category: r.category,
           type_key: r.type_key,
           year: r.year,
@@ -371,36 +437,7 @@ export class CabinetService {
         })),
       };
     });
-    const short = shortName(people);
-    const full = new Map(people.map((m) => [m.id, m.display_name] as const));
-    const personName = (id: string) =>
-      id === HOUSEHOLD_MEMBER_FILTER
-        ? THE_HOUSEHOLD
-        : id === NOBODY_MEMBER_FILTER
-          ? NOT_SURE_YET
-          : (short.get(id) ?? 'Someone in the family');
-    // The caller first; then the family by name; the household's; Not sure yet last.
-    const rank = (id: string) =>
-      id === p.memberId
-        ? 0
-        : id === HOUSEHOLD_MEMBER_FILTER
-          ? 2
-          : id === NOBODY_MEMBER_FILTER
-            ? 3
-            : 1;
-    const drawn = drawCabinet(
-      by,
-      groups,
-      {
-        person: personName,
-        kind: (key) => kinds.get(key) ?? 'Another kind',
-        personOrder: (a, b) =>
-          rank(a) - rank(b) ||
-          (full.get(a) ?? '').localeCompare(full.get(b) ?? '') ||
-          a.localeCompare(b),
-      },
-      () => randomBytes(6).toString('base64url'),
-    );
+    const drawn = drawCabinet(by, groups, names, () => randomBytes(6).toString('base64url'));
     const problem = layoutProblemOf(drawn.layout);
     if (problem !== null) {
       throw new ApiError(422, problem.code, problem.message, { detail: by });
@@ -500,25 +537,73 @@ export class CabinetService {
         const pinned = pins.get(s.folder.id);
         return q && pinned ? { ...q, cabinet: { except: pinned } } : q;
       });
-      const asked = questions.flatMap((q, i) => (q ? [{ q, i }] : []));
-      const got = await documentCounts(
+      // One pass (19 Nov 2026): each folder's count, and what the cabinet
+      // holds in all — each paper once, the table's own total; those no shown
+      // folder holds; those several do.
+      const placed = await documentPlaces(
         trx,
         p,
-        asked.map((a) => a.q),
+        shown.map((s, i) => ({ q: questions[i] ?? null, pins: pins.get(s.folder.id) ?? [] })),
       );
       const counts: Record<string, number | null> = {};
-      for (const s of shown) counts[s.folder.id] = null;
-      asked.forEach(({ i }, n) => {
-        const id = (shown[i] as Placed).folder.id;
-        const held = got[n];
-        counts[id] =
-          held === null || held === undefined ? null : held + (pins.get(id)?.length ?? 0);
+      shown.forEach((s, i) => {
+        counts[s.folder.id] = placed.counts[i] ?? null;
       });
       // Every folder's live pins, hidden ones too: what saving a new
       // arrangement would let go of, said before it is (C2 review).
       const pinsOf: Record<string, number> = {};
       for (const [folder, docs] of pins) pinsOf[folder] = docs.length;
-      return { version: row.version, counts, pins: pinsOf, ...fresh };
+      return {
+        version: row.version,
+        counts,
+        pins: pinsOf,
+        ...fresh,
+        documents: placed.documents.length,
+        unfiled: placed.documents.filter((d) => d.folders === 0).length,
+        in_several: placed.documents.filter((d) => d.folders > 1).length,
+      };
+    });
+  }
+
+  /**
+   * GET /cabinet/unfiled (19 Nov 2026): the papers no shown folder of the
+   * caller's holds — by its question or a pin — newest first, a page at a
+   * time, as the table lists them: `total` is GET /cabinet/counts's
+   * `unfiled`. With no cabinet saved, every paper the table lists. Worked
+   * out once and paged through: again only once the layout, a paper the
+   * caller sees or one of their pins has changed.
+   */
+  async unfiled(
+    p: Principal,
+    q: { cursor?: string | undefined; limit?: number | undefined },
+  ): Promise<DocumentPage> {
+    const ids = await withPrincipal(this.db, p, async (trx) => {
+      const row = await trx
+        .selectFrom('cabinet_layout')
+        .select(['layout', 'version'])
+        .where('household_id', '=', p.householdId)
+        .where('member_id', '=', p.memberId)
+        .executeTakeFirst();
+      const key = `${p.householdId}:${p.memberId}`;
+      const stamp = `${row?.version ?? 0}|${(await stampOf(trx, p)).key}`;
+      const had = UNFILED.get(key);
+      if (had?.stamp === stamp) return had.ids;
+      const layout: CabinetLayout = (row?.layout as CabinetLayout | undefined) ?? {
+        arranged_by: null,
+        cabinets: [],
+      };
+      const ids = (await placesOf(trx, p, layout, 'shown')).documents
+        .filter((d) => d.folders === 0)
+        .map((d) => d.id);
+      remember(UNFILED, key, { stamp, ids });
+      return ids;
+    });
+    return this.docs.table(p, {
+      cabinet: { only: ids },
+      sort: 'dated',
+      direction: 'desc',
+      ...(q.limit !== undefined ? { limit: q.limit } : {}),
+      ...(q.cursor !== undefined ? { cursor: q.cursor } : {}),
     });
   }
 
@@ -953,4 +1038,120 @@ async function hasNewFolders(
 function nodesOf(layout: CabinetLayout | null | undefined): Array<{ id: string; name: string }> {
   if (!Array.isArray(layout?.cabinets)) return [];
   return layout.cabinets.flatMap((c) => [c, ...c.drawers.flatMap((d) => [d, ...d.folders])]);
+}
+
+/** Whose a paper is, as a drawing names them: a person, the household's, or Not sure yet. */
+function personOf(r: { household_owned: boolean; owner_member_id: string | null }): string {
+  return r.household_owned ? HOUSEHOLD_MEMBER_FILTER : (r.owner_member_id ?? NOBODY_MEMBER_FILTER);
+}
+
+/** Papers counted into a drawing's groups: by person, topic, kind and year. */
+function groupsOf(docs: readonly PlacedDocument[]): CabinetGroup[] {
+  const by = new Map<string, CabinetGroup>();
+  for (const d of docs) {
+    const g: CabinetGroup = {
+      person: personOf(d),
+      category: d.category,
+      type_key: d.type_key,
+      year: d.year,
+      n: 1,
+    };
+    const key = JSON.stringify([g.person, g.category, g.type_key, g.year]);
+    const had = by.get(key);
+    if (had) had.n += 1;
+    else by.set(key, g);
+  }
+  return [...by.values()];
+}
+
+/**
+ * How a drawing names people and kinds for the caller: people as the
+ * database gives them, the caller first, then the family by name, the
+ * household's, Not sure yet last; kinds as `types()` gives them.
+ */
+async function namesFor(trx: Db, p: Principal, kinds: Map<string, string>): Promise<CabinetNames> {
+  const people = await trx.selectFrom('member').select(['id', 'display_name']).execute();
+  const short = shortName(people);
+  const full = new Map(people.map((m) => [m.id, m.display_name] as const));
+  const rank = (id: string) =>
+    id === p.memberId
+      ? 0
+      : id === HOUSEHOLD_MEMBER_FILTER
+        ? 2
+        : id === NOBODY_MEMBER_FILTER
+          ? 3
+          : 1;
+  return {
+    person: (id) =>
+      id === HOUSEHOLD_MEMBER_FILTER
+        ? THE_HOUSEHOLD
+        : id === NOBODY_MEMBER_FILTER
+          ? NOT_SURE_YET
+          : (short.get(id) ?? 'Someone in the family'),
+    kind: (key) => kinds.get(key) ?? 'Another kind',
+    personOrder: (a, b) =>
+      rank(a) - rank(b) ||
+      (full.get(a) ?? '').localeCompare(full.get(b) ?? '') ||
+      a.localeCompare(b),
+  };
+}
+
+/**
+ * Every paper the table lists the caller, with how many of a layout's
+ * folders hold it — its shown ones, or every one, hidden too — by its
+ * question (the list's own) or a live pin.
+ */
+async function placesOf(
+  trx: Db,
+  p: Principal,
+  layout: CabinetLayout,
+  which: 'shown' | 'every',
+): Promise<CabinetPlaces> {
+  const folders =
+    which === 'shown' ? shownFolders(layout).map((s) => s.folder) : everyFolder(layout);
+  const pins = await livePins(trx, p);
+  return documentPlaces(
+    trx,
+    p,
+    folders.map((f) => ({ q: questionOf(f), pins: pins.get(f.id) ?? [] })),
+  );
+}
+
+/**
+ * What has changed for the caller, cheaply (19 Nov 2026): the latest a
+ * paper they see was added or changed, how many there are (one gone shows
+ * too), and their pins. The same stamp, the same papers in the same folders.
+ */
+async function stampOf(trx: Db, p: Principal): Promise<{ last: Date | null; key: string }> {
+  const r = (
+    await sql<{ last: Date | null; n: number; pins: number; pinned: Date | null }>`
+      select greatest(max(d.updated_at), max(d.created_at)) as last, count(*)::int as n,
+             (select count(*)::int from cabinet_pin cp
+               where cp.household_id = ${p.householdId}::uuid
+                 and cp.member_id = ${p.memberId}::uuid) as pins,
+             (select max(cp.pinned_at) from cabinet_pin cp
+               where cp.household_id = ${p.householdId}::uuid
+                 and cp.member_id = ${p.memberId}::uuid) as pinned
+        from document d
+       where ${readDocument(p)} and d.deleted_at is null`.execute(trx)
+  ).rows[0];
+  const last = r?.last ?? null;
+  return {
+    last,
+    key: [last?.getTime() ?? 0, r?.n ?? 0, r?.pins ?? 0, r?.pinned?.getTime() ?? 0].join(':'),
+  };
+}
+
+/** The most people each of these remembers: past it, the longest unasked is let go. */
+const REMEMBERED = 1000;
+
+/** Each person's drawn cabinet, as it was when last looked over for papers in no folder. */
+const LOOKED_OVER = new Map<string, string>();
+/** Each person's papers in no folder, as last worked out, and for what. */
+const UNFILED = new Map<string, { stamp: string; ids: string[] }>();
+
+function remember<T>(map: Map<string, T>, key: string, value: T): void {
+  map.delete(key);
+  map.set(key, value);
+  if (map.size > REMEMBERED) map.delete(map.keys().next().value as string);
 }

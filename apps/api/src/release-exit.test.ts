@@ -827,6 +827,9 @@ const RULES: Record<string, Rule> = {
     ],
   },
   'GET /api/v1/cabinet/counts': { who: 'signedIn' },
+  // The papers no shown folder of the caller's holds (19 Nov 2026): the
+  // table's own listing of them, so nothing the caller may not open.
+  'GET /api/v1/cabinet/unfiled': { who: 'signedIn' },
   // Bring your tree (0.9.0, C4): the folders the caller's own papers came
   // from, drawn into their own cabinet and not saved — only for whoever sees
   // where originals are kept (a viewer and a guest are refused, 403), and

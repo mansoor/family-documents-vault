@@ -17,6 +17,8 @@ import { AISHA, fresh, installFakeApi, ME, signedIn, type FakeState } from './te
 beforeEach(() => {
   localStorage.clear();
   window.history.replaceState({}, '', '/');
+  // No title left from a test before: each waits for its own page's.
+  document.title = '';
 });
 afterEach(() => {
   cleanup();
@@ -367,8 +369,9 @@ describe('the page a clinician’s link opens (0.9.0, H4)', () => {
     expect(
       await screen.findByRole('heading', { name: 'Emergency information for Zain' }),
     ).toBeInTheDocument();
-    // The window's title never says what it is.
-    expect(document.title).toMatch(/^Shared information/);
+    // The window's title never says what it is. Set by an effect after the
+    // render that shows the heading: waited for, never read a tick early.
+    await waitFor(() => expect(document.title).toMatch(/^Shared information/));
     expect(screen.getByText('Penicillin · hives')).toBeInTheDocument();
     // Ticked but empty: said, never left to look like nothing is known.
     expect(screen.getByText('Nothing entered')).toBeInTheDocument();
@@ -395,7 +398,8 @@ describe('the page a clinician’s link opens (0.9.0, H4)', () => {
     expect(screen.getByText(/shared some information with you/)).toBeInTheDocument();
     expect(screen.queryByText(/Zain/)).toBeNull();
     expect(screen.queryByText(/its pages/)).toBeNull();
-    expect(document.title).toMatch(/^Shared information/);
+    // Set by an effect after the render that shows the heading: waited for.
+    await waitFor(() => expect(document.title).toMatch(/^Shared information/));
   });
 });
 

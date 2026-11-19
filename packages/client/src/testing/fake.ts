@@ -1,5 +1,6 @@
 import {
   addFolderTree,
+  addToDrawing,
   askedFolders,
   compareFolders,
   ARRANGE_BY,
@@ -4539,7 +4540,102 @@ export function createFakeVault(): {
       const folderAt =
         /^\/api\/v1\/cabinet\/folders\/([^/]+)(\/documents|\/pins|\/pins\/([^/]+))?$/.exec(path);
       const method = init.method ?? 'GET';
-      if (path === '/api/v1/cabinet' && method === 'GET') return ok(held);
+      /** Papers counted into a drawing's groups, as the vault counts them. */
+      const groupsOf = (items: readonly DocumentView[]): CabinetGroup[] => {
+        const groups = new Map<string, CabinetGroup>();
+        for (const d of items) {
+          const person =
+            d.household_owned === true ? HOUSEHOLD_MEMBER_FILTER : (d.owner_member_id ?? 'none');
+          // As the dated filter reads it: a fake document keeps no day it was added.
+          const year = Number(
+            (d.issued?.date ?? d.created_at ?? new Date().toISOString()).slice(0, 4),
+          );
+          // Its own topic, else its kind's, as the vault keeps it.
+          const category =
+            d.category ?? state.types.find((t) => t.key === d.type_key)?.category ?? null;
+          const key = JSON.stringify([person, category, d.type_key, year]);
+          const g = groups.get(key);
+          if (g) g.n += 1;
+          else groups.set(key, { person, category, type_key: d.type_key, year, n: 1 });
+        }
+        return [...groups.values()];
+      };
+      const drawNames = () => {
+        const short = shortName(state.members);
+        const rank = (id: string) =>
+          id === who.memberId ? 0 : id === HOUSEHOLD_MEMBER_FILTER ? 2 : id === 'none' ? 3 : 1;
+        return {
+          person: (id: string) =>
+            id === HOUSEHOLD_MEMBER_FILTER
+              ? THE_HOUSEHOLD
+              : id === 'none'
+                ? NOT_SURE_YET
+                : (short.get(id) ?? 'Someone in the family'),
+          kind: (key: string) => state.types.find((t) => t.key === key)?.label ?? 'Another kind',
+          personOrder: (a: string, b: string) => rank(a) - rank(b) || a.localeCompare(b),
+        };
+      };
+      /**
+       * Every paper the table lists, each with how many of the layout's
+       * folders hold it (19 Nov 2026) — its shown ones, or every one — by
+       * its question or a live pin; or the table's refusal.
+       */
+      const placed = async (layout: CabinetLayout | null, which: 'shown' | 'every') => {
+        const all = await tabled({ notes: 'exclude' });
+        if ('status' in all) return all;
+        const folders =
+          which === 'shown'
+            ? shown(layout).map(({ f }) => f)
+            : (layout?.cabinets ?? []).flatMap((c) => c.drawers.flatMap((d) => d.folders));
+        const holding = new Map<string, number>(all.items.map((d) => [d.id, 0]));
+        for (const f of folders) {
+          const got = await tabled(f.filter);
+          const ids = new Set([
+            ...('status' in got ? [] : got.items.map((d) => d.id)),
+            ...livePins(f.id),
+          ]);
+          for (const id of ids) {
+            const had = holding.get(id);
+            if (had !== undefined) holding.set(id, had + 1);
+          }
+        }
+        return all.items.map((doc) => ({ doc, folders: holding.get(doc.id) ?? 0 }));
+      };
+      if (path === '/api/v1/cabinet' && method === 'GET') {
+        // A drawn cabinet kept up to date (19 Nov 2026), as the vault keeps it.
+        const layout = held.layout;
+        if (!layout?.arranged_by) return ok(held);
+        const all = await placed(layout, 'every');
+        if ('status' in all) return ok(held);
+        const unheld = all.filter((x) => x.folders === 0).map((x) => x.doc);
+        let n = 0;
+        const kept = addToDrawing(layout, groupsOf(unheld), drawNames(), () => `fake-kept-${++n}`);
+        if (kept.added === 0 || layoutProblemOf(kept.layout) !== null) return ok(held);
+        const saved: CabinetView = {
+          layout: kept.layout,
+          version: held.version + 1,
+          updated_at: new Date().toISOString(),
+        };
+        cabinets[who.memberId] = saved;
+        return ok(saved);
+      }
+      if (path === '/api/v1/cabinet/unfiled' && method === 'GET') {
+        const all = await placed(held.layout, 'shown');
+        if ('status' in all) return all;
+        const items = all
+          .filter((x) => x.folders === 0)
+          .map((x) => x.doc)
+          .sort(newestFirst);
+        const from = Number(param(url, 'cursor') ?? 0);
+        const limit = Number(param(url, 'limit') ?? 50);
+        const more = from + limit < items.length;
+        return ok({
+          items: items.slice(from, from + limit),
+          next_cursor: more ? String(from + limit) : null,
+          has_more: more,
+          total: items.length,
+        });
+      }
       if (path === '/api/v1/cabinet' && method === 'PUT') {
         const layout = body.layout as CabinetLayout | undefined;
         const version = body.version;
@@ -4664,41 +4760,8 @@ export function createFakeVault(): {
         }
         const all = await tabled({ notes: 'exclude' });
         if ('status' in all) return all;
-        const groups = new Map<string, CabinetGroup>();
-        for (const d of all.items) {
-          const person =
-            d.household_owned === true ? HOUSEHOLD_MEMBER_FILTER : (d.owner_member_id ?? 'none');
-          // As the dated filter reads it: a fake document keeps no day it was added.
-          const year = Number(
-            (d.issued?.date ?? d.created_at ?? new Date().toISOString()).slice(0, 4),
-          );
-          // Its own topic, else its kind's, as the vault keeps it.
-          const category =
-            d.category ?? state.types.find((t) => t.key === d.type_key)?.category ?? null;
-          const key = JSON.stringify([person, category, d.type_key, year]);
-          const g = groups.get(key);
-          if (g) g.n += 1;
-          else groups.set(key, { person, category, type_key: d.type_key, year, n: 1 });
-        }
-        const short = shortName(state.members);
-        const rank = (id: string) =>
-          id === who.memberId ? 0 : id === HOUSEHOLD_MEMBER_FILTER ? 2 : id === 'none' ? 3 : 1;
         let n = 0;
-        const drawn = drawCabinet(
-          by,
-          [...groups.values()],
-          {
-            person: (id) =>
-              id === HOUSEHOLD_MEMBER_FILTER
-                ? THE_HOUSEHOLD
-                : id === 'none'
-                  ? NOT_SURE_YET
-                  : (short.get(id) ?? 'Someone in the family'),
-            kind: (key) => state.types.find((t) => t.key === key)?.label ?? 'Another kind',
-            personOrder: (a, b) => rank(a) - rank(b) || a.localeCompare(b),
-          },
-          () => `fake-node-${++n}`,
-        );
+        const drawn = drawCabinet(by, groupsOf(all.items), drawNames(), () => `fake-node-${++n}`);
         const drawnProblem = layoutProblemOf(drawn.layout);
         if (drawnProblem !== null) return fail(422, drawnProblem.code, drawnProblem.message);
         return ok(drawn);
@@ -4765,7 +4828,17 @@ export function createFakeVault(): {
               }),
           };
         }
-        return ok({ version: held.version, counts, pins: pinCounts, ...fresh });
+        // What it holds in all (19 Nov 2026): each paper once; none, and several.
+        const all = held.layout ? await placed(held.layout, 'shown') : null;
+        const whole =
+          all && !('status' in all)
+            ? {
+                documents: all.length,
+                unfiled: all.filter((x) => x.folders === 0).length,
+                in_several: all.filter((x) => x.folders > 1).length,
+              }
+            : {};
+        return ok({ version: held.version, counts, pins: pinCounts, ...fresh, ...whole });
       }
       if (alsoInAt && method === 'GET') {
         const id = decodeURIComponent(alsoInAt[1] as string);

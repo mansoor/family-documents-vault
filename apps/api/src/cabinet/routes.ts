@@ -84,6 +84,12 @@ const dividerQuery = z
     limit: z.coerce.number().int().min(1).max(DOCUMENT_PAGE_MAX).optional(),
   })
   .strict();
+const pageQuery = z
+  .object({
+    cursor: z.string().max(8192).optional(),
+    limit: z.coerce.number().int().min(1).max(DOCUMENT_PAGE_MAX).optional(),
+  })
+  .strict();
 const previewBody = z.object({ arrange_by: z.enum(ARRANGE_BY) }).strict();
 
 /**
@@ -120,6 +126,13 @@ export function registerCabinet(app: FastifyInstance, cabinet: CabinetService) {
   app.get('/api/v1/cabinet/counts', auth, async (req, reply) => {
     void reply.header('cache-control', 'no-store');
     return cabinet.counts(principal(req));
+  });
+
+  // The papers no shown folder holds (19 Nov 2026): what "N aren't in any folder" lists.
+  app.get('/api/v1/cabinet/unfiled', auth, async (req, reply) => {
+    void reply.header('cache-control', 'no-store');
+    const q = parse(pageQuery, req.query ?? {});
+    return cabinet.unfiled(principal(req), q);
   });
 
   app.get<{ Params: { id: string } }>('/api/v1/documents/:id/also-in', auth, async (req, reply) => {
