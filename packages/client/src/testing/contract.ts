@@ -4295,6 +4295,59 @@ export const contractScenarios: Scenario[] = [
     },
   },
   {
+    name: 'a request asks for a PIN, shown again and made new; and texted where the household can (0.9.0-dev.69)',
+    run: async (api, ctx) => {
+      const { access_token: token } = await signIn(api, ctx);
+      const caps = await api.capabilities();
+      expect(caps.features.upload_request_pin).toBe(true);
+      expect(caps.features.link_texts).toBe(true);
+      const expires_at = new Date(Date.now() + 7 * 864e5).toISOString();
+      const ask = await api.createUploadRequest(token, {
+        title: 'Contract PIN request',
+        expires_at,
+        with_pin: true,
+      });
+      // Four digits, shown as it is made, and again; never with a password.
+      expect(ask.pin).toMatch(/^\d{4}$/);
+      expect(ask).not.toHaveProperty('password');
+      expect(ask.request.protection).toEqual(['pin']);
+      expect((await api.revealUploadRequest(token, ask.request.id)).pin).toBe(ask.pin);
+      const both = await refusal(
+        api.createUploadRequest(token, {
+          title: 'Contract both secrets',
+          expires_at,
+          with_pin: true,
+          with_password: true,
+        }),
+      );
+      expect([both.status, both.code]).toEqual([422, 'validation_failed']);
+      // A new PIN replaces the old one, and is what Show the link shows.
+      const renewed = await api.changeUploadRequest(token, ask.request.id, { secret: 'pin' });
+      expect(renewed.changed).toEqual(['secret']);
+      expect(renewed.pin).toMatch(/^\d{4}$/);
+      expect(renewed.request.protection).toContain('pin');
+      expect((await api.revealUploadRequest(token, ask.request.id)).pin).toBe(renewed.pin);
+      // Texted by the vault while the household's texts are set up; said so otherwise.
+      const listed = (await api.uploadRequests(token)).items.find((r) => r.id === ask.request.id);
+      if (listed?.textable === true) {
+        const sent = await api.textUploadRequest(token, ask.request.id, { to: '07700 900123' });
+        expect(sent.sent_to).toMatch(/•.*123$/);
+        const after = (await api.uploadRequests(token)).items.find((r) => r.id === ask.request.id);
+        expect(after?.texted_to).toBe(sent.sent_to);
+      } else {
+        const none = await refusal(
+          api.textUploadRequest(token, ask.request.id, { to: '07700 900123' }),
+        );
+        expect([none.status, none.code]).toEqual([409, 'sms_not_set_up']);
+      }
+      await api.revokeUploadRequest(token, ask.request.id);
+      const gone = await refusal(
+        api.textUploadRequest(token, ask.request.id, { to: '07700 900123' }),
+      );
+      expect([404, 409, 410]).toContain(gone.status);
+    },
+  },
+  {
     name: 'where the original is, as a folder of my cabinet: set, followed, found and cleared (0.9.0, C3)',
     run: async (api, ctx) => {
       const { access_token: token } = await signIn(api, ctx);

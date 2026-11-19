@@ -12,9 +12,13 @@ import { openBound, sealBound } from './master-rotation.js';
  */
 export const UPLOAD_REQUEST_COPY_PURPOSE = 'upload-request-copies';
 
-/** What a copy holds: the link's secret, and its made-up password, if it has one. */
+/**
+ * What a copy holds: the link's secret, and its PIN (0.9.0-dev.69) or its
+ * made-up password, if it has one.
+ */
 export interface UploadRequestCopy {
   token: string;
+  pin?: string;
   password?: string;
 }
 
@@ -33,6 +37,7 @@ export function sealUploadRequestCopy(
 ): Buffer {
   const plain: UploadRequestCopy = {
     token: copy.token,
+    ...(copy.pin ? { pin: copy.pin } : {}),
     ...(copy.password ? { password: copy.password } : {}),
   };
   return sealBound(
@@ -54,6 +59,7 @@ export function openUploadRequestCopy(
   if (typeof plain.token !== 'string') throw new Error('a request copy holds no link');
   return {
     token: plain.token,
+    ...(typeof plain.pin === 'string' ? { pin: plain.pin } : {}),
     ...(typeof plain.password === 'string' ? { password: plain.password } : {}),
   };
 }

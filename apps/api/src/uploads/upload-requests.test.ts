@@ -841,6 +841,72 @@ describe.skipIf(!testAdminUrl())('asking somebody to send documents', () => {
     expect(alerts).toHaveLength(1);
   });
 
+  // ------------------------------------------- a PIN (0.9.0-dev.69)
+
+  it('a request may ask for a PIN: four digits, shown once, opened with it, never with a password', async () => {
+    const made = await make(adult, { with_pin: true });
+    expect(made.pin).toMatch(/^\d{4}$/);
+    expect(made).not.toHaveProperty('password');
+    expect(made.request.protection).toEqual(['pin']);
+    // Whoever holds the link is told a PIN is asked for.
+    expect((await preview(made.link_token)).json<{ protection: string[] }>().protection).toEqual([
+      'pin',
+    ]);
+    const [row] = await admin<{ secret_kind: string; secret_hash: string }>(
+      'select secret_kind, secret_hash from upload_request where id = $1',
+      [made.request.id],
+    );
+    expect(row?.secret_kind).toBe('pin');
+    // Kept as its hash, never as it is.
+    expect(row?.secret_hash).not.toContain(made.pin as string);
+    const wrong = made.pin === '9999' ? '1111' : '9999';
+    expect((await unlock(made.link_token, { pin: wrong })).statusCode).toBe(401);
+    expect((await unlock(made.link_token)).statusCode).toBe(401);
+    await opened(made.link_token, { pin: made.pin as string });
+    // A page that asks in one box sends it as the password: it opens too.
+    await opened(made.link_token, { password: ` ${made.pin as string} ` });
+    const [after] = await admin<{ attempts: number }>(
+      'select attempts from upload_request where id = $1',
+      [made.request.id],
+    );
+    expect(after?.attempts).toBe(2);
+    // One secret at most.
+    const both = await h.app.inject({
+      method: 'POST',
+      url: '/api/v1/upload-requests',
+      headers: h.as(adult),
+      payload: { title: 'Both', expires_at: inAWeek(), with_pin: true, with_password: true },
+    });
+    expect(both.statusCode).toBe(422);
+  });
+
+  it('twenty parallel wrong PINs lock a request at exactly ten', async () => {
+    const made = await make(adult, { with_pin: true });
+    const wrong = made.pin === '9999' ? '1111' : '9999';
+    const before = h.jobs.length;
+    const tries = await Promise.all(
+      Array.from({ length: 20 }, () => unlock(made.link_token, { pin: wrong })),
+    );
+    const answers = tries.map((r) => r.statusCode);
+    // Ten tries, and not one more, however many arrived at once.
+    expect(answers.filter((s) => s === 401)).toHaveLength(10);
+    expect(answers.filter((s) => s === 404)).toHaveLength(10);
+    const [row] = await admin<{ attempts: number }>(
+      'select attempts from upload_request where id = $1',
+      [made.request.id],
+    );
+    expect(row?.attempts).toBe(10);
+    // Locked: the right PIN opens nothing, and the asker is told, once.
+    expect((await unlock(made.link_token, { pin: made.pin as string })).statusCode).toBe(404);
+    const alerts = h.jobs
+      .slice(before)
+      .filter(
+        (j) =>
+          j.name === 'alert.send' && j.data.subject === 'A request you sent has stopped working',
+      );
+    expect(alerts).toHaveLength(1);
+  });
+
   it('a teen gets 404 for everything about requests', async () => {
     const made = await make(adult);
     const calls: Array<['GET' | 'POST' | 'DELETE', string, Record<string, unknown> | undefined]> = [

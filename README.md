@@ -159,6 +159,11 @@ few API routes that page calls, and nothing else: the front page, the sign-in an
 rest of the API answer 404 there. The family keeps using the internal address; only that
 one page faces the internet.
 
+The vault can send a link, or a request to send documents, itself: by email through
+`FDV_SMTP_URL`, and by text through the household's own text messages (Settings → Text
+messages), counted towards the month's texts. Either message says who it is from and when
+it stops working, never what it is to or its PIN or password.
+
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.tls.yml --profile public-only up -d
 ```
@@ -714,7 +719,7 @@ npm or pnpm and no token (from CI too):
 ```json
 {
   "dependencies": {
-    "@fdv/client": "https://github.com/mansoor/family-documents-vault/releases/download/v0.9.0-dev.68/fdv-client-0.9.0-dev.68.tgz"
+    "@fdv/client": "https://github.com/mansoor/family-documents-vault/releases/download/v0.9.0-dev.69/fdv-client-0.9.0-dev.69.tgz"
   }
 }
 ```

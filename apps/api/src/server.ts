@@ -366,6 +366,8 @@ async function main(): Promise<void> {
       // again, and the vault's own address, to email it from.
       copyKey: deriveKey(masterSecret, UPLOAD_REQUEST_COPY_PURPOSE),
       baseUrl: config.FDV_BASE_URL,
+      // 0.9.0-dev.69: a request's link texted, through the household's own SMS Gate.
+      sms,
       enqueue,
       alert,
     }),

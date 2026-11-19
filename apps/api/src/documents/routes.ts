@@ -28,6 +28,7 @@ import { dates, listQuery, listQueryOf, notesFilter, tagValues, values } from '.
 import type { VisibilityService } from './visibility.js';
 import { sendZip } from './zip-routes.js';
 import type { UploadRequestService } from '../uploads/requests.js';
+import { linkTextBody } from '../link-texts.js';
 import {
   codeBody,
   collectionShareBody,
@@ -1035,6 +1036,40 @@ export function registerDocuments(
         }
       }
       const sent = await shares.emailLink(principal(req), id, body, metaOf(req));
+      reply.header('cache-control', 'no-store');
+      return sent;
+    },
+  );
+
+  /**
+   * A link texted to whoever it is for by the vault (0.9.0-dev.69; the
+   * owner's feedback of 18 Nov 2026), as it is emailed: through the
+   * household's own text messages, and never with its PIN, password, code or
+   * what it is to. The number (422), whose it is and that it can be sent
+   * (404, 409, 410) and that texts are set up (409) first; then the same
+   * credential an email asks — what making it asked within JUST_MADE_MS,
+   * and later `email_share`.
+   */
+  app.post<{ Params: { id: string } }>(
+    '/api/v1/shares/:id/text',
+    { ...auth, config: { rateLimit: { max: 20, timeWindow: '1 minute' } } },
+    async (req, reply) => {
+      const id = parse(idParam, req.params).id;
+      const body = parse(linkTextBody, req.body ?? {});
+      const link = await shares.textable(principal(req), id);
+      if (stepUp) {
+        if (!link.justMade) {
+          await stepUp.require(principal(req), 'email_share');
+        } else if (link.collection_id !== null) {
+          await stepUp.require(principal(req), 'share_collection');
+        } else if (link.emergency_member_id !== null) {
+          await stepUp.require(principal(req), 'share_emergency');
+        } else if (link.document_id !== null) {
+          const ask = await docs.stepUpForDocument(principal(req), link.document_id);
+          if (ask) await stepUp.require(principal(req), ask);
+        }
+      }
+      const sent = await shares.textLink(principal(req), id, body, metaOf(req));
       reply.header('cache-control', 'no-store');
       return sent;
     },

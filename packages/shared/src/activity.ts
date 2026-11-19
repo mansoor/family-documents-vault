@@ -131,6 +131,7 @@ export function activityKind(action: string): ActivityKind {
     // 0.9.0 (13 Nov 2026): a link emailed by the vault is a link sent.
     case 'household.only_me_sharing_changed':
     case 'share_link.emailed':
+    case 'share_link.texted': // 0.9.0-dev.69: and a link texted by the vault.
       return 'shared';
     case 'household.profile_updated':
     case 'household.timezone_changed':
@@ -193,6 +194,16 @@ const docWords = (e: Pick<ActivityEvent, 'object_title' | 'object_sensitive' | '
   e.object_type === 'document' && e.object_sensitive === true
     ? SENSITIVE_IN_WORDS
     : quoted(e.object_title);
+
+/** Why a link's or a request's text wasn't sent (0.9.0-dev.69), after a colon; nothing if not said. */
+const linkTextWhy = (reason: unknown): string =>
+  reason === 'cap_reached'
+    ? ': this month’s texts were all sent'
+    : reason === 'not_sent'
+      ? ': the phone that sends texts didn’t take it'
+      : reason === 'not_set_up'
+        ? ': text messages aren’t set up'
+        : '';
 
 /**
  * One event as a sentence, or null when this event should not be shown at
@@ -1046,6 +1057,20 @@ export function eventWords(e: ActivityEvent): (ActivityLine & { named: boolean }
         `${who} emailed the link to ${linkTo}${text(detail.to) ? ` to ${text(detail.to)}` : ''}`,
         true,
       );
+    // 0.9.0-dev.69: a link texted to its recipient by the vault — the
+    // number masked; never the link, its PIN or password.
+    case 'share_link.texted':
+      return line(
+        `${who} texted the link to ${linkTo}${text(detail.to) ? ` to ${text(detail.to)}` : ''}`,
+        true,
+      );
+    // The dev.69 review: and the text not sent after all, why in a word.
+    case 'share_link.text_not_sent':
+      return line(
+        `The text of the link to ${linkTo}${text(detail.to) ? ` to ${text(detail.to)}` : ''} wasn’t sent${linkTextWhy(detail.reason)}`,
+        false,
+        UNNAMED,
+      );
 
     // ---------------------------------- asking to be sent documents (5.21)
     // Shown to whoever reviews the request only; never its title, and
@@ -1066,7 +1091,7 @@ export function eventWords(e: ActivityEvent): (ActivityLine & { named: boolean }
       );
     case 'upload_request.locked':
       return line(
-        'A request to send documents stopped working: a password or code was typed wrong ten times',
+        'A request to send documents stopped working: a PIN, password or code was typed wrong ten times',
         true,
         UNNAMED,
       );
@@ -1093,6 +1118,18 @@ export function eventWords(e: ActivityEvent): (ActivityLine & { named: boolean }
       return line(
         `${who} emailed a request to send documents${text(detail.to) ? ` to ${text(detail.to)}` : ''}`,
         true,
+      );
+    // 0.9.0-dev.69: and texted, the number masked.
+    case 'upload_request.texted':
+      return line(
+        `${who} texted a request to send documents${text(detail.to) ? ` to ${text(detail.to)}` : ''}`,
+        true,
+      );
+    case 'upload_request.text_not_sent':
+      return line(
+        `The text of a request to send documents${text(detail.to) ? ` to ${text(detail.to)}` : ''} wasn’t sent${linkTextWhy(detail.reason)}`,
+        false,
+        UNNAMED,
       );
     case 'upload_request.closed':
       return line(

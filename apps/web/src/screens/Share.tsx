@@ -15,9 +15,6 @@ import {
   SHARE_CODE_TRUTH,
   SHARE_CODE_UNAVAILABLE,
   SHARE_LIMIT_MAX,
-  SHARE_LINK_EMAIL_MESSAGE_MAX,
-  SHARE_LINK_EMAIL_NOTE,
-  shareLinkMessage,
   SHARE_MAX_DAYS,
   SHARE_PASSWORD_MAX,
   SHARE_PASSWORD_MIN,
@@ -26,24 +23,60 @@ import {
   shareQuickPicks,
   SHOW_TITLE_LABEL,
   SHOW_TITLE_SENSITIVE_HINT,
+  emailedToWords,
+  textedToWords,
   zonedParts,
   zonedTime,
   type Capabilities,
-  type ShareEmailed,
-  type ShareEmailInput,
   type ShareInput,
   type SharePermission,
 } from '@fdv/shared';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { Link, useLocation } from 'react-router';
 import { api, ApiRequestError, type CreatedShare, type Share } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
 import { storedRole } from '../session.js';
-import { Button, Check, ErrorNote, Field, TextArea } from '../ui.js';
+import { Button, Check, ErrorNote, Field, useArrivedSaid } from '../ui.js';
 import { endWords, familyZoneNow } from '../family-time.js';
-import { useSmsCodes } from '../text-messages.js';
+import { useLinkTexts, useSmsCodes } from '../text-messages.js';
 import { useSensitiveConfirm } from '../sensitive-confirm.js';
-import { ChangeLink } from './ChangeLink.js';
 import { LinkOpens } from '../link-opens.js';
+import {
+  EmailTheLink,
+  LinkAndSend,
+  LinkSecret,
+  readSendTo,
+  sendMadeLink,
+  SendFields,
+  SentSaid,
+  shareLinkAddress,
+  TextTheLink,
+  useShowAgain,
+  type LinkSent,
+} from './LinkHandOver.js';
+
+/** A link just made, and what the vault sent of it to whoever it is for (18 Nov 2026). */
+export interface MadeLink {
+  created: CreatedShare;
+  sent: LinkSent[];
+}
+
+/**
+ * Where Change on a link goes (0.9.0-dev.69): its own page, as a request's
+ * is, coming back to `back` — the page it was pressed on — when it is done.
+ * A clinician's link (H4) says whose page it is listed on.
+ */
+export function changeLinkPath(link: Pick<Share, 'id'>, person?: string | null): string {
+  return `/sharing/links/${encodeURIComponent(link.id)}${person ? `?person=${encodeURIComponent(person)}` : ''}`;
+}
+
+/** "Change the link to “Mansoor’s passport”, shared with the visa agent" */
+export const changeLinkLabel = (target: string, s: Pick<Share, 'recipient_label'>) =>
+  `Change the link to ${target}${s.recipient_label ? `, shared with ${s.recipient_label}` : ''}`;
+
+/** "Show the link to “Mansoor’s passport”, shared with the visa agent" */
+export const showLinkLabel = (target: string, s: Pick<Share, 'recipient_label'>) =>
+  `Show the link to ${target}${s.recipient_label ? `, shared with ${s.recipient_label}` : ''}`;
 
 /**
  * Sharing one document with somebody outside the family (SHR-05).
@@ -96,9 +129,12 @@ export function SharePanel(props: {
   const { guarded, authVersion, caps } = useApp();
   // A code by text (SMS3): offered while the household's texts are set up.
   const texts = useSmsCodes();
-  const [made, setMade] = useState<CreatedShare | null>(null);
-  // One of its links being changed (0.9.0, LK): its form, in this card's place.
-  const [changing, setChanging] = useState<Share | null>(null);
+  // The link texted to whoever it is for (0.9.0-dev.69): while texts are set up.
+  const linkTexts = useLinkTexts();
+  const [made, setMade] = useState<MadeLink | null>(null);
+  // Changed on their own page, come back here saying so (0.9.0-dev.69).
+  const said = useArrivedSaid();
+  const location = useLocation();
   // A sensitive document's link starts as view-only, for a week (0.9.0,
   // H5); one the vault can't draw goes to download all the same.
   const options = useLinkOptions(props.sensitive === true ? { permission: 'view' } : undefined);
@@ -152,6 +188,8 @@ export function SharePanel(props: {
     },
     [props.documentId, authVersion, mayShare, props.onlyMe],
   );
+  // Its links shown again, as Sharing shows them (0.9.0-dev.69): the one way.
+  const reveal = useShowAgain(() => void reload());
   // Listed while it can still be taken back: live, or opened as often as it
   // allows (a page opened with it lasts to its own end).
   const listed = (data?.shares ?? []).filter((s) => s.state === 'active' || s.state === 'used_up');
@@ -171,11 +209,14 @@ export function SharePanel(props: {
     data?.newest?.page_count && data.newest.page_count > PREVIEW_MAX_PAGES
       ? data.newest.page_count
       : null;
+  // Where the vault can send the link once it is made (18 Nov 2026).
+  const sendCan = { email: caps?.features.share_link_email === true, text: linkTexts };
   const read = readLinkOptions(options.value, {
     timezone,
     maxDays: caps?.limits.share_max_days ?? SHARE_MAX_DAYS,
     viewable,
     factors: linkFactors(caps, texts),
+    send: sendCan,
   });
 
   const working = (on: typeof busy) => {
@@ -202,7 +243,12 @@ export function SharePanel(props: {
         protects && sensitive ? SENSITIVE_SHARE_CONFIRM : null,
       );
       if (created) {
-        setMade(created);
+        // Sent to whoever it is for, as typed (18 Nov 2026), then handed over.
+        const sent = await sendMadeLink({
+          guarded,
+          ...madeLinkSends(created, read.sendTo, caps),
+        });
+        setMade({ created, sent });
         setOpen(false);
         options.reset();
         setShowTitle(!sensitive);
@@ -230,25 +276,11 @@ export function SharePanel(props: {
     }
   };
 
-  if (changing) {
-    return (
-      <ChangeLink
-        link={changing}
-        target={props.documentTitle ? `“${props.documentTitle}”` : 'this document'}
-        onBusy={(on) => props.onBusy?.(on)}
-        onCancel={() => setChanging(null)}
-        onDone={() => {
-          setChanging(null);
-          void reload();
-        }}
-      />
-    );
-  }
-
   if (made) {
     return (
       <HandOver
-        created={made}
+        created={made.created}
+        sent={made.sent}
         timezone={timezone}
         onDone={() => {
           if (!props.onClose) moved.current = 'button';
@@ -262,20 +294,38 @@ export function SharePanel(props: {
   return (
     <section className="card stack">
       <h2 style={{ fontSize: 18 }}>Send this to someone outside the family</h2>
-      <ErrorNote message={error} />
+      <ErrorNote message={error ?? reveal.problem} />
       {confirm.dialog}
+      {reveal.dialog}
+      {said && (
+        <p className="notice status-line" role="status">
+          {said}
+        </p>
+      )}
 
       {listed.length > 0 && (
-        <ul className="list">
+        <ul className="list" aria-label="Its links that work now">
           {listed.map((s) => {
             // A view-only link's pages, when there is something to say
             // about them: still being drawn, cut at 30, or not drawable at
             // all — told here as well as when the link was made.
             const pagesNote = sharePagesNote(s.pages);
+            const target = props.documentTitle ? `“${props.documentTitle}”` : 'this document';
             return (
               <li key={s.id} className="row" style={{ justifyContent: 'space-between' }}>
                 <span className="stack" style={{ gap: 4 }}>
                   <span className="muted">{s.summary}</span>
+                  {/* Where the vault last sent it (0.9.0; texts since 0.9.0-dev.69). */}
+                  {s.emailed_to && (
+                    <span className="muted">
+                      {emailedToWords(s.emailed_to, s.emailed_by_name, s.mine)}
+                    </span>
+                  )}
+                  {s.texted_to && (
+                    <span className="muted">
+                      {textedToWords(s.texted_to, s.texted_by_name, s.mine)}
+                    </span>
+                  )}
                   {/* Who opened it, when (0.9.0, H5). */}
                   <LinkOpens link={s} />
                   {pagesNote && (
@@ -288,11 +338,29 @@ export function SharePanel(props: {
                     </span>
                   )}
                 </span>
+                {/* As Sharing's rows (0.9.0-dev.69): Show the link, Change, Take it back. */}
                 <span className="row" style={{ gap: 8 }}>
+                  {s.revealable === true && (
+                    <button
+                      type="button"
+                      className="btn btn-quiet"
+                      disabled={busy !== null || reveal.busy}
+                      aria-label={showLinkLabel(target, s)}
+                      onClick={(e) => void reveal.showLink(s, e.currentTarget)}
+                    >
+                      Show the link
+                    </button>
+                  )}
                   {s.changeable === true && (
-                    <Button kind="quiet" disabled={busy !== null} onClick={() => setChanging(s)}>
+                    <Link
+                      to={changeLinkPath(s)}
+                      // Back to this page, its Share panel open (`#share`), where the change is said.
+                      state={{ back: `${location.pathname}${location.search}#share` }}
+                      className="btn btn-quiet"
+                      aria-label={changeLinkLabel(target, s)}
+                    >
                       Change
-                    </Button>
+                    </Link>
                   )}
                   <Button kind="quiet" disabled={busy !== null} onClick={() => void revoke(s)}>
                     Take it back
@@ -411,9 +479,18 @@ export interface LinkOptionsValue {
   codeRefused: string | null;
   /** The first browser to open it is the only one it opens in (5.20). */
   thisDeviceOnly: boolean;
+  /**
+   * Where the vault sends the link once it is made (0.9.0-dev.69; the
+   * owner's feedback of 18 Nov 2026): an email address, a mobile number,
+   * either, both or neither. A new link's alone; never its PIN or password.
+   */
+  sendEmail: string;
+  sendPhone: string;
 }
 
 const NO_OPTIONS: LinkOptionsValue = {
+  sendEmail: '',
+  sendPhone: '',
   label: '',
   end: null,
   permission: 'download',
@@ -504,6 +581,11 @@ export function readLinkOptions(
     now?: Date;
     /** What the vault can ask for besides the link (5.20); none, when not said. */
     factors?: LinkFactors;
+    /**
+     * Where the vault can send a new link once it is made (0.9.0-dev.69):
+     * by email, by text. Left out (Change), nothing is sent.
+     */
+    send?: { email: boolean; text: boolean };
   },
 ) {
   const now = ctx.now ?? new Date();
@@ -559,8 +641,19 @@ export function readLinkOptions(
         ? 'Their email address, which the code will go to: name@example.com.'
         : value.codeRefused
     : null;
+  // Where the vault sends it once made (18 Nov 2026): not a part of the link.
+  const sendTo = readSendTo(
+    { email: value.sendEmail, phone: value.sendPhone },
+    ctx.send ?? { email: false, text: false },
+  );
   const body: ShareInput | null =
-    endAt && !endProblem && !opensProblem && !passwordProblem && !codeProblem
+    endAt &&
+    !endProblem &&
+    !opensProblem &&
+    !passwordProblem &&
+    !codeProblem &&
+    !sendTo.emailProblem &&
+    !sendTo.phoneProblem
       ? {
           ...(value.label.trim() ? { recipient_label: value.label.trim() } : {}),
           expires_at: endAt.toISOString(),
@@ -592,16 +685,54 @@ export function readLinkOptions(
     maxDays,
     factors,
     by,
+    sendTo,
+    send: ctx.send ?? null,
   };
 }
 
 /**
+ * What to send a link just made to, and how (18 Nov 2026): by email where
+ * the vault emails links and it is `emailable`, by text where it texts them
+ * and it is `textable` — said by the hand-over either way.
+ */
+export function madeLinkSends(
+  created: CreatedShare,
+  sendTo: { email: string | null; phone: string | null },
+  caps: Capabilities | null,
+) {
+  const share = created.share;
+  return {
+    email: sendTo.email
+      ? {
+          to: sendTo.email,
+          can: caps?.features.share_link_email === true && share.emailable === true,
+          send: (t: string, body: { to: string }) => api.emailShare(t, share.id, body),
+        }
+      : null,
+    text: sendTo.phone
+      ? {
+          to: sendTo.phone,
+          can: caps?.features.link_texts === true && share.textable === true,
+          send: (t: string, body: { to: string }) => api.textShare(t, share.id, body),
+        }
+      : null,
+  };
+}
+
+type LinkOptionsHandle = ReturnType<typeof useLinkOptions>;
+type LinkOptionsRead = ReturnType<typeof readLinkOptions>;
+
+/**
  * The fields of a link's options (5.18): whom it is for, when it stops,
  * what they can do, how often it opens, and a PIN.
+ *
+ * Since 0.9.0-dev.69 each part is its own piece too — LinkWho, LinkCanDo,
+ * LinkOpensField — so a link's change page lays them out in cards, as a
+ * request's is; a new link's sheet keeps them in this order, together.
  */
 export function LinkOptions(props: {
-  options: ReturnType<typeof useLinkOptions>;
-  read: ReturnType<typeof readLinkOptions>;
+  options: LinkOptionsHandle;
+  read: LinkOptionsRead;
   timezone: string;
   /** The vault can draw the pages of what is being shared: it can go to view. */
   viewable: boolean;
@@ -613,21 +744,44 @@ export function LinkOptions(props: {
   endNote?: ReactNode;
   /** A note kept on its own (0.9.0, N1): read on the page, nothing to choose. */
   note?: boolean;
-  /**
-   * What protects it, in place of the choices a new link has (0.9.0, LK):
-   * Change's, where its PIN or password may be kept, taken away or made
-   * new, and the rest stays as it was made.
-   */
-  protection?: ReactNode;
-  /**
-   * What they can do, said when there is nothing to choose (0.9.0, LK): a
-   * clinician's link is to view, always.
-   */
-  canDo?: string;
 }) {
-  const { options, read, timezone, viewable } = props;
+  const { options, read, timezone } = props;
+  return (
+    <>
+      <LinkWho options={options} read={read} />
+      <EndPicker
+        idPrefix="share"
+        timezone={timezone}
+        read={read}
+        onChange={(end) => options.set({ end })}
+        endNote={props.endNote}
+      />
+      <LinkCanDo
+        options={options}
+        viewable={props.viewable}
+        notViewable={props.notViewable}
+        viewNote={props.viewNote}
+        {...(props.note
+          ? {
+              canDo:
+                'They read the note on the page, as it is when they open it. They can copy its words: nothing can stop that.',
+            }
+          : {})}
+      />
+      <LinkOpensField options={options} read={read} />
+      <Protection options={options} read={read} />
+    </>
+  );
+}
+
+/**
+ * Whom a link is for (5.18), and — a new link's alone (0.9.0-dev.69) —
+ * where the vault sends it once it is made: "Email the link to" and "Text
+ * the link to".
+ */
+export function LinkWho(props: { options: LinkOptionsHandle; read: LinkOptionsRead }) {
+  const { options, read } = props;
   const { value } = options;
-  const { opensProblem } = read;
   return (
     <>
       <Field
@@ -638,89 +792,117 @@ export function LinkOptions(props: {
         required={false}
         hint="Only for your own list — the letting agent, the accountant. It is also written across the pages of a link to view."
       />
-
-      <EndPicker
-        idPrefix="share"
-        timezone={timezone}
-        read={read}
-        onChange={(end) => options.set({ end })}
-        endNote={props.endNote}
-      />
-
-      {props.note || props.canDo ? (
-        <div className="field">
-          <span className="field-label">What they can do</span>
-          <span className="muted">
-            {props.canDo ??
-              'They read the note on the page, as it is when they open it. They can copy its words: nothing can stop that.'}
-          </span>
-        </div>
-      ) : (
-        <div className="field" role="group" aria-labelledby="share-can-h">
-          <span id="share-can-h" className="field-label">
-            What they can do
-          </span>
-          <div className="pills">
-            <button
-              type="button"
-              className={`pill${value.permission === 'view' && viewable ? ' pill-on' : ''}`}
-              aria-pressed={value.permission === 'view' && viewable}
-              disabled={!viewable}
-              onClick={() => options.set({ permission: 'view', permissionChosen: true })}
-            >
-              View
-            </button>
-            <button
-              type="button"
-              className={`pill${value.permission === 'download' || !viewable ? ' pill-on' : ''}`}
-              aria-pressed={value.permission === 'download' || !viewable}
-              onClick={() => options.set({ permission: 'download', permissionChosen: true })}
-            >
-              View and download
-            </button>
-          </div>
-          <span className="muted">
-            {!viewable
-              ? props.notViewable
-              : value.permission === 'view'
-                ? 'They see its pages, with who it is for written across each, and cannot save the file. They can keep pictures of the pages, each marked; nothing can stop a screenshot.'
-                : 'They can save the file itself.'}
-          </span>
-          {viewable && value.permission === 'view' && props.viewNote && (
-            <span className="muted">{props.viewNote}</span>
-          )}
-        </div>
+      {/* A new link is sent by the vault, if you like (18 Nov 2026): never on Change. */}
+      {read.send && (
+        <SendFields
+          idPrefix="share"
+          email={value.sendEmail}
+          phone={value.sendPhone}
+          onEmail={(sendEmail) => options.set({ sendEmail })}
+          onPhone={(sendPhone) => options.set({ sendPhone })}
+          can={read.send}
+          read={read.sendTo}
+        />
       )}
-
-      <div className="field">
-        <label htmlFor="share-opens">Can be opened</label>
-        <div className="row" style={{ gap: 8, alignItems: 'center' }}>
-          <input
-            id="share-opens"
-            type="text"
-            inputMode="numeric"
-            autoComplete="off"
-            maxLength={6}
-            value={value.opens}
-            onChange={(e) => options.set({ opens: e.target.value })}
-            aria-describedby="share-opens-hint"
-            aria-invalid={opensProblem ? true : undefined}
-            style={{ width: 96 }}
-          />
-          <span aria-hidden="true">times</span>
-        </div>
-        <span
-          id="share-opens-hint"
-          className={opensProblem ? 'field-error' : 'muted'}
-          role={opensProblem ? 'alert' : undefined}
-        >
-          {opensProblem ??
-            'Leave it empty for no limit. Each press of Open counts; reloading the page it opens does not.'}
-        </span>
-      </div>
-
-      {props.protection ?? <Protection options={options} read={read} />}
     </>
+  );
+}
+
+/**
+ * What they can do (5.18): View, or View and download — or, where there is
+ * nothing to choose, said (`canDo`): a note is read on the page (0.9.0,
+ * N1), and a clinician's link is to view, always (0.9.0, LK).
+ */
+export function LinkCanDo(props: {
+  options: LinkOptionsHandle;
+  viewable: boolean;
+  notViewable: string;
+  viewNote?: string | null | undefined;
+  canDo?: string;
+  /** Its heading is the card's ("What they can do"): the group is named by it. */
+  labelledBy?: string;
+}) {
+  const { options, viewable } = props;
+  const { value } = options;
+  if (props.canDo) {
+    return (
+      <div className="field">
+        {!props.labelledBy && <span className="field-label">What they can do</span>}
+        <span className="muted">{props.canDo}</span>
+      </div>
+    );
+  }
+  return (
+    <div className="field" role="group" aria-labelledby={props.labelledBy ?? 'share-can-h'}>
+      {!props.labelledBy && (
+        <span id="share-can-h" className="field-label">
+          What they can do
+        </span>
+      )}
+      <div className="pills">
+        <button
+          type="button"
+          className={`pill${value.permission === 'view' && viewable ? ' pill-on' : ''}`}
+          aria-pressed={value.permission === 'view' && viewable}
+          disabled={!viewable}
+          onClick={() => options.set({ permission: 'view', permissionChosen: true })}
+        >
+          View
+        </button>
+        <button
+          type="button"
+          className={`pill${value.permission === 'download' || !viewable ? ' pill-on' : ''}`}
+          aria-pressed={value.permission === 'download' || !viewable}
+          onClick={() => options.set({ permission: 'download', permissionChosen: true })}
+        >
+          View and download
+        </button>
+      </div>
+      <span className="muted">
+        {!viewable
+          ? props.notViewable
+          : value.permission === 'view'
+            ? 'They see its pages, with who it is for written across each, and cannot save the file. They can keep pictures of the pages, each marked; nothing can stop a screenshot.'
+            : 'They can save the file itself.'}
+      </span>
+      {viewable && value.permission === 'view' && props.viewNote && (
+        <span className="muted">{props.viewNote}</span>
+      )}
+    </div>
+  );
+}
+
+/** How often it can be opened (5.18): a number, or empty for no limit. */
+export function LinkOpensField(props: { options: LinkOptionsHandle; read: LinkOptionsRead }) {
+  const { options } = props;
+  const { opensProblem } = props.read;
+  return (
+    <div className="field">
+      <label htmlFor="share-opens">Can be opened</label>
+      <div className="row" style={{ gap: 8, alignItems: 'center' }}>
+        <input
+          id="share-opens"
+          type="text"
+          inputMode="numeric"
+          autoComplete="off"
+          maxLength={6}
+          value={options.value.opens}
+          onChange={(e) => options.set({ opens: e.target.value })}
+          aria-describedby="share-opens-hint"
+          aria-invalid={opensProblem ? true : undefined}
+          style={{ width: 96 }}
+        />
+        <span aria-hidden="true">times</span>
+      </div>
+      <span
+        id="share-opens-hint"
+        className={opensProblem ? 'field-error' : 'muted'}
+        role={opensProblem ? 'alert' : undefined}
+      >
+        {opensProblem ??
+          'Leave it empty for no limit. Each press of Open counts; reloading the page it opens does not.'}
+      </span>
+    </div>
   );
 }
 
@@ -761,7 +943,7 @@ export function SecretChoice(props: {
   idPrefix: string;
   /** What it has now. */
   has: 'pin' | 'password' | null;
-  /** A link may have a PIN; a request has a password or nothing. */
+  /** A PIN is offered: a link's always; a request's where the vault takes one (0.9.0-dev.69). */
   pin: boolean;
   value: SecretChoiceValue;
   onChange: (value: SecretChoiceValue) => void;
@@ -1098,7 +1280,18 @@ function Protection(props: {
           {check(
             'share-with-code',
             value.withCode,
-            (on) => options.set({ withCode: on }),
+            // Ticked with nowhere yet for the code: where the link is sent,
+            // as typed above (18 Nov 2026), to change if it should go elsewhere.
+            (on) =>
+              options.set({
+                withCode: on,
+                ...(on && !value.codeEmail.trim() && value.sendEmail.trim()
+                  ? { codeEmail: value.sendEmail.trim() }
+                  : {}),
+                ...(on && !value.codePhone.trim() && value.sendPhone.trim()
+                  ? { codePhone: value.sendPhone.trim() }
+                  : {}),
+              }),
             factors.email && factors.text
               ? 'Also send them a code when they open it'
               : factors.text
@@ -1206,32 +1399,30 @@ function Protection(props: {
 }
 
 /**
- * Whether a link would open on a page no browser treats as secure: http://
- * anywhere but this computer. There Open's Secure cookie is dropped, so the
- * page refuses to open it (SharePage), and the person it is for gets nothing.
- */
-export function insecureLink(link: string): boolean {
-  try {
-    const url = new URL(link);
-    return url.protocol === 'http:' && !['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
-  } catch {
-    return false;
-  }
-}
-
-/**
  * The link and its PIN, shown once. For a collection (5.19), what it is to
  * and what it gives are the collection's.
+ *
+ * Since 0.9.0-dev.69 (the owner's feedback of 18 Nov 2026) drawn with a
+ * request's pieces, so the two hand over alike: what the vault sent to
+ * whoever it is for first, then the link with Copy and Send as the way to
+ * send it yourself, its PIN or password with Copy, what it does, and Email
+ * the link and Text the link to send it again.
  */
-export function HandOver(props: { created: CreatedShare; timezone: string; onDone: () => void }) {
+export function HandOver(props: {
+  created: CreatedShare;
+  timezone: string;
+  onDone: () => void;
+  /** What the vault sent as it was made (18 Nov 2026). */
+  sent?: LinkSent[];
+}) {
   // The secret after the #: a browser never sends it to a server, and the
   // page it opens takes it out of the address bar (5.16). On the vault's
   // public-only site when it has one, so the person it is for can reach it.
-  const link = props.created.link_url ?? `${window.location.origin}/s#${props.created.link_token}`;
-  const [copied, setCopied] = useState(false);
+  const link = shareLinkAddress(props.created);
   const { share } = props.created;
   const collection = share.collection_id ? (share.collection_name ?? 'this collection') : null;
   const pagesNote = sharePagesNote(share.pages);
+  const sent = props.sent ?? [];
   // Made: the focus comes here, where the link is, from the button that made
   // it, which is gone (R5's keyboard paths).
   const heading = useRef<HTMLHeadingElement>(null);
@@ -1239,56 +1430,37 @@ export function HandOver(props: { created: CreatedShare; timezone: string; onDon
     heading.current?.focus();
   }, []);
   return (
-    <section className="card stack">
+    <section className="card stack" data-testid="share-handover">
       <h2 ref={heading} tabIndex={-1} style={{ fontSize: 18 }}>
         {collection
           ? `The link to “${collection}”`
           : `The link to ${share.document_title ?? 'this document'}`}
       </h2>
-      <code style={{ wordBreak: 'break-all' }}>{link}</code>
-      {insecureLink(link) && (
-        <p className="status status-warn" role="alert">
-          This link starts with http://, not https://, so whoever you send it to will not be able to
-          download the document: their browser will not open it over a connection that is not
-          secure. Ask whoever looks after the vault to give it an https:// address first.
-        </p>
-      )}
-      <Button
-        kind="quiet"
-        onClick={() => {
-          void navigator.clipboard?.writeText(link).then(
-            () => setCopied(true),
-            () => setCopied(false),
-          );
-        }}
-      >
-        {copied ? 'Copied' : 'Copy the link'}
-      </Button>
-      {/* Another way to send it, beside Copy (0.9.0): never in its place. */}
-      <EmailTheLink share={share} idPrefix="made" />
+      <SentSaid
+        sent={sent}
+        secret={props.created.pin ? 'pin' : props.created.password ? 'password' : null}
+      />
+      <LinkAndSend link={link} what="link" />
       {props.created.pin && (
-        <div className="field">
-          <span className="field-label">The PIN</span>
-          <code style={{ fontSize: 24, letterSpacing: 4 }}>{props.created.pin}</code>
-          <span className="muted">
-            Tell them this some other way — a phone call, not the same message.
-          </span>
-        </div>
+        <LinkSecret
+          kind="pin"
+          value={props.created.pin}
+          note="Tell them this some other way — a phone call, not the same message."
+        />
       )}
       {/* A password the vault made up (5.20): here, once, and nowhere else. */}
       {props.created.password && (
-        <div className="field" data-testid="share-password">
-          <span className="field-label">The password</span>
-          <code style={{ fontSize: 22, letterSpacing: 2, wordBreak: 'break-all' }}>
-            {props.created.password}
-          </code>
-          {/* Since 0.9.0 a vault that keeps a sealed copy says so (`revealable`). */}
-          <span className="muted">
-            {share.revealable
+        <LinkSecret
+          kind="password"
+          value={props.created.password}
+          testId="share-password"
+          // Since 0.9.0 a vault that keeps a sealed copy says so (`revealable`).
+          note={
+            share.revealable
               ? 'Tell them this some other way — a phone call, not the same message. You can see it again from Sharing, after confirming it’s you.'
-              : 'Tell them this some other way — a phone call, not the same message. It is shown only now: the vault keeps a scrambled copy it cannot show again.'}
-          </span>
-        </div>
+              : 'Tell them this some other way — a phone call, not the same message. It is shown only now: the vault keeps a scrambled copy it cannot show again.'
+          }
+        />
       )}
       <ul className="share-terms">
         <li>Until {endWords(share.expires_at, props.timezone)}.</li>
@@ -1330,114 +1502,10 @@ export function HandOver(props: { created: CreatedShare; timezone: string; onDon
           ? 'Anyone with the link can open the documents you chose until it expires, and nothing else in the vault. One you can no longer see, or that leaves the collection, stops being sent. You will see every time it is opened, and you can take it back whenever you like.'
           : 'Anyone with the link can open this one document until it expires, and nothing else. You will see every time it is opened, and you can take it back whenever you like.'}
       </p>
+      {/* Other ways to send it, beside Copy: never in its place. */}
+      <EmailTheLink share={share} idPrefix="made" />
+      <TextTheLink share={share} idPrefix="made" start={sent.find((s) => s.refused)?.refused} />
       <Button onClick={props.onDone}>Done</Button>
     </section>
-  );
-}
-
-/**
- * "Email the link" (0.9.0; the owner's decision of 13 Nov 2026): the vault
- * emails the link to an address its maker types, through the mail server
- * of whoever runs the vault — offered only where there is one
- * (`features.share_link_email`) and on a link the reader made
- * (`Share.emailable`). Beside Copy the link, never in its place: Copy stays
- * whatever happens here. The email never carries the PIN, the password or
- * what the link is to; those are told another way, as the sheet says.
- */
-export function EmailTheLink(props: { share: Share; idPrefix: string }) {
-  const { caps } = useApp();
-  return (
-    <EmailALink
-      idPrefix={props.idPrefix}
-      offered={caps?.features.share_link_email === true && props.share.emailable === true}
-      note={SHARE_LINK_EMAIL_NOTE}
-      send={(t, body) => api.emailShare(t, props.share.id, body)}
-    />
-  );
-}
-
-/**
- * "Or have the vault email it", for a share link or (0.9.0, LK; the owner's
- * decision of 16 Nov 2026) a request to send documents: the address, a short
- * message, and what never goes in the email.
- */
-export function EmailALink(props: {
-  idPrefix: string;
-  offered: boolean;
-  note: string;
-  send: (token: string, body: ShareEmailInput) => Promise<ShareEmailed>;
-}) {
-  const { guarded } = useApp();
-  const [to, setTo] = useState('');
-  const [message, setMessage] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [problem, setProblem] = useState<string | null>(null);
-  const [sentTo, setSentTo] = useState<string | null>(null);
-  if (!props.offered) return null;
-  const id = `${props.idPrefix}-email-link`;
-  const send = async () => {
-    setProblem(null);
-    setSentTo(null);
-    const address = to.trim();
-    if (!isShareAddress(address)) {
-      setProblem('That is not an email address. Check it: name@example.com.');
-      return;
-    }
-    const words = shareLinkMessage(message);
-    if ('problem' in words) {
-      setProblem(words.problem);
-      return;
-    }
-    setBusy(true);
-    try {
-      const sent = await guarded((t) =>
-        props.send(t, {
-          to: address,
-          ...(words.message ? { message: words.message } : {}),
-        }),
-      );
-      if (sent) {
-        setSentTo(sent.sent_to);
-        setTo('');
-        setMessage('');
-      }
-    } catch (err) {
-      setProblem(describeError(err));
-    } finally {
-      setBusy(false);
-    }
-  };
-  return (
-    <div className="stack" role="group" aria-labelledby={`${id}-h`} data-testid="email-the-link">
-      <h3 id={`${id}-h`} className="field-label">
-        Or have the vault email it
-      </h3>
-      <Field
-        id={`${id}-to`}
-        label="Email the link to"
-        type="email"
-        autoComplete="off"
-        required={false}
-        value={to}
-        maxLength={254}
-        onChange={setTo}
-      />
-      <TextArea
-        id={`${id}-message`}
-        label="A short message, if you like"
-        value={message}
-        maxLength={SHARE_LINK_EMAIL_MESSAGE_MAX}
-        hint="Sent as you type it, with no web addresses or website names in it."
-        onChange={setMessage}
-      />
-      <p className="muted">{props.note}</p>
-      <Button kind="quiet" disabled={busy} onClick={() => void send()}>
-        {busy ? 'Sending…' : 'Email the link'}
-      </Button>
-      <p className="status-line" role="status">
-        {sentTo ? `Sent to ${sentTo}.` : ''}
-      </p>
-      <ErrorNote message={problem} />
-    </div>
   );
 }

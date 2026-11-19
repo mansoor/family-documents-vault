@@ -25,13 +25,14 @@ import {
   withSystem,
   type Actor,
   type Db,
+  type Schema,
   type Role,
   type Scope,
   householdZone,
 } from '@fdv/db';
 import { readAll } from '@fdv/storage';
 import argon2 from 'argon2';
-import { sql } from 'kysely';
+import { sql, type ExpressionBuilder } from 'kysely';
 import { z } from 'zod';
 import type { AlertRequest } from '../alert-job.js';
 import type { MailRequest } from '../mail-job.js';
@@ -43,6 +44,7 @@ import { ApiError, notFound } from '../errors.js';
 import type { VaultService } from '../vaults/service.js';
 import { seenDocument, type Enqueue } from './service.js';
 import { lastEmailed } from '../emailed.js';
+import { reserveText, sendReserved, textNumber, textsLeft, textsReady } from '../link-texts.js';
 import { madeWith } from './made-with.js';
 import { sensitiveSql } from './filters.js';
 import { documentSensitive, liveLinksGiving, sensitiveConfirm } from './sensitive-start.js';
@@ -108,6 +110,7 @@ import {
   shareEndProblem,
   shareEndWords,
   shareLinkMessage,
+  shareLinkText,
   shareUses,
   suspensionInEffect,
   UNTITLED_ON_LINK,
@@ -121,6 +124,7 @@ import {
   type RevealedShare,
   type ShareCodeSent,
   type ShareEmailed,
+  type LinkTexted,
   type ShareLinkPreview,
   type SharePages,
   type SharePermission,
@@ -222,6 +226,32 @@ const sharerOf = (role: Role, memberId: string) => ({
  */
 
 const MAX_PIN_ATTEMPTS = 10;
+
+/**
+ * A link as it opens now, asked of its own row (the dev.69 review): not
+ * taken back, paused, past its end, locked by ten wrong tries, nor opened
+ * as often as it allows. What emailing or texting it reads it again with,
+ * inside the transaction that counts the send, after the list said it opens.
+ */
+const stillOpens = (eb: ExpressionBuilder<Schema, 'share_link'>) =>
+  eb.and([
+    eb('share_link.revoked_at', 'is', null),
+    eb('share_link.paused_at', 'is', null),
+    eb('share_link.expires_at', '>', sql<Date>`now()`),
+    eb('share_link.attempts', '<', MAX_PIN_ATTEMPTS),
+    eb.or([
+      eb('share_link.max_opens', 'is', null),
+      eb('share_link.open_count', '<', eb.ref('share_link.max_opens')),
+    ]),
+  ]);
+
+/** Taken back, paused or ended between being asked about and being sent. */
+const linkNoLongerOpens = () =>
+  new ApiError(
+    410,
+    'share_ended',
+    'That link no longer opens, or is paused just now, so there is nothing to send.',
+  );
 const DEFAULT_DAYS = 7;
 const ARGON2 = {
   type: argon2.argon2id,
@@ -569,6 +599,15 @@ export interface ShareView {
   emailed_to: string | null;
   /** Who had it emailed last, by name as the reader is given it; null for none. */
   emailed_by_name: string | null;
+  /**
+   * Its maker's to have texted by the vault, while it opens now and the
+   * household's texts are set up (0.9.0-dev.69): POST /shares/{id}/text.
+   */
+  textable: boolean;
+  /** Where the vault last texted it, masked (•••• •••123); null for none. */
+  texted_to: string | null;
+  /** Who had it texted last, by name as the reader is given it; null for none. */
+  texted_by_name: string | null;
   /**
    * The reader made it and it still works, or is only paused, on the new
    * routes (0.9.0, LK): PATCH /shares/{id} changes its properties.
@@ -2562,6 +2601,16 @@ export class ShareService {
         'share_id',
         rows.map((r) => r.id),
       );
+      // And texted (0.9.0-dev.69), the number masked, as emailed.
+      const texted = await lastEmailed(
+        trx,
+        'share_link_email',
+        'share_id',
+        rows.map((r) => r.id),
+        'sms',
+      );
+      // Whether the household's texts are set up now: a link is texted only then.
+      const texts = await textsReady(trx, this.sms);
       const reader = p;
       // What each collection's link was made with, and has followed: the
       // reader must be able to see every one of them, or it is not theirs
@@ -2688,6 +2737,11 @@ export class ShareService {
           // (the owner's decision of 16 Nov 2026): for whoever sees the link.
           emailed_to: emailed.get(r.id)?.to ?? null,
           emailed_by_name: emailed.get(r.id)?.by ?? null,
+          // 0.9.0-dev.69: its maker's to have texted, as emailed, while the
+          // household's texts are set up; and where it last went, masked.
+          textable: revealable && state === 'active' && texts,
+          texted_to: texted.get(r.id)?.to ?? null,
+          texted_by_name: texted.get(r.id)?.by ?? null,
           // 0.9.0 (LK): its maker's to change while it works, or is only
           // paused; never once it has ended or been opened as often as it
           // allows, and never a link on the old routes.
@@ -3604,6 +3658,8 @@ export class ShareService {
         .selectFrom('share_link_email')
         .select(['share_id', 'sent_at'])
         .where('sent_by', '=', p.accountId)
+        // Emails alone: texts are counted on their own (0117).
+        .where('way', '=', 'email')
         .where('sent_at', '>', new Date(now.getTime() - 864e5))
         .orderBy('sent_at')
         .execute();
@@ -3642,9 +3698,10 @@ export class ShareService {
         ])
         .where('id', '=', id)
         .where('created_by', '=', p.accountId)
-        .where('revoked_at', 'is', null)
+        // As it opens now (the dev.69 review): not paused, ended, locked or used up since.
+        .where(stillOpens)
         .executeTakeFirst();
-      if (!row?.link_copy_sealed) throw notFound('That link');
+      if (!row?.link_copy_sealed) throw linkNoLongerOpens();
       const copy = openShareLinkCopy(copyKey, row.link_copy_sealed, p.householdId, id);
       const household = await trx
         .selectFrom('household')
@@ -3702,6 +3759,132 @@ export class ShareService {
       return { now, left: SHARE_LINK_EMAILS.perLinkPerDay - forLink.length - 1 };
     });
     return { sent_to: masked, sent_at: done.now.toISOString(), sends_left: done.left };
+  }
+
+  // ------------------------------------------ texted (0.9.0-dev.69)
+
+  /**
+   * A link its maker may have the vault text (0.9.0-dev.69; the owner's
+   * feedback of 18 Nov 2026), as one is emailed: the caller's, still opening,
+   * with a sealed copy to send — and the household's texts set up and
+   * tested (`409 sms_not_set_up`). Asked before the credential is.
+   */
+  async textable(p: Principal, id: string): Promise<LinkView & { justMade: boolean }> {
+    requireCapability(p, 'document.share');
+    if (!this.sms) throw notSetUp();
+    const link = await this.viewOf(p, id);
+    if (!link || link.created_by !== p.accountId) throw notFound('That link');
+    if (ENDED.includes(link.state) || link.state === 'used_up') {
+      throw new ApiError(
+        410,
+        'share_ended',
+        'That link no longer opens, so there is nothing to send. Make a new one if you need to.',
+      );
+    }
+    if (link.state === 'paused') {
+      throw new ApiError(
+        409,
+        'share_paused',
+        'That link is paused just now, so it would not open for them. Once it works again, you can text it.',
+      );
+    }
+    if (!link.revealable) {
+      throw new ApiError(
+        409,
+        'share_not_revealable',
+        'That link was made before the vault kept a copy, so the vault cannot text it. Send it yourself, or take it back and make a new one.',
+      );
+    }
+    if (!link.textable) throw notSetUp();
+    return { ...link, justMade: Date.now() - Date.parse(link.created_at) <= JUST_MADE_MS };
+  }
+
+  /**
+   * POST /shares/{id}/text (0.9.0-dev.69): the link, opened from its sealed
+   * copy, texted to the mobile number its maker typed, read in the
+   * household's country — through the household's own text messages,
+   * counted against their monthly cap. Neutral words (shareLinkText): who it
+   * is from and when it stops working; never what it is to, its PIN,
+   * password or code. At most LINK_TEXTS a link and an account in a day.
+   * Written down with the number masked, as `share_link.texted`.
+   */
+  async textLink(
+    p: Principal,
+    id: string,
+    input: { to: string },
+    meta: RequestMeta,
+  ): Promise<LinkTexted> {
+    const link = await this.textable(p, id);
+    const number = await textNumber(this.sms, p, input.to);
+    const sms = this.sms as SmsService;
+    const copyKey = this.copyKey as Buffer;
+    const base = (this.publicUrl ?? this.baseUrl ?? '').replace(/\/+$/, '');
+    const masked = maskPhone(number);
+    // Reserved — counted, its row and its line written — in a transaction
+    // that is over before SMS Gate is asked (sendReserved, the dev.69
+    // review): never a pool connection held across the call to the phone.
+    const reserved = await withPrincipal(this.db, p, async (trx) => {
+      const left = await textsLeft(trx, 'share_link_email', p, id, 'link');
+      // Read again under the caller's own rules, as it opens now: taken back
+      // meanwhile, it has forgotten its copy (0084); paused, ended, locked
+      // or opened as often as it allows, it is not sent.
+      const row = await trx
+        .selectFrom('share_link')
+        .select(['link_copy_sealed', 'expires_at', 'collection_id', 'emergency_member_id'])
+        .where('id', '=', id)
+        .where('created_by', '=', p.accountId)
+        .where(stillOpens)
+        .executeTakeFirst();
+      if (!row?.link_copy_sealed) throw linkNoLongerOpens();
+      const copy = openShareLinkCopy(copyKey, row.link_copy_sealed, p.householdId, id);
+      const household = await trx
+        .selectFrom('household')
+        .select(['name', 'timezone'])
+        .executeTakeFirstOrThrow();
+      const { shared_by } = await this.from(trx, p.accountId);
+      const now = new Date();
+      const rowId = await reserveText(trx, p, 'share_link_email', id, masked, now);
+      await appendAudit(trx, {
+        householdId: p.householdId,
+        actorAccountId: p.accountId,
+        action: 'share_link.texted',
+        ...objectOf(link),
+        detail: { share_id: id, to: masked },
+        ip: meta.ip,
+      });
+      return {
+        left,
+        sent: {
+          table: 'share_link_email' as const,
+          rowId,
+          oneId: id,
+          sentAt: now,
+          to: number,
+          masked,
+          kind: 'share_link' as const,
+          text: shareLinkText({
+            householdName: household.name,
+            sharedBy: shared_by,
+            collection: row.collection_id !== null,
+            emergency: row.emergency_member_id !== null,
+            link: `${base}/s#${copy.token}`,
+            expiresAt: row.expires_at,
+            timezone: householdZone(household.timezone),
+          }),
+          audit: {
+            action: 'share_link.text_not_sent' as const,
+            ...objectOf(link),
+            detail: { share_id: id, to: masked },
+          },
+        },
+      };
+    });
+    await sendReserved(this.db, sms, p, reserved.sent, meta);
+    return {
+      sent_to: masked,
+      sent_at: reserved.sent.sentAt.toISOString(),
+      sends_left: reserved.left,
+    };
   }
 
   // ------------------------------------- Only me documents outside (5.41)

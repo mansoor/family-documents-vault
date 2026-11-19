@@ -152,6 +152,30 @@ describe('the page a request opens (5.22)', () => {
     expect(sessionStorage.getItem('fdv.drop.request')).not.toContain(TOKEN);
   });
 
+  it('a PIN (0.9.0-dev.69): asked for in the password’s place, and sent as `pin`; a wrong one says so', async () => {
+    const state = page({ pin: '4821' });
+    await screen.findByText(/Open asks for the PIN they gave you\./);
+    expect(screen.queryByLabelText('The password they gave you')).not.toBeInTheDocument();
+    const pin = screen.getByLabelText('The PIN they gave you');
+    expect(pin).toHaveAttribute('inputmode', 'numeric');
+    expect(pin).toHaveAttribute('autocomplete', 'off');
+    expect(screen.getByRole('button', { name: 'Open' })).toBeDisabled();
+    await expectAccessible();
+    fireEvent.change(pin, { target: { value: '1111' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Open' }));
+    expect(await screen.findByText(/That is not right/)).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByLabelText('The PIN they gave you')).toHaveFocus());
+    fireEvent.change(screen.getByLabelText('The PIN they gave you'), {
+      target: { value: '48 21' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Open' }));
+    await screen.findByRole('heading', { name: 'Tax papers for 2025' });
+    expect(callsTo(state, '/api/v1/drop/unlock').map((c) => c.body)).toEqual([
+      { token: TOKEN, pin: '1111' },
+      { token: TOKEN, pin: '4821' },
+    ]);
+  });
+
   it('this browser only: the advice comes before Open', async () => {
     page({ thisDevice: true });
     expect(
@@ -573,7 +597,7 @@ describe('the page a request opens (5.22)', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Open' }));
     const dead = await screen.findByRole('heading', { name: 'This link cannot be opened' });
     expect(screen.getByRole('alert')).toHaveTextContent(
-      'The password or code was typed wrong too many times, so this link has stopped working. Ask Mansoor Seikh for a new one.',
+      'The PIN, password or code was typed wrong too many times, so this link has stopped working. Ask Mansoor Seikh for a new one.',
     );
     await waitFor(() => expect(dead).toHaveFocus());
     expect(state.drop?.opens).toBe(0);

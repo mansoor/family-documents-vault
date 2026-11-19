@@ -550,6 +550,8 @@ describe.skipIf(!testAdminUrl())('a share link emailed to its recipient (0.9.0)'
       'sent_by',
       'share_id',
       'to_masked',
+      // By email or by text (0117): which, never more.
+      'way',
       'with_message',
     ]);
     // And the activity log gives it to the family, masked.

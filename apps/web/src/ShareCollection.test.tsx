@@ -174,6 +174,26 @@ describe('sharing a collection (5.19)', () => {
     ).toBeInTheDocument();
   });
 
+  it('a collection’s link is sent by the vault as a document’s is, from “Who is it for?” (0.9.0-dev.69)', async () => {
+    const state = at(`/collections/${BROKER.id}`, { operatorMail: true });
+    fireEvent.click(await screen.findByRole('button', { name: 'Share this collection' }));
+    const sheet = await screen.findByRole('dialog', { name: 'Share “For the broker”' });
+    await within(sheet).findByRole('checkbox', { name: /Mansoor's passport/ });
+    // Texts aren't set up here: the number is off, and says so.
+    expect(within(sheet).getByLabelText('Text the link to')).toBeDisabled();
+    fireEvent.change(within(sheet).getByLabelText('Email the link to'), {
+      target: { value: 'jane.smith@example.com' },
+    });
+    // The buttons in the one order: Make the link first, Cancel last.
+    const make = within(sheet).getByRole('button', { name: 'Make the link' });
+    const cancel = within(sheet).getByRole('button', { name: 'Cancel' });
+    expect(make.compareDocumentPosition(cancel) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    fireEvent.click(make);
+    expect(await within(sheet).findByText('Emailed to j•••@e•••.com')).toBeInTheDocument();
+    expect(state.linkEmails?.map((e) => e.to)).toEqual(['jane.smith@example.com']);
+    await expectAccessible();
+  });
+
   it('a collection’s link is protected as a document’s is, with operator mail and without (W520-8)', async () => {
     const openSheet = async () => {
       fireEvent.click(await screen.findByRole('button', { name: 'Share this collection' }));

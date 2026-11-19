@@ -14,7 +14,7 @@ import {
   type Role,
 } from '@fdv/shared';
 import { useEffect, useRef, useState } from 'react';
-import { api, type CreatedShare } from '../api.js';
+import { api } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
 import { Button, Check, ErrorNote, LockIcon } from '../ui.js';
 import { useSensitiveConfirm } from '../sensitive-confirm.js';
@@ -23,11 +23,14 @@ import {
   HandOver,
   LinkOptions,
   linkFactors,
+  madeLinkSends,
   readLinkOptions,
   useLinkOptions,
+  type MadeLink,
 } from './Share.js';
+import { sendMadeLink } from './LinkHandOver.js';
 import { familyZoneNow } from '../family-time.js';
-import { useSmsCodes } from '../text-messages.js';
+import { useLinkTexts, useSmsCodes } from '../text-messages.js';
 
 /**
  * Sharing a collection outside the family (5.19).
@@ -72,6 +75,8 @@ export function ShareCollectionPanel(props: {
   const { guarded, caps } = useApp();
   // A code by text (SMS3): offered while the household's texts are set up.
   const texts = useSmsCodes();
+  // The link texted to whoever it is for (0.9.0-dev.69): while texts are set up.
+  const linkTexts = useLinkTexts();
   const { data, error: loadError } = useLoad(
     async (t) => {
       const [offered, profile] = await Promise.all([
@@ -88,7 +93,7 @@ export function ShareCollectionPanel(props: {
   const chosenOptions = useLinkOptions();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [made, setMade] = useState<CreatedShare | null>(null);
+  const [made, setMade] = useState<MadeLink | null>(null);
   // What Sensitive protects (0.9.0, H1a): a link with a sensitive one ticked
   // asks first; their titles show on the link's page only if chosen.
   const protects = caps?.features.sensitive_protects === true;
@@ -129,6 +134,8 @@ export function ShareCollectionPanel(props: {
     maxDays,
     viewable,
     factors: linkFactors(caps, texts),
+    // Sent by the vault once made, as a document's link is (18 Nov 2026).
+    send: { email: caps?.features.share_link_email === true, text: linkTexts },
   });
   const nothing = ticked.length === 0 && !follow;
 
@@ -168,7 +175,11 @@ export function ShareCollectionPanel(props: {
         protects && sensitiveTicked > 0 ? sensitiveCollectionShareConfirm(sensitiveTicked) : null,
       );
       if (created) {
-        setMade(created);
+        const sent = await sendMadeLink({
+          guarded,
+          ...madeLinkSends(created, read.sendTo, caps),
+        });
+        setMade({ created, sent });
         props.onShared?.();
       }
     } catch (err) {
@@ -182,7 +193,14 @@ export function ShareCollectionPanel(props: {
   };
 
   if (made) {
-    return <HandOver created={made} timezone={timezone} onDone={props.onClose} />;
+    return (
+      <HandOver
+        created={made.created}
+        sent={made.sent}
+        timezone={timezone}
+        onDone={props.onClose}
+      />
+    );
   }
 
   return (

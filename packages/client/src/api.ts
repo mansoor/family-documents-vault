@@ -46,6 +46,8 @@ import type {
   UploadRequestChangeInput,
   ShareEmailed,
   ShareEmailInput,
+  LinkTexted,
+  LinkTextInput,
   IssuerSuggestions,
   ChecklistAdded,
   ChecklistInput,
@@ -1824,6 +1826,16 @@ export function createApi(http: Http) {
      */
     emailShare: (token: string, id: string, body: ShareEmailInput) =>
       request<ShareEmailed>(`/api/v1/shares/${enc(id)}/email`, { method: 'POST', token, body }),
+    /**
+     * A link texted to its recipient by the vault (0.9.0-dev.69,
+     * `features.link_texts`), for whoever made it, while `Share.textable`:
+     * through the household's own text messages, never with its PIN,
+     * password or code. `409 sms_not_set_up`, `409 sms_cap_reached`, `422
+     * phone_number_invalid`, `503 sms_not_sent`; otherwise as `emailShare`
+     * (`429 text_link_limit` past 3 a link in a day).
+     */
+    textShare: (token: string, id: string, body: LinkTextInput) =>
+      request<LinkTexted>(`/api/v1/shares/${enc(id)}/text`, { method: 'POST', token, body }),
     sharePreview: (linkToken: string) => request<SharePreview>(`/api/v1/shared/${enc(linkToken)}`),
     openShare: (linkToken: string, pin?: string) =>
       request<SharedDocument>(`/api/v1/shared/${enc(linkToken)}/open`, {
@@ -1985,6 +1997,17 @@ export function createApi(http: Http) {
         body,
       }),
     /**
+     * A request's link texted to its recipient by the vault (0.9.0-dev.69,
+     * `features.link_texts`), for whoever asked, while
+     * `UploadRequestView.textable`: as `textShare`.
+     */
+    textUploadRequest: (token: string, id: string, body: LinkTextInput) =>
+      request<LinkTexted>(`/api/v1/upload-requests/${enc(id)}/text`, {
+        method: 'POST',
+        token,
+        body,
+      }),
+    /**
      * A request's link shown again to whoever asked (0.9.0, LK), while
      * `UploadRequestView.revealable`, after confirming it's them (`403
      * step_up_required`, action `reveal_share`). `404 not_found` for anybody
@@ -2027,8 +2050,14 @@ export function createApi(http: Http) {
     /** An emailed code, to the address the requester gave (operator mail only). */
     dropCode: (linkToken: string) =>
       request<DropCodeSent>('/api/v1/drop/code', { method: 'POST', body: { token: linkToken } }),
-    /** Open: counted, and a session for this browser. */
-    dropUnlock: (linkToken: string, secrets: { password?: string; code?: string } = {}) =>
+    /**
+     * Open: counted, and a session for this browser. `pin` for a request
+     * that asks for one (0.9.0-dev.69, `protection` includes `pin`).
+     */
+    dropUnlock: (
+      linkToken: string,
+      secrets: { pin?: string; password?: string; code?: string } = {},
+    ) =>
       request<DropSession>('/api/v1/drop/unlock', {
         method: 'POST',
         body: { token: linkToken, ...secrets },

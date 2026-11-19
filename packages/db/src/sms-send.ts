@@ -1,4 +1,11 @@
-import { phoneTail, type SmsKind, type SmsMode, type SmsState } from '@fdv/shared';
+import {
+  LINK_TEXT_KINDS,
+  LINK_TEXTS_CAP_SHARE,
+  phoneTail,
+  type SmsKind,
+  type SmsMode,
+  type SmsState,
+} from '@fdv/shared';
 import { sql } from 'kysely';
 import type { Db } from './client.js';
 import {
@@ -79,7 +86,11 @@ export interface SmsWay {
  */
 export type SmsOutcome =
   | { refused: 'not_set_up' }
-  | { refused: 'cap_reached'; cap: number }
+  /**
+   * `links`: a link's or a request's text (0.9.0-dev.69), refused at link
+   * texts' own share of the cap (`cap` is that share), so codes keep room.
+   */
+  | { refused: 'cap_reached'; cap: number; links?: true }
   | { problem: SmsProviderError; messageId: string; settings: SmsSending }
   | { sent: SmsDone; provider: SmsProvider; settings: SmsSending };
 
@@ -109,12 +120,17 @@ export function smsProblemWords(problem: SmsProblem, mode: SmsMode, status?: num
  * The texts sent this calendar month on the family's clock, every kind
  * counted: what the cap is held to. Asked inside the household's scope.
  */
-export async function smsMonthCount(trx: Db): Promise<number> {
+export async function smsMonthCount(
+  trx: Db,
+  /** Only these kinds (0.9.0-dev.69: link texts' own share); every kind when absent. */
+  kinds?: readonly SmsKind[],
+): Promise<number> {
   const hh = await trx.selectFrom('household').select('timezone').executeTakeFirst();
   const zone = householdZone(hh?.timezone);
   const r = await sql<{ n: number }>`
     select count(*)::int as n from sms_message
      where state <> 'not_sent'
+       and (${kinds === undefined} or kind = any(${kinds ? [...kinds] : []}::text[]))
        and created_at >= (date_trunc('month', now() at time zone ${zone}) at time zone ${zone})`.execute(
     trx,
   );
@@ -169,6 +185,15 @@ export async function sendSms(
     if (s.status !== 'ok' && r.kind !== 'test') return { refused: 'not_set_up' };
     if ((await smsMonthCount(trx)) >= s.monthly_cap) {
       return { refused: 'cap_reached', cap: s.monthly_cap };
+    }
+    // A link's or a request's text (0.9.0-dev.69) takes no more than its
+    // share of the month's texts, so the codes people sign in, confirm it's
+    // them and reset a password with always have room (the dev.69 review).
+    if ((LINK_TEXT_KINDS as readonly string[]).includes(r.kind)) {
+      const share = Math.floor(s.monthly_cap * LINK_TEXTS_CAP_SHARE);
+      if ((await smsMonthCount(trx, LINK_TEXT_KINDS)) >= share) {
+        return { refused: 'cap_reached', cap: share, links: true };
+      }
     }
     const row = await trx
       .insertInto('sms_message')

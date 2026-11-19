@@ -133,6 +133,11 @@ const ALLOWED = [
   'sms/phones.ts MemberPhoneService.issue',
   'sms/phones.ts MemberPhoneService.issue',
   'sms/phones.ts MemberPhoneService.confirm',
+  // A link's or a request's text that was not sent (0.9.0-dev.69, the dev.69
+  // review): its reservation undone, or kept as not sent, and the log told
+  // why — as the vault, since a sent row is nobody's to change, once its
+  // sender, as themselves, reserved it.
+  'link-texts.ts sendReserved',
   // Codes by text to one's own number (0.9.0, SMS3): whose a code would be —
   // the person's number in their newest household, and whether its texts go
   // — read before anybody is signed in (a reset, a sign-in's second step);

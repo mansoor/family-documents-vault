@@ -131,6 +131,9 @@ import { vi } from 'vitest';
  * Each test starts from `fresh()` and can tweak the state before rendering.
  */
 
+/** Where a text went (0.9.0-dev.69), as the vault says it: the number's last three digits. */
+const maskedNumber = (typed: string) => `•••• •••${typed.replace(/\D/g, '').slice(-3)}`;
+
 /** What a link made here asks for besides itself (5.20), as the vault says it. */
 function factorsOf(b: {
   with_pin?: boolean;
@@ -169,6 +172,8 @@ export interface FakeDrop {
   usedUp?: boolean;
   /** Bound to another browser (this device only). */
   otherDevice?: boolean;
+  /** A PIN in a password's place (0.9.0-dev.69): `pin` on Open. */
+  pin?: string | null;
   password?: string | null;
   code?: string | null;
   codeTo?: string;
@@ -352,6 +357,17 @@ export interface FakeState {
   linkEmails?: { share_id: string; to: string; message: string | null }[];
   /** Each request the vault was asked to email (16 Nov 2026): which, to whom, and the message. */
   requestEmails?: { request_id: string; to: string; message: string | null }[];
+  /**
+   * Each link, and each request, the vault was asked to text (0.9.0-dev.69):
+   * which, and the number as typed. Texts go while `sms.view.ready`; a
+   * number with fewer than 7 digits is refused (`phone_number_invalid`).
+   */
+  linkTexts?: { share_id: string; to: string }[];
+  requestTexts?: { request_id: string; to: string }[];
+  /** An older vault, with texts but not link texts (0.9.0-dev.69): false. */
+  linkTextsOffered?: boolean;
+  /** An older vault, whose requests ask for a password only (0.9.0-dev.69): false. */
+  uploadRequestPin?: boolean;
   revealedShares?: Record<
     string,
     { link_token: string; link_url: string | null; pin?: string; password?: string }
@@ -363,7 +379,7 @@ export interface FakeState {
    */
   revealedRequests?: Record<
     string,
-    { link_token: string; link_url: string | null; password?: string }
+    { link_token: string; link_url: string | null; pin?: string; password?: string }
   >;
   activity: Array<{
     id: number;
@@ -1308,6 +1324,38 @@ export function installFakeApi(state: FakeState) {
   const checks = new Map<string, { kind: string; path: string | null; looks: number }>();
   const refuse = (status: number, code: string, message: string, more: object = {}) =>
     json({ error: { code, message, retriable: false, request_id: 'r', ...more } }, status);
+  /**
+   * A link or a request texted (0.9.0-dev.69), as the vault answers it: the
+   * household's texts set up, confirming it's you while `stepUpNeeded`, a
+   * number that can be one; then where it went, masked, kept on the item.
+   * A refusal comes back as the answer itself, to return.
+   */
+  const textALink = (item: Record<string, unknown>, b: { to: string }) => {
+    if (state.sms?.view.ready !== true) {
+      return refuse(
+        409,
+        'sms_not_set_up',
+        'Text messages aren’t set up for this household, so the vault can’t text it.',
+      );
+    }
+    if (state.stepUpNeeded) {
+      return refuse(403, 'step_up_required', 'Please confirm it is you to text a link you made.', {
+        action: 'email_share',
+      });
+    }
+    if (b.to.replace(/\D/g, '').length < 7) {
+      return refuse(
+        422,
+        'phone_number_invalid',
+        'That doesn’t look like a mobile number. Type it with its country code, such as +44 7700 900123.',
+        { detail: 'to' },
+      );
+    }
+    const sentTo = maskedNumber(b.to);
+    // Listed with where it went, for whoever sees it, as an email is.
+    Object.assign(item, { texted_to: sentTo, texted_by_name: null });
+    return { sent_to: sentTo, sent_at: new Date().toISOString(), sends_left: 2 };
+  };
   /** SEC-17, as the vault asks it, saying what the credential is for. */
   const stepUp = (action: 'open_private_document' | 'open_essential' | 'widen_type_visibility') =>
     refuse(
@@ -1476,6 +1524,10 @@ export function installFakeApi(state: FakeState) {
           share_email_code: state.operatorMail === true,
           share_link_email: state.operatorMail === true,
           upload_request_email: state.operatorMail === true,
+          // A link or a request texted by the vault (0.9.0-dev.69): with texts.
+          ...(state.sms && state.linkTextsOffered !== false ? { link_texts: true } : {}),
+          // A request's PIN (0.9.0-dev.69): unless a test is an older vault.
+          ...(state.uploadRequestPin !== false ? { upload_request_pin: true } : {}),
           member_edit: true,
           ...(state.memberAdmin !== false ? { member_admin: true } : {}),
           ...(state.signOutEverywhere !== false ? { sign_out_everywhere: true } : {}),
@@ -4089,6 +4141,22 @@ export function installFakeApi(state: FakeState) {
     // confirming it's them, as the vault answers.
     // A link emailed by the vault (0.9.0): with the operator's mail server
     // alone, its maker's, and every one kept as it was asked for.
+    // A link texted by the vault (0.9.0-dev.69): while the household's texts
+    // are set up, its maker's, and every one kept as it was asked for.
+    if (path.startsWith('/api/v1/shares/') && path.endsWith('/text') && method === 'POST') {
+      const id = path.split('/')[4] as string;
+      const link = (state.shares.find((x) => x.id === id) ??
+        Object.values(state.emergencyLinksOf ?? {})
+          .flat()
+          .find((x) => x.id === id)) as (Record<string, unknown> & { id: string }) | undefined;
+      if (!link || link.textable !== true) {
+        return refuse(404, 'not_found', 'That link does not exist.');
+      }
+      const sent = textALink(link, body as { to: string });
+      if (sent instanceof Promise) return sent;
+      (state.linkTexts ??= []).push({ share_id: id, to: (body as { to: string }).to });
+      return json(sent);
+    }
     if (path.startsWith('/api/v1/shares/') && path.endsWith('/email') && method === 'POST') {
       const id = path.split('/')[4] as string;
       if (state.operatorMail !== true) {
@@ -4130,8 +4198,25 @@ export function installFakeApi(state: FakeState) {
         Object.values(state.emergencyLinksOf ?? {})
           .flat()
           .find((x) => x.id === id)) as (Record<string, unknown> & { id: string }) | undefined;
+      // Ended since the page opened (a test sets its state): 410, as the vault.
+      if (link && !['active', 'paused', 'used_up'].includes(String(link.state))) {
+        return refuse(
+          410,
+          'share_ended',
+          'That link no longer works, so it can’t be changed. Make a new one if you need to.',
+        );
+      }
       if (!link || link.changeable !== true) {
         return refuse(404, 'not_found', 'That link does not exist.');
+      }
+      // Changed somewhere else since (a test moves its version on): 409.
+      const ifMatch = (init?.headers as Record<string, string> | undefined)?.['if-match'];
+      if (ifMatch && ifMatch !== `"${Number(link.version ?? 1)}"`) {
+        return refuse(
+          409,
+          'conflict',
+          'That link was changed somewhere else since you opened it. Look at it again, then make your change.',
+        );
       }
       if (state.stepUpNeeded) {
         return refuse(
@@ -4153,7 +4238,11 @@ export function installFakeApi(state: FakeState) {
     }
     if (path.startsWith('/api/v1/shares/') && path.endsWith('/reveal') && method === 'POST') {
       const id = path.split('/')[4] as string;
-      const link = state.shares.find((x) => x.id === id);
+      // A clinician's link (H4) too, shown again from its person's page (0.9.0-dev.69).
+      const link = (state.shares.find((x) => x.id === id) ??
+        Object.values(state.emergencyLinksOf ?? {})
+          .flat()
+          .find((x) => x.id === id)) as (Record<string, unknown> & { id: string }) | undefined;
       if (!link || link.revealable !== true) {
         return refuse(404, 'not_found', 'That link does not exist.');
       }
@@ -4288,6 +4377,8 @@ export function installFakeApi(state: FakeState) {
         ...factorsOf(b),
         // 0.9.0: its maker's to have the vault email, with the operator's mail server.
         emailable: state.operatorMail === true,
+        // 0.9.0-dev.69: and text, while the household's texts are set up.
+        textable: state.sms?.view.ready === true,
         summary: `${b.recipient_label ? `Shared with ${b.recipient_label}` : 'Shared by link'}, ${opened}${b.permission === 'view' ? '; to view only' : ''}. Stops working on 30 September at 17:00.`,
       };
       state.shares.push(share);
@@ -4842,7 +4933,8 @@ export function installFakeApi(state: FakeState) {
           created_at: new Date().toISOString(),
           expires_at: end.toISOString(),
           protection: [
-            ...(b.with_password || b.password ? ['password'] : []),
+            // A PIN (0.9.0-dev.69) or a password, never both.
+            ...(b.with_pin ? ['pin'] : b.with_password || b.password ? ['password'] : []),
             ...(b.email_code ? ['email_code'] : []),
             ...(b.this_device_only ? ['this_device'] : []),
           ],
@@ -4862,6 +4954,10 @@ export function installFakeApi(state: FakeState) {
           paused_reason: null,
           closed_reason: null,
           files_received: 0,
+          version: 1,
+          // Its maker's to have the vault email (16 Nov 2026) and text (0.9.0-dev.69).
+          emailable: state.operatorMail === true,
+          textable: state.sms?.view.ready === true,
         };
         list.unshift(made);
         return json(
@@ -4869,14 +4965,25 @@ export function installFakeApi(state: FakeState) {
             request: made,
             link_token: 'drop-secret-0123456789abcdef',
             link_url: state.dropLinkUrl ?? null,
-            ...(b.with_password ? { password: 'k7mq-p2xa-9htw' } : {}),
+            ...(b.with_pin ? { pin: '4821' } : {}),
+            ...(b.with_password && !b.with_pin ? { password: 'k7mq-p2xa-9htw' } : {}),
           },
           201,
         );
       }
-      const at = /^\/api\/v1\/upload-requests\/([^/]+)(\/resume|\/reveal|\/email)?$/.exec(path);
+      const at = /^\/api\/v1\/upload-requests\/([^/]+)(\/resume|\/reveal|\/email|\/text)?$/.exec(
+        path,
+      );
       const r = at ? list.find((x) => x.id === at[1]) : undefined;
       if (!at || !r) return refuse(404, 'not_found', 'That request does not exist.');
+      // Texted by the vault (0.9.0-dev.69), while the household's texts are set up.
+      if (at[2] === '/text' && method === 'POST') {
+        if (r.textable !== true) return refuse(404, 'not_found', 'That request does not exist.');
+        const sent = textALink(r, body as { to: string });
+        if (sent instanceof Promise) return sent;
+        (state.requestTexts ??= []).push({ request_id: r.id, to: (body as { to: string }).to });
+        return json(sent);
+      }
       // Emailed by the vault (16 Nov 2026), with the operator's mail server alone.
       if (at[2] === '/email' && method === 'POST') {
         if (state.operatorMail !== true) {
@@ -4920,7 +5027,24 @@ export function installFakeApi(state: FakeState) {
         return json(shown);
       }
       if (!at[2] && method === 'PATCH') {
+        // Ended since the page opened (a test sets its state): 410, as the vault.
+        if (!['active', 'paused', 'used_up'].includes(String(r.state))) {
+          return refuse(
+            410,
+            'request_ended',
+            'That request no longer works, so it can’t be changed. Make a new one if you need to.',
+          );
+        }
         if (r.changeable !== true) return refuse(404, 'not_found', 'That request does not exist.');
+        // Changed somewhere else since (a test moves its version on): 409.
+        const ifMatch = (init?.headers as Record<string, string> | undefined)?.['if-match'];
+        if (ifMatch && ifMatch !== `"${Number(r.version ?? 1)}"`) {
+          return refuse(
+            409,
+            'conflict',
+            'That request was changed somewhere else since you opened it. Look at it again, then make your change.',
+          );
+        }
         if (state.stepUpNeeded) {
           return refuse(
             403,
@@ -4932,9 +5056,15 @@ export function installFakeApi(state: FakeState) {
         const b = body as Record<string, unknown>;
         const { secret, password, ...rest } = b;
         Object.assign(r, rest, { version: Number(r.version ?? 1) + 1 });
+        // Its protection as the change leaves it (0.9.0-dev.69: a PIN too).
+        if (secret) {
+          const others = (r.protection as string[]).filter((p) => p !== 'pin' && p !== 'password');
+          r.protection = secret === 'none' ? others : [secret as string, ...others];
+        }
         return json({
           request: r,
           changed: Object.keys(b).filter((k) => k !== 'password'),
+          ...(secret === 'pin' ? { pin: '7302' } : {}),
           ...(secret === 'password' && password === undefined
             ? { password: 'abcd-efgh-new1' }
             : {}),
@@ -5020,6 +5150,7 @@ export function installFakeApi(state: FakeState) {
         })),
       });
       const protection = [
+        ...(d.pin ? ['pin'] : []),
         ...(d.password ? ['password'] : []),
         ...(d.code ? ['email_code'] : []),
         ...(d.thisDevice ? ['this_device'] : []),
@@ -5067,8 +5198,12 @@ export function installFakeApi(state: FakeState) {
         if (!d.valid) return dropGone();
         if (d.usedUp) return usedUp();
         if (d.otherDevice) return otherDevice();
-        const given = body as { password?: string; code?: string };
-        if ((d.password && given.password !== d.password) || (d.code && given.code !== d.code)) {
+        const given = body as { pin?: string; password?: string; code?: string };
+        if (
+          (d.pin && given.pin !== d.pin) ||
+          (d.password && given.password !== d.password) ||
+          (d.code && given.code !== d.code)
+        ) {
           const left = (d.triesLeft ?? 10) - 1;
           d.triesLeft = left;
           if (left <= 0) d.valid = false;
@@ -7373,6 +7508,8 @@ function answerCollections(
         ...factorsOf(b),
         // 0.9.0: its maker's to have the vault email, with the operator's mail server.
         emailable: state.operatorMail === true,
+        // 0.9.0-dev.69: and text, while the household's texts are set up.
+        textable: state.sms?.view.ready === true,
         summary: `${b.recipient_label ? `Shared with ${b.recipient_label}` : 'Shared by link'}, not opened yet. Stops working on 30 September at 17:00.${b.follow_collection ? ' Keeps up with the collection.' : ''}`,
       };
       state.shares.push(share);

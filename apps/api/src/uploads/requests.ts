@@ -31,6 +31,8 @@ import {
 import {
   can,
   maskEmail,
+  maskPhone,
+  requestLinkText,
   dropFileName,
   SENDER_NOTE_MAX,
   SHARE_END_GRACE_MINUTES,
@@ -40,6 +42,7 @@ import {
   SHARE_MIN_MINUTES,
   shareLinkMessage,
   type ShareEmailed,
+  type LinkTexted,
   type ChangedUploadRequest,
   type RevealedUploadRequest,
   UPLOAD_CODE_MINUTES,
@@ -88,6 +91,8 @@ import { cookieForNewBinding, type DeviceCookie } from '../public/device-cookie.
 import { INCOMING_SCAN_JOB } from './incoming.js';
 import { inspectOffice } from './office.js';
 import { lastEmailed } from '../emailed.js';
+import { reserveText, sendReserved, textNumber, textsLeft, textsReady } from '../link-texts.js';
+import { notSetUp, type SmsService } from '../sms/service.js';
 
 /**
  * Asking somebody outside the family to send documents (5.21, #12).
@@ -194,6 +199,8 @@ export const createBody = z
     recipient_label: z.string().trim().max(80).nullable().optional(),
     recipient_email: z.string().trim().email().max(254).nullable().optional(),
     expires_at: z.string().datetime({ offset: true }),
+    // 0.9.0-dev.69: four digits the vault makes up, as a share link's PIN.
+    with_pin: z.boolean().optional(),
     with_password: z.boolean().optional(),
     password: z.string().min(UPLOAD_PASSWORD_MIN).max(64).optional(),
     email_code: z.boolean().optional(),
@@ -213,8 +220,9 @@ export const createBody = z
  * A request's properties changed by whoever asked (0.9.0, LK; the owner's
  * decision of 15 Nov 2026): only what is sent changes. Never what it asks
  * for, who looks at what comes in, its emailed code, nor "this browser
- * only". `secret`: `none` takes its password away; `password` gives it a new
- * one — the vault's, or the one typed in `password`.
+ * only". `secret`: `none` takes its PIN or password away; `pin` gives it a
+ * new four-digit PIN (0.9.0-dev.69); `password` a new password — the
+ * vault's, or the one typed in `password`.
  */
 export const changeBody = z
   .object({
@@ -223,7 +231,7 @@ export const changeBody = z
     message: z.string().trim().max(UPLOAD_REQUEST_MESSAGE_MAX).nullable().optional(),
     recipient_label: z.string().trim().max(80).nullable().optional(),
     expires_at: z.string().datetime({ offset: true }).optional(),
-    secret: z.enum(['none', 'password']).optional(),
+    secret: z.enum(['none', 'pin', 'password']).optional(),
     password: z.string().min(UPLOAD_PASSWORD_MIN).max(64).optional(),
     max_visits: z.number().int().min(1).max(1000).nullable().optional(),
     max_files: z.number().int().min(1).max(UPLOAD_REQUEST_MAX_FILES).optional(),
@@ -238,6 +246,8 @@ export const dropTokenBody = z.object({ token: linkToken }).strict();
 export const dropUnlockBody = z
   .object({
     token: linkToken,
+    // 0.9.0-dev.69: a request's PIN, for one that asks for one.
+    pin: z.string().trim().max(12).optional(),
     password: z.string().max(64).optional(),
     code: z.string().trim().max(12).optional(),
   })
@@ -285,6 +295,11 @@ export interface UploadRequestOptions {
    * once.
    */
   copyKey?: Buffer | null;
+  /**
+   * The household's own text messages (0.9.0-dev.69): a request's link
+   * texted to whoever it is for. Without them, none is.
+   */
+  sms?: SmsService | null;
 }
 
 /** A file on its way in, as the route hands it over. */
@@ -456,6 +471,11 @@ const endRefused = (message: string) => new ApiError(422, 'expiry_out_of_range',
  */
 export const safeName = dropFileName;
 
+/** A PIN the vault makes up (0.9.0-dev.69): four digits, as a share link's. */
+function madePin(): string {
+  return String(randomInt(0, 10000)).padStart(4, '0');
+}
+
 /** A password the vault makes up: three groups of four, with no look-alike letters. */
 function madePassword(): string {
   const alphabet = 'abcdefghjkmnpqrstuvwxyz23456789';
@@ -466,11 +486,13 @@ function madePassword(): string {
 
 function protectionOf(r: {
   secret_hash: string | null;
+  secret_kind: string | null;
   email_code: boolean;
   this_device_only: boolean;
 }): UploadProtection[] {
   const out: UploadProtection[] = [];
-  if (r.secret_hash) out.push('password');
+  // A PIN (0.9.0-dev.69), or a password of either kind.
+  if (r.secret_hash) out.push(r.secret_kind === 'pin' ? 'pin' : 'password');
   if (r.email_code) out.push('email_code');
   if (r.this_device_only) out.push('this_device');
   return out;
@@ -528,6 +550,7 @@ export class UploadRequestService {
   private readonly mail: ((m: MailRequest) => Promise<void>) | null;
   private readonly deviceKey: Buffer;
   private readonly copyKey: Buffer | null;
+  private readonly sms: SmsService | null;
 
   constructor(
     private readonly db: Db,
@@ -542,6 +565,7 @@ export class UploadRequestService {
     this.mail = opts.mail ?? null;
     this.deviceKey = opts.deviceKey ?? randomBytes(32);
     this.copyKey = opts.copyKey ?? null;
+    this.sms = opts.sms ?? null;
   }
 
   /** The largest one file may be, before what is left of a request. */
@@ -601,6 +625,14 @@ export class UploadRequestService {
         'Ask for a password to be made, or type one: not both.',
       );
     }
+    // One secret at most (0.9.0-dev.69), as a share link's: a PIN or a password.
+    if (input.with_pin && (input.with_password || input.password !== undefined)) {
+      throw new ApiError(
+        422,
+        'validation_failed',
+        'Choose one: a PIN, a password made up for you, or a password of your own.',
+      );
+    }
     const email = input.recipient_email?.trim() || null;
     if (input.email_code) {
       // Operator mail only: the household's own can be pointed anywhere (A21).
@@ -622,14 +654,19 @@ export class UploadRequestService {
     // hashed, and checked, in its canonical form (0048, as a share link's
     // is): "ABCD EFGH JKMN" opens "abcd-efgh-jkmn". One the requester typed
     // is theirs, and is checked exactly as typed.
+    // A PIN (0.9.0-dev.69): four digits the vault makes up, as a share
+    // link's, hashed and checked as they are.
+    const pin = input.with_pin ? madePin() : null;
     const made = input.with_password ? madePassword() : null;
-    const typed = made ? null : (input.password ?? null);
-    const secretKind = made ? 'generated' : typed !== null ? 'password' : null;
-    const secretHash = made
-      ? await argon2.hash(canonicalMadeUp(made), ARGON2)
-      : typed !== null
-        ? await argon2.hash(typed, ARGON2)
-        : null;
+    const typed = made || pin ? null : (input.password ?? null);
+    const secretKind = pin ? 'pin' : made ? 'generated' : typed !== null ? 'password' : null;
+    const secretHash = pin
+      ? await argon2.hash(pin, ARGON2)
+      : made
+        ? await argon2.hash(canonicalMadeUp(made), ARGON2)
+        : typed !== null
+          ? await argon2.hash(typed, ARGON2)
+          : null;
     const items = input.items ?? [];
     // Its id made here, to bind its sealed copy to (0.9.0, LK): the link,
     // and the password the vault made up (a typed one is never kept).
@@ -637,7 +674,7 @@ export class UploadRequestService {
     const copy = this.copyKey
       ? sealUploadRequestCopy(
           this.copyKey,
-          { token, ...(made ? { password: made } : {}) },
+          { token, ...(pin ? { pin } : {}), ...(made ? { password: made } : {}) },
           p.householdId,
           requestId,
         )
@@ -727,6 +764,7 @@ export class UploadRequestService {
           expires_at: expiresAt.toISOString(),
           protection: protectionOf({
             secret_hash: secretHash,
+            secret_kind: secretKind,
             email_code: input.email_code ?? false,
             this_device_only: input.this_device_only ?? false,
           }),
@@ -738,9 +776,13 @@ export class UploadRequestService {
 
     const request = (await this.list(p)).find((r) => r.id === id) as UploadRequestView;
     const link_url = this.linkUrl(token);
-    return made
-      ? { request, link_token: token, link_url, password: made }
-      : { request, link_token: token, link_url };
+    return {
+      request,
+      link_token: token,
+      link_url,
+      ...(pin ? { pin } : {}),
+      ...(made ? { password: made } : {}),
+    };
   }
 
   /**
@@ -787,6 +829,9 @@ export class UploadRequestService {
       // Where each was last emailed (0.9.0, LK), masked, and by whom: for
       // whoever sees the request (the owner's decision of 16 Nov 2026, 0108).
       const emailed = await lastEmailed(trx, 'upload_request_email', 'request_id', ids);
+      // And texted (0.9.0-dev.69), the number masked; and whether texts can go now.
+      const texted = await lastEmailed(trx, 'upload_request_email', 'request_id', ids, 'sms');
+      const texts = await textsReady(trx, this.sms);
       return rows.map((r) => ({
         ...this.view(r, p),
         // Paused while its requester's sign-in is locked, or waits after a
@@ -815,6 +860,20 @@ export class UploadRequestService {
         files_received: Number(files.find((f) => f.request_id === r.id)?.n ?? 0),
         emailed_to: emailed.get(r.id)?.to ?? null,
         emailed_by_name: emailed.get(r.id)?.by ?? null,
+        // Its link texted by the vault (0.9.0-dev.69), by whoever asked,
+        // while it opens now and the household's texts are set up.
+        textable:
+          r.created_by === p.accountId &&
+          stateOf(r) === 'active' &&
+          !suspensionInEffect({
+            suspended_at: r.asker_suspended_at,
+            suspended_until: r.asker_suspended_until,
+          }) &&
+          this.copyKey !== null &&
+          r.link_copy_sealed !== null &&
+          texts,
+        texted_to: texted.get(r.id)?.to ?? null,
+        texted_by_name: texted.get(r.id)?.by ?? null,
       }));
     });
   }
@@ -943,6 +1002,7 @@ export class UploadRequestService {
     return {
       link_token: copy.token,
       link_url: this.linkUrl(copy.token),
+      ...(copy.pin ? { pin: copy.pin } : {}),
       ...(copy.password ? { password: copy.password } : {}),
     };
   }
@@ -1098,12 +1158,14 @@ export class UploadRequestService {
     const secret = input.secret === 'none' && row.secret_hash === null ? undefined : input.secret;
     if (secret !== undefined) {
       changed.push('secret');
-      // As strong as it is: none; one typed (eight characters at least,
-      // chosen by a person); one the vault made up (twelve, at random).
-      // Going down reaches further.
+      // As strong as it is, as a share link's: none; a PIN (four digits,
+      // 0.9.0-dev.69); one typed (eight characters at least, chosen by a
+      // person); one the vault made up (twelve, at random). Going down
+      // reaches further.
       const strength = (hash: string | null, kind: string | null) =>
-        !hash ? 0 : kind === 'generated' ? 2 : 1;
-      const after = secret === 'none' ? 0 : input.password !== undefined ? 1 : 2;
+        !hash ? 0 : kind === 'pin' ? 1 : kind === 'generated' ? 3 : 2;
+      const after =
+        secret === 'none' ? 0 : secret === 'pin' ? 1 : input.password !== undefined ? 2 : 3;
       if (after < strength(row.secret_hash, row.secret_kind)) widens = true;
     }
     return { set, changed, widens, secret };
@@ -1144,14 +1206,17 @@ export class UploadRequestService {
     warn: (message: string, extra: Record<string, unknown>) => void = () => undefined,
   ): Promise<ChangedUploadRequest> {
     await this.changeable(p, id, input);
+    const pin = input.secret === 'pin' ? madePin() : null;
     const made =
       input.secret === 'password' && input.password === undefined ? madePassword() : null;
     const typed = input.secret === 'password' ? (input.password ?? null) : null;
-    const secretHash = made
-      ? await argon2.hash(canonicalMadeUp(made), ARGON2)
-      : typed !== null
-        ? await argon2.hash(typed, ARGON2)
-        : null;
+    const secretHash = pin
+      ? await argon2.hash(pin, ARGON2)
+      : made
+        ? await argon2.hash(canonicalMadeUp(made), ARGON2)
+        : typed !== null
+          ? await argon2.hash(typed, ARGON2)
+          : null;
     const changed = await withPrincipal(this.db, p, async (trx) => {
       const row = await this.changing(trx, p, id, ifMatch, true);
       const plan = this.planChange(row, input);
@@ -1160,9 +1225,11 @@ export class UploadRequestService {
       const secretKind =
         plan.secret === undefined || plan.secret === 'none'
           ? null
-          : made
-            ? ('generated' as const)
-            : ('password' as const);
+          : pin
+            ? ('pin' as const)
+            : made
+              ? ('generated' as const)
+              : ('password' as const);
       // The copy kept as it was made, with the new made-up password (a typed
       // one is never kept): only where there is one (0103). One that will
       // not open is let go — the request is then shown once — rather than
@@ -1173,7 +1240,7 @@ export class UploadRequestService {
           const kept = openUploadRequestCopy(this.copyKey, row.link_copy_sealed, p.householdId, id);
           copy = sealUploadRequestCopy(
             this.copyKey,
-            { token: kept.token, ...(made ? { password: made } : {}) },
+            { token: kept.token, ...(pin ? { pin } : {}), ...(made ? { password: made } : {}) },
             p.householdId,
             id,
           );
@@ -1228,17 +1295,20 @@ export class UploadRequestService {
           ...(plan.set.close_after_submit !== undefined
             ? { close_after_submit: plan.set.close_after_submit }
             : {}),
-          // What protects it now, never the password.
-          ...(plan.secret !== undefined
-            ? { protection: plan.secret === 'none' ? 'none' : 'password' }
-            : {}),
+          // What protects it now, never the PIN or password.
+          ...(plan.secret !== undefined ? { protection: plan.secret } : {}),
         },
         ip: meta.ip,
       });
       return plan.changed;
     });
     const request = (await this.list(p)).find((r) => r.id === id) as UploadRequestView;
-    return { request, changed, ...(made ? { password: made } : {}) };
+    return {
+      request,
+      changed,
+      ...(pin ? { pin } : {}),
+      ...(made ? { password: made } : {}),
+    };
   }
 
   /**
@@ -1252,10 +1322,153 @@ export class UploadRequestService {
       throw new ApiError(
         403,
         'request_secret_makers_only',
-        'Only whoever asked can give this request a new password. Take it back and make a new one if you need to.',
+        'Only whoever asked can give this request a new PIN or password. Take it back and make a new one if you need to.',
       );
     }
     return found;
+  }
+
+  // ------------------------------------------ texted (0.9.0-dev.69)
+
+  /**
+   * A request whoever asked may have the vault text (0.9.0-dev.69; the
+   * owner's feedback of 18 Nov 2026), as one is emailed: theirs, still
+   * opening, kept as a sealed copy — and the household's texts set up and
+   * tested (`409 sms_not_set_up`). Asked before the credential is.
+   */
+  async textable(p: Principal, id: string): Promise<{ justMade: boolean }> {
+    this.mayAsk(p);
+    if (!this.sms) throw notSetUp();
+    const found = (await this.list(p)).find((r) => r.id === id);
+    if (!found || !found.mine) throw new ApiError(404, 'not_found', 'That request does not exist.');
+    if (found.state === 'paused') {
+      throw new ApiError(
+        409,
+        'request_paused',
+        'That request is paused just now, so it would not open for them. Once it works again, you can text it.',
+      );
+    }
+    if (found.state !== 'active') {
+      throw new ApiError(
+        410,
+        'request_ended',
+        'That request no longer opens, so there is nothing to send. Make a new one if you need to.',
+      );
+    }
+    if (!found.revealable) {
+      throw new ApiError(
+        409,
+        'request_not_revealable',
+        'That request was made before the vault kept a copy, so the vault cannot text it. Send it yourself, or take it back and make a new one.',
+      );
+    }
+    if (!found.textable) throw notSetUp();
+    return { justMade: Date.now() - Date.parse(found.created_at) <= JUST_MADE_MS };
+  }
+
+  /**
+   * POST /upload-requests/{id}/text (0.9.0-dev.69): the link, opened from
+   * its sealed copy, texted to the mobile number whoever asked typed, read
+   * in the household's country — through the household's own text
+   * messages, counted against their monthly cap. Neutral words
+   * (requestLinkText): who it is from and when it stops working; never what
+   * it asks for, its PIN, password or a code. At most LINK_TEXTS a request
+   * and an account in a day. Written down with the number masked, as
+   * `upload_request.texted`.
+   */
+  async textLink(
+    p: Principal,
+    id: string,
+    input: { to: string },
+    meta: RequestMeta,
+  ): Promise<LinkTexted> {
+    await this.textable(p, id);
+    const number = await textNumber(this.sms, p, input.to);
+    const sms = this.sms as SmsService;
+    const copyKey = this.copyKey as Buffer;
+    const base = (this.opts.publicUrl ?? this.opts.baseUrl ?? '').replace(/\/+$/, '');
+    const masked = maskPhone(number);
+    // Reserved — counted, its row and its line written — in a transaction
+    // that is over before SMS Gate is asked (sendReserved, the dev.69
+    // review): never a pool connection held across the call to the phone.
+    const reserved = await withPrincipal(this.db, p, async (trx) => {
+      const left = await textsLeft(trx, 'upload_request_email', p, id, 'request');
+      // Read again, as it opens now: taken back, closed, paused, ended,
+      // locked or visited as often as it allows meanwhile, it is not sent.
+      const row = await trx
+        .selectFrom('upload_request')
+        .select(['link_copy_sealed', 'expires_at', 'requester_member_id'])
+        .where('id', '=', id)
+        .where('created_by', '=', p.accountId)
+        .where('revoked_at', 'is', null)
+        .where('closed_at', 'is', null)
+        .where('paused_at', 'is', null)
+        .where('expires_at', '>', sql<Date>`now()`)
+        .where('attempts', '<', MAX_ATTEMPTS)
+        .where((eb) =>
+          eb.or([eb('max_visits', 'is', null), eb('visits_used', '<', eb.ref('max_visits'))]),
+        )
+        .executeTakeFirst();
+      if (!row?.link_copy_sealed) {
+        throw new ApiError(
+          410,
+          'request_ended',
+          'That request no longer opens, or is paused just now, so there is nothing to send.',
+        );
+      }
+      const copy = openUploadRequestCopy(copyKey, row.link_copy_sealed, p.householdId, id);
+      const household = await trx
+        .selectFrom('household')
+        .select(['name', 'timezone'])
+        .executeTakeFirstOrThrow();
+      const asker = await trx
+        .selectFrom('member')
+        .select('display_name')
+        .where('id', '=', row.requester_member_id)
+        .executeTakeFirst();
+      const now = new Date();
+      const rowId = await reserveText(trx, p, 'upload_request_email', id, masked, now);
+      await appendAudit(trx, {
+        householdId: p.householdId,
+        actorAccountId: p.accountId,
+        action: 'upload_request.texted',
+        objectType: 'upload_request',
+        objectId: id,
+        detail: { to: masked },
+        ip: meta.ip,
+      });
+      return {
+        left,
+        sent: {
+          table: 'upload_request_email' as const,
+          rowId,
+          oneId: id,
+          sentAt: now,
+          to: number,
+          masked,
+          kind: 'request_link' as const,
+          text: requestLinkText({
+            householdName: household.name,
+            askedBy: asker?.display_name ?? null,
+            link: `${base}/drop#${copy.token}`,
+            expiresAt: row.expires_at,
+            timezone: householdZone(household.timezone),
+          }),
+          audit: {
+            action: 'upload_request.text_not_sent' as const,
+            objectType: 'upload_request',
+            objectId: id,
+            detail: { to: masked },
+          },
+        },
+      };
+    });
+    await sendReserved(this.db, sms, p, reserved.sent, meta);
+    return {
+      sent_to: masked,
+      sent_at: reserved.sent.sentAt.toISOString(),
+      sends_left: reserved.left,
+    };
   }
 
   // ----------------------------------------------------- emailed (0.9.0, LK)
@@ -1330,6 +1543,8 @@ export class UploadRequestService {
         .selectFrom('upload_request_email')
         .select(['request_id', 'sent_at'])
         .where('sent_by', '=', p.accountId)
+        // Emails alone: texts are counted on their own (0117).
+        .where('way', '=', 'email')
         .where('sent_at', '>', new Date(now.getTime() - 864e5))
         .orderBy('sent_at')
         .execute();
@@ -1362,15 +1577,20 @@ export class UploadRequestService {
           'expires_at',
           'email_code',
           'secret_hash',
+          'secret_kind',
           'requester_member_id',
         ])
         .where('id', '=', id)
         .where('created_by', '=', p.accountId)
         .where('revoked_at', 'is', null)
-        // Nor ended, closed or paused since it was asked about.
+        // Nor ended, closed, paused, locked or visited out since it was asked about.
         .where('closed_at', 'is', null)
         .where('paused_at', 'is', null)
         .where('expires_at', '>', sql<Date>`now()`)
+        .where('attempts', '<', MAX_ATTEMPTS)
+        .where((eb) =>
+          eb.or([eb('max_visits', 'is', null), eb('visits_used', '<', eb.ref('max_visits'))]),
+        )
         .executeTakeFirst();
       if (!row?.link_copy_sealed)
         throw new ApiError(404, 'not_found', 'That request does not exist.');
@@ -1392,6 +1612,7 @@ export class UploadRequestService {
         timezone: householdZone(household.timezone),
         message: words.message,
         password: row.secret_hash !== null,
+        pin: row.secret_kind === 'pin',
         code: row.email_code,
       });
       await trx
@@ -1833,7 +2054,7 @@ export class UploadRequestService {
         .where('expires_at', '<=', new Date(now))
         .execute();
       const verified: string[] = [];
-      if (r.secret_hash) verified.push('password');
+      if (r.secret_hash) verified.push(r.secret_kind === 'pin' ? 'pin' : 'password');
       if (r.email_code) verified.push('email_code');
       if (r.this_device_only) verified.push('this_device');
       const made = await trx
@@ -1883,7 +2104,7 @@ export class UploadRequestService {
             accountIds: [outcome.requester],
             subject: 'A request you sent has stopped working',
             body:
-              'A wrong password or code was typed ten times on a link you sent asking for ' +
+              'A wrong PIN, password or code was typed ten times on a link you sent asking for ' +
               'documents, so it has stopped working. Make a new request if they still need ' +
               'to send them.',
           });
@@ -1921,11 +2142,15 @@ export class UploadRequestService {
     if (r.attempts >= MAX_ATTEMPTS) return 'gone';
     let right = true;
     if (r.secret_hash) {
-      // A made-up password in its canonical form; a typed one as typed (0048).
+      // A made-up password in its canonical form; a typed one as typed
+      // (0048); a PIN (0.9.0-dev.69) as typed, its spaces taken out — from
+      // `pin`, or `password` from a page that asks for either in one box.
       const given =
-        input.password && r.secret_kind === 'generated'
-          ? canonicalMadeUp(input.password)
-          : input.password;
+        r.secret_kind === 'pin'
+          ? (input.pin ?? input.password)?.replace(/\s+/g, '')
+          : input.password && r.secret_kind === 'generated'
+            ? canonicalMadeUp(input.password)
+            : input.password;
       right = given ? await argon2.verify(r.secret_hash, given).catch(() => false) : false;
     }
     // The code only after the password (A23): a wrong password never uses

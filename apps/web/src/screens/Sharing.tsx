@@ -3,25 +3,26 @@ import {
   emailedToWords,
   ENDED_SHARING_KEPT_NOTE,
   endedSharingWords,
-  lastEmailedWords,
   sharePagesNote,
-  UPLOAD_REQUEST_EMAIL_NOTE,
-  type RevealedUploadRequest,
+  textedToWords,
   type UploadRequestView,
 } from '@fdv/shared';
-import { useRef, useState, type RefObject } from 'react';
+import { useRef, useState } from 'react';
 import { flushSync } from 'react-dom';
 import { Link, useLocation } from 'react-router';
-import { api, type RevealedShare, type Share } from '../api.js';
+import { api, type Share } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
 import { storedRole } from '../session.js';
 import { useShellMode } from '../shell.js';
 import { None, useGrid } from '../table-grid.js';
-import { Button, ConfirmDialog, Dialog, ErrorNote, TopBar } from '../ui.js';
-import { EmailALink, EmailTheLink } from './Share.js';
-import { ChangeLink } from './ChangeLink.js';
+import { Button, ConfirmDialog, ErrorNote, TopBar } from '../ui.js';
+import { changeLinkLabel, changeLinkPath, showLinkLabel } from './Share.js';
+import { linkTarget, requestTarget, useShowAgain } from './LinkHandOver.js';
 import { LinkOpens } from '../link-opens.js';
 import { dateTimeWords, familyZoneNow } from '../family-time.js';
+
+// Said as they always were, by Sharing's neighbours too (After a restore).
+export { linkTarget, requestTarget };
 
 /**
  * Sharing (5.19): every link outside the family the reader may
@@ -54,6 +55,14 @@ import { dateTimeWords, familyZoneNow } from '../family-time.js';
  * more" for the rest (no longer cut off at 20): the vault removes each a
  * while after it ended (Settings → Privacy, 90 days unless an owner chose
  * otherwise), and Sharing says how long beside them.
+ *
+ * Since 0.9.0-dev.69 (the owner's feedback of 18 Nov 2026) links and
+ * requests are shown and changed alike, here and wherever else they are
+ * listed: Show the link is one dialog for both (LinkHandOver.tsx) — the link
+ * with Copy and Send, its PIN or password, and the vault's Email the link
+ * and Text the link — and Change opens a page of its own for both, a link's
+ * at /sharing/links/{id}. Each row says where the vault last emailed or
+ * texted it.
  */
 
 /** Ended links, or ended requests, shown before "Show N more". */
@@ -61,17 +70,6 @@ export const ENDED_SHOWN = 20;
 
 /** Still able to open: taken back, it opens nothing (a page opened on a used-up one lasts to its end). */
 const working = (s: Share) => s.state === 'active' || s.state === 'used_up' || s.state === 'paused';
-
-/**
- * What a link is to, in words: a document's title, or a collection's name —
- * at the start of a line, or inside a sentence.
- */
-export function linkTarget(s: Share, inside = false): string {
-  if (s.collection_id) {
-    return `${inside ? 'the' : 'The'} collection “${s.collection_name ?? 'a collection'}”`;
-  }
-  return s.document_title ? `“${s.document_title}”` : inside ? 'a document' : 'A document';
-}
 
 /** A request that can still be used, or is only paused: taking it back still means something. */
 const requestWorking = (r: UploadRequestView) =>
@@ -146,7 +144,11 @@ export function requestState(
     case 'revoked':
       return { words: 'Taken back', tone: null };
     case 'locked':
-      return { words: 'Stopped: a wrong password or code was typed ten times', tone: 'danger' };
+      // A request may ask for a PIN since 0.9.0-dev.69.
+      return {
+        words: 'Stopped: a wrong PIN, password or code was typed ten times',
+        tone: 'danger',
+      };
     case 'closed':
       return {
         words:
@@ -161,10 +163,6 @@ export function requestState(
       return { words: String(r.state), tone: null };
   }
 }
-
-/** Whom a request is for, in a sentence: "the request to Jane, accountant". */
-export const requestTarget = (r: UploadRequestView) =>
-  `the request “${r.title}”${r.recipient_label ? ` to ${r.recipient_label}` : ''}`;
 
 /**
  * What turning on a link or a request a restore paused did, said by what the
@@ -203,15 +201,12 @@ export function SharingScreen() {
     [authVersion, mayAsk],
   );
   const [asking, setAsking] = useState<Share | null>(null);
-  // A link shown again (0.9.0): held here only while its sheet is open.
-  const [shown, setShown] = useState<{ link: Share; revealed: RevealedShare } | null>(null);
-  // A request shown again (0.9.0, LK), the same way.
-  const [shownRequest, setShownRequest] = useState<{
-    request: UploadRequestView;
-    revealed: RevealedUploadRequest;
-  } | null>(null);
-  // A link being changed (0.9.0, LK): its form, in the app's one dialog.
-  const [changing, setChanging] = useState<Share | null>(null);
+  // A link or a request shown again (0.9.0; one way for both since
+  // 0.9.0-dev.69): held only while its dialog is open.
+  const reveal = useShowAgain(() => {
+    void reload();
+    void requests.reload();
+  });
   const [askingRequest, setAskingRequest] = useState<UploadRequestView | null>(null);
   // Every ended link, or request, once asked for: the first 20 until then.
   const [allEnded, setAllEnded] = useState(false);
@@ -231,9 +226,10 @@ export function SharingScreen() {
     keeping.data != null
       ? `${endedSharingWords(keeping.data.remove_after_days)} ${ENDED_SHARING_KEPT_NOTE}`
       : null;
-  const [busy, setBusy] = useState(false);
+  const [acting, setBusy] = useState(false);
+  const busy = acting || reveal.busy;
   const [problem, setProblem] = useState<string | null>(null);
-  // A request changed on its own page comes back saying so.
+  // A link or a request changed on its own page comes back saying so.
   const location = useLocation();
   const [said, setSaid] = useState<string | null>(
     () => (location.state as { said?: unknown } | null)?.said?.toString() ?? null,
@@ -245,41 +241,6 @@ export function SharingScreen() {
   const askToTakeBack = (s: Share, button: HTMLButtonElement) => {
     returnTo.current = button;
     setAsking(s);
-  };
-
-  // Shown again, after confirming it's you (0.9.0): the vault asks, and the
-  // step-up sheet answers; cancelled, nothing is shown.
-  const showAgain = async (s: Share, button: HTMLButtonElement) => {
-    returnTo.current = button;
-    setBusy(true);
-    setProblem(null);
-    try {
-      const revealed = await guarded((t) => api.revealShare(t, s.id));
-      if (revealed) setShown({ link: s, revealed });
-    } catch (err) {
-      setProblem(describeError(err));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const showRequestAgain = async (r: UploadRequestView, button: HTMLButtonElement | null) => {
-    returnTo.current = button;
-    setBusy(true);
-    setProblem(null);
-    try {
-      const revealed = await guarded((t) => api.revealUploadRequest(t, r.id));
-      if (revealed) setShownRequest({ request: r, revealed });
-    } catch (err) {
-      setProblem(describeError(err));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const askToChange = (s: Share, button: HTMLButtonElement) => {
-    returnTo.current = button;
-    setChanging(s);
   };
 
   const takeBack = async (s: Share) => {
@@ -354,7 +315,7 @@ export function SharingScreen() {
         {mayAsk ? ', and requests for someone to send you documents' : ''}. Each works until its
         end, or until you take it back.
       </p>
-      <ErrorNote message={error ?? requests.error ?? problem} />
+      <ErrorNote message={error ?? requests.error ?? problem ?? reveal.problem} />
       <p className="notice status-line" role="status" tabIndex={-1} ref={status}>
         {said}
       </p>
@@ -376,8 +337,8 @@ export function SharingScreen() {
               caption="Links that work now"
               busy={busy}
               onTakeBack={askToTakeBack}
-              onShow={(s, button) => void showAgain(s, button)}
-              onChange={askToChange}
+              onShow={(s, button) => void reveal.showLink(s, button)}
+              change
             />
           )
         ) : (
@@ -388,8 +349,8 @@ export function SharingScreen() {
                 link={s}
                 busy={busy}
                 onTakeBack={(button) => askToTakeBack(s, button)}
-                onShow={(button) => void showAgain(s, button)}
-                onChange={(button) => askToChange(s, button)}
+                onShow={(button) => void reveal.showLink(s, button)}
+                change
               />
             ))}
           </ul>
@@ -447,7 +408,7 @@ export function SharingScreen() {
                 owner={owner}
                 onTakeBack={askToTakeBackRequest}
                 onResume={(r) => void resume(r)}
-                onShow={(r, button) => void showRequestAgain(r, button)}
+                onShow={(r, button) => void reveal.showRequest(r, button)}
               />
             )
           ) : (
@@ -460,7 +421,7 @@ export function SharingScreen() {
                   owner={owner}
                   onTakeBack={(button) => askToTakeBackRequest(r, button)}
                   onResume={() => void resume(r)}
-                  onShow={(button) => void showRequestAgain(r, button)}
+                  onShow={(button) => void reveal.showRequest(r, button)}
                 />
               ))}
             </ul>
@@ -515,36 +476,7 @@ export function SharingScreen() {
           </p>
         </ConfirmDialog>
       )}
-      {changing && (
-        <ChangeLink
-          link={changing}
-          target={linkTarget(changing, true)}
-          returnFocus={returnTo}
-          onCancel={() => setChanging(null)}
-          onDone={(words) => {
-            setChanging(null);
-            setSaid(words);
-            void reload();
-            status.current?.focus();
-          }}
-        />
-      )}
-      {shownRequest && (
-        <RequestShownAgain
-          request={shownRequest.request}
-          revealed={shownRequest.revealed}
-          returnFocus={returnTo}
-          onClose={() => setShownRequest(null)}
-        />
-      )}
-      {shown && (
-        <ShownAgain
-          link={shown.link}
-          revealed={shown.revealed}
-          returnFocus={returnTo}
-          onClose={() => setShown(null)}
-        />
-      )}
+      {reveal.dialog}
       {asking && (
         <ConfirmDialog
           title="Take this link back?"
@@ -573,20 +505,21 @@ function LinkRow(props: {
   busy: boolean;
   onTakeBack?: (button: HTMLButtonElement) => void;
   onShow?: (button: HTMLButtonElement) => void;
-  /** Change it (0.9.0, LK): on its row, when it is the reader's to change. */
-  onChange?: (button: HTMLButtonElement) => void;
+  /**
+   * Change it (0.9.0, LK), on its own page since 0.9.0-dev.69: on its row,
+   * when it is the reader's to change.
+   */
+  change?: boolean;
 }) {
   const s = props.link;
   const pages = s.document_id ? sharePagesNote(s.pages) : null;
   const show = s.revealable === true ? props.onShow : undefined;
-  const change = s.changeable === true ? props.onChange : undefined;
+  const change = s.changeable === true && props.change === true;
   return (
     <li className="place">
       <div className="place-title">{linkTarget(s)}</div>
       <div className="muted">{s.summary}</div>
-      {s.emailed_to && (
-        <div className="muted">{emailedToWords(s.emailed_to, s.emailed_by_name, s.mine)}</div>
-      )}
+      <SentWords item={s} block />
       {s.created_by_name && <div className="muted">Made by {s.created_by_name}</div>}
       {/* Who opened it, when (0.9.0, H5). */}
       <LinkOpens link={s} />
@@ -604,17 +537,7 @@ function LinkRow(props: {
               Show the link
             </button>
           )}
-          {change && (
-            <button
-              type="button"
-              className="btn btn-quiet"
-              disabled={props.busy}
-              aria-label={changeLabel(s)}
-              onClick={(e) => change(e.currentTarget)}
-            >
-              Change
-            </button>
-          )}
+          {change && <ChangeLinkLink link={s} />}
           {props.onTakeBack && (
             <button
               type="button"
@@ -632,161 +555,56 @@ function LinkRow(props: {
   );
 }
 
+/**
+ * Where the vault last sent a link or a request (0.9.0; texts since
+ * 0.9.0-dev.69), and by whom when it was somebody else: under its row.
+ */
+function SentWords(props: {
+  item: Pick<Share, 'emailed_to' | 'emailed_by_name' | 'texted_to' | 'texted_by_name' | 'mine'>;
+  /** A line each (a list's row), or within a table's cell. */
+  block?: boolean;
+}) {
+  const { item } = props;
+  const lines = [
+    item.emailed_to ? emailedToWords(item.emailed_to, item.emailed_by_name, item.mine) : null,
+    item.texted_to ? textedToWords(item.texted_to, item.texted_by_name, item.mine) : null,
+  ].filter((l): l is string => l !== null);
+  return (
+    <>
+      {lines.map((line) =>
+        props.block ? (
+          <div key={line} className="muted">
+            {line}
+          </div>
+        ) : (
+          <span key={line} className="muted cell-sub">
+            {line}
+          </span>
+        ),
+      )}
+    </>
+  );
+}
+
+/** Change, to the link's own page (0.9.0-dev.69), coming back here when done. */
+function ChangeLinkLink(props: { link: Share; small?: boolean }) {
+  return (
+    <Link
+      to={changeLinkPath(props.link)}
+      state={{ back: '/sharing' }}
+      className={`btn btn-quiet${props.small ? ' btn-small' : ''}`}
+      aria-label={changeLabel(props.link)}
+    >
+      Change
+    </Link>
+  );
+}
+
 /** "Show the link to “Mansoor’s passport”, shared with the visa agent" */
-const showLabel = (s: Share) =>
-  `Show the link to ${linkTarget(s, true)}${s.recipient_label ? `, shared with ${s.recipient_label}` : ''}`;
+const showLabel = (s: Share) => showLinkLabel(linkTarget(s, true), s);
 
 /** "Change the link to “Mansoor’s passport”, shared with the visa agent" */
-const changeLabel = (s: Share) =>
-  `Change the link to ${linkTarget(s, true)}${s.recipient_label ? `, shared with ${s.recipient_label}` : ''}`;
-
-/**
- * A request's link shown again to whoever asked (0.9.0, LK), as a share
- * link's is: the link, and the password the vault made up, each with Copy.
- * Nothing of it is kept on the page once it is closed.
- */
-function RequestShownAgain(props: {
-  request: UploadRequestView;
-  revealed: RevealedUploadRequest;
-  returnFocus: RefObject<HTMLElement | null>;
-  onClose: () => void;
-}) {
-  const { revealed } = props;
-  const link = revealed.link_url ?? `${window.location.origin}/drop#${revealed.link_token}`;
-  const [copied, setCopied] = useState<'link' | 'password' | null>(null);
-  const copy = (what: 'link' | 'password', text: string) => {
-    void navigator.clipboard?.writeText(text).then(
-      () => setCopied(what),
-      () => setCopied(null),
-    );
-  };
-  return (
-    <Dialog
-      title={`The link for ${requestTarget(props.request)}`}
-      wide
-      returnFocus={props.returnFocus}
-      onClose={props.onClose}
-      closeLabel="Hide it"
-      closePrimary
-    >
-      <code style={{ wordBreak: 'break-all' }}>{link}</code>
-      <Button kind="quiet" onClick={() => copy('link', link)}>
-        {copied === 'link' ? 'Copied' : 'Copy the link'}
-      </Button>
-      {revealed.password && (
-        <div className="field">
-          <span className="field-label">The password</span>
-          <code style={{ fontSize: 22, letterSpacing: 2, wordBreak: 'break-all' }}>
-            {revealed.password}
-          </code>
-          <Button kind="quiet" onClick={() => copy('password', revealed.password as string)}>
-            {copied === 'password' ? 'Copied' : 'Copy the password'}
-          </Button>
-          <p className="muted">
-            Tell them the password some other way — a phone call, not the same message.
-          </p>
-        </div>
-      )}
-      {/* Another way to send it, beside Copy (16 Nov 2026): never in its place. */}
-      {props.request.emailed_to && (
-        <p className="muted">{lastEmailedWords(props.request.emailed_to, props.request.mine)}</p>
-      )}
-      <RequestEmail request={props.request} idPrefix="shown-request" />
-      <p className="muted">
-        Only you can see this again, and only after confirming it’s you. Closing hides it.
-      </p>
-    </Dialog>
-  );
-}
-
-/** A request's link emailed by the vault (0.9.0, LK; the owner's decision of 16 Nov 2026). */
-export function RequestEmail(props: { request: UploadRequestView; idPrefix: string }) {
-  const { caps } = useApp();
-  return (
-    <EmailALink
-      idPrefix={props.idPrefix}
-      offered={caps?.features.upload_request_email === true && props.request.emailable === true}
-      note={UPLOAD_REQUEST_EMAIL_NOTE}
-      send={(t, body) => api.emailUploadRequest(t, props.request.id, body)}
-    />
-  );
-}
-
-/**
- * A link shown again to whoever made it (0.9.0): the link, and its PIN or
- * the password the vault made up, each with Copy — as they were shown when
- * it was made. Nothing of it is kept on the page once it is closed.
- */
-function ShownAgain(props: {
-  link: Share;
-  revealed: RevealedShare;
-  returnFocus: RefObject<HTMLElement | null>;
-  onClose: () => void;
-}) {
-  const { revealed } = props;
-  // As it was handed over (Share's HandOver): on the public-only site when
-  // the vault has one, the secret after the #.
-  const link = revealed.link_url ?? `${window.location.origin}/s#${revealed.link_token}`;
-  const [copied, setCopied] = useState<'link' | 'pin' | 'password' | null>(null);
-  const copy = (what: 'link' | 'pin' | 'password', text: string) => {
-    void navigator.clipboard?.writeText(text).then(
-      () => setCopied(what),
-      () => setCopied(null),
-    );
-  };
-  return (
-    <Dialog
-      title={`The link to ${linkTarget(props.link, true)}`}
-      wide
-      returnFocus={props.returnFocus}
-      onClose={props.onClose}
-      closeLabel="Hide it"
-      closePrimary
-    >
-      {props.link.recipient_label && (
-        <p className="muted">Made for {props.link.recipient_label}.</p>
-      )}
-      <code style={{ wordBreak: 'break-all' }}>{link}</code>
-      <Button kind="quiet" onClick={() => copy('link', link)}>
-        {copied === 'link' ? 'Copied' : 'Copy the link'}
-      </Button>
-      {revealed.pin && (
-        <div className="field">
-          <span className="field-label">The PIN</span>
-          <code style={{ fontSize: 24, letterSpacing: 4 }}>{revealed.pin}</code>
-          <Button kind="quiet" onClick={() => copy('pin', revealed.pin as string)}>
-            {copied === 'pin' ? 'Copied' : 'Copy the PIN'}
-          </Button>
-        </div>
-      )}
-      {revealed.password && (
-        <div className="field">
-          <span className="field-label">The password</span>
-          <code style={{ fontSize: 22, letterSpacing: 2, wordBreak: 'break-all' }}>
-            {revealed.password}
-          </code>
-          <Button kind="quiet" onClick={() => copy('password', revealed.password as string)}>
-            {copied === 'password' ? 'Copied' : 'Copy the password'}
-          </Button>
-        </div>
-      )}
-      {(revealed.pin || revealed.password) && (
-        <p className="muted">
-          Tell them the {revealed.pin ? 'PIN' : 'password'} some other way — a phone call, not the
-          same message.
-        </p>
-      )}
-      {/* Another way to send it, beside Copy (0.9.0): never in its place. */}
-      {props.link.emailed_to && (
-        <p className="muted">{lastEmailedWords(props.link.emailed_to, props.link.mine)}</p>
-      )}
-      <EmailTheLink share={props.link} idPrefix="shown" />
-      <p className="muted">
-        Only you can see this again, and only after confirming it’s you. Closing hides it.
-      </p>
-    </Dialog>
-  );
-}
+const changeLabel = (s: Share) => changeLinkLabel(linkTarget(s, true), s);
 
 /** "Take back the link to “Mansoor’s passport”, shared with the visa agent" */
 const takeBackLabel = (s: Share) =>
@@ -805,14 +623,17 @@ function LinksTable(props: {
   onTakeBack?: (link: Share, button: HTMLButtonElement) => void;
   /** Show a link the reader made again (0.9.0): on its row, when it is theirs to see. */
   onShow?: (link: Share, button: HTMLButtonElement) => void;
-  /** Change a link the reader made (0.9.0, LK): on its row, when it is theirs to change. */
-  onChange?: (link: Share, button: HTMLButtonElement) => void;
+  /**
+   * Change a link the reader made (0.9.0, LK), on its own page since
+   * 0.9.0-dev.69: on its row, when it is theirs to change.
+   */
+  change?: boolean;
 }) {
   const take = props.onTakeBack;
   // A column of its own (one grid stop a cell), only when a row has one to show.
   const show = take && props.links.some((s) => s.revealable === true) ? props.onShow : undefined;
   const change =
-    take && props.links.some((s) => s.changeable === true) ? props.onChange : undefined;
+    take !== undefined && props.change === true && props.links.some((s) => s.changeable === true);
   const table = useRef<HTMLTableElement>(null);
   // Never in the page: a plain table is given no grid, so no stop of its own.
   const none = useRef<HTMLTableElement>(null);
@@ -873,11 +694,7 @@ function LinksTable(props: {
                 <td className="wrap-any">{s.recipient_label ?? <None />}</td>
                 <td className="wrap-any">
                   {s.summary}
-                  {s.emailed_to && (
-                    <span className="muted cell-sub">
-                      {emailedToWords(s.emailed_to, s.emailed_by_name, s.mine)}
-                    </span>
-                  )}
+                  <SentWords item={s} />
                   <LinkOpens link={s} />
                 </td>
                 <td className="wrap-any">{s.created_by_name ?? <None />}</td>
@@ -896,21 +713,7 @@ function LinksTable(props: {
                     )}
                   </td>
                 )}
-                {change && (
-                  <td>
-                    {s.changeable === true && (
-                      <button
-                        type="button"
-                        className="btn btn-quiet btn-small"
-                        disabled={props.busy}
-                        aria-label={changeLabel(s)}
-                        onClick={(e) => change(s, e.currentTarget)}
-                      >
-                        Change
-                      </button>
-                    )}
-                  </td>
-                )}
+                {change && <td>{s.changeable === true && <ChangeLinkLink link={s} small />}</td>}
                 {take && (
                   <td>
                     <button
@@ -1076,11 +879,7 @@ function RequestsTable(props: {
                   >
                     {state.words}
                   </span>
-                  {r.emailed_to && (
-                    <span className="muted cell-sub">
-                      {emailedToWords(r.emailed_to, r.emailed_by_name, r.mine)}
-                    </span>
-                  )}
+                  <SentWords item={r} />
                 </td>
                 <td className="wrap-any">{requestTally(r)}</td>
                 {askedBy && (
@@ -1190,9 +989,7 @@ export function RequestRow(props: {
       <div className={`request-state${state.tone ? ` status status-${state.tone}` : ' muted'}`}>
         {state.words}
       </div>
-      {r.emailed_to && (
-        <div className="muted">{emailedToWords(r.emailed_to, r.emailed_by_name, r.mine)}</div>
-      )}
+      <SentWords item={r} block />
       {(props.onTakeBack || resume || afterSignIn || show) && (
         <div className="row">
           {show && (

@@ -32,12 +32,18 @@ import {
   type ReactNode,
   type RefObject,
 } from 'react';
-import { Link } from 'react-router';
+import { Link, useLocation } from 'react-router';
 import { api, ApiRequestError, type Member } from './api.js';
 import { describeError, useApp, useLoad } from './app-context.js';
 import { dateOnlyWords, dateTimeWords } from './family-time.js';
-import { EmailTheLink } from './screens/Share.js';
-import { ChangeLink } from './screens/ChangeLink.js';
+import {
+  EmailTheLink,
+  LinkAndSend,
+  LinkSecret,
+  TextTheLink,
+  useShowAgain,
+} from './screens/LinkHandOver.js';
+import { changeLinkPath } from './screens/Share.js';
 import {
   Button,
   Check,
@@ -50,6 +56,7 @@ import {
   Select,
   Switch,
   TextArea,
+  useArrivedSaid,
 } from './ui.js';
 
 /**
@@ -867,25 +874,24 @@ function ClinicianShare(props: {
             Send this to whoever needs it. It works for {hours} hour{hours === '1' ? '' : 's'}, to
             look at only, and {props.mine ? 'you' : 'the owners'} can see each time it is opened.
           </p>
-          <code className="emergency-link">{link}</code>
-          <Button kind="quiet" onClick={() => void navigator.clipboard?.writeText(link)}>
-            Copy the link
-          </Button>
-          <EmailTheLink share={made.share} idPrefix="emergency" />
+          {/* Handed over as every link is (0.9.0-dev.69): Copy, Send, and the vault's email or text. */}
+          <LinkAndSend link={link} what="link" />
           {made.pin && (
-            <div className="field">
-              <span className="field-label">The PIN</span>
-              <code className="emergency-secret">{made.pin}</code>
-              <span className="muted">Tell them this some other way, not in the same message.</span>
-            </div>
+            <LinkSecret
+              kind="pin"
+              value={made.pin}
+              note="Tell them this some other way, not in the same message."
+            />
           )}
           {made.password && (
-            <div className="field">
-              <span className="field-label">The password</span>
-              <code className="emergency-secret">{made.password}</code>
-              <span className="muted">Tell them this some other way, not in the same message.</span>
-            </div>
+            <LinkSecret
+              kind="password"
+              value={made.password}
+              note="Tell them this some other way, not in the same message."
+            />
           )}
+          <EmailTheLink share={made.share} idPrefix="emergency" />
+          <TextTheLink share={made.share} idPrefix="emergency" />
         </div>
       ) : (
         <form id={formId} className="stack" onSubmit={(e) => void make(e)} noValidate>
@@ -979,14 +985,18 @@ function ClinicianLinks(props: { memberId: string; name: string; mine: boolean }
     [authVersion, props.memberId],
   );
   const [ending, setEnding] = useState<EmergencyLink | null>(null);
-  // A link changed (0.9.0, LK), by whoever made it: its form, filled in.
-  const [changing, setChanging] = useState<EmergencyLink | null>(null);
-  const [said, setSaid] = useState<string | null>(null);
-  const changeOpener = useRef<HTMLElement | null>(null);
+  // A link changed (0.9.0, LK), by whoever made it, on its own page since
+  // 0.9.0-dev.69: it comes back here saying so.
+  const arrived = useArrivedSaid();
+  const location = useLocation();
+  const [said] = useState<string | null>(arrived);
+  // Shown again as every link is (0.9.0-dev.69), when its maker may.
+  const reveal = useShowAgain(() => void reload());
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   const items = data?.items ?? [];
   if (items.length === 0) return null;
+  const here = `${location.pathname}${location.search}`;
   return (
     <section aria-labelledby="clinician-links-h" className="stack">
       <h3 id="clinician-links-h" className="section-h">
@@ -1023,18 +1033,29 @@ function ClinicianLinks(props: { memberId: string; name: string; mine: boolean }
             </span>
             {l.state === 'active' && (
               <span className="row" style={{ gap: 8 }}>
+                {l.revealable === true && (
+                  <button
+                    type="button"
+                    className="btn btn-quiet"
+                    disabled={busy || reveal.busy}
+                    aria-label={`Show the link${l.recipient_label ? ` for ${l.recipient_label}` : ''}`}
+                    onClick={(e) => void reveal.showLink(l, e.currentTarget)}
+                  >
+                    Show the link
+                  </button>
+                )}
                 {l.changeable === true && (
-                  <Button
-                    kind="quiet"
-                    disabled={busy}
-                    ariaLabel={`Change the link${l.recipient_label ? ` for ${l.recipient_label}` : ''}`}
-                    onClick={() => {
-                      changeOpener.current = document.activeElement as HTMLElement | null;
-                      setChanging(l);
+                  <Link
+                    to={changeLinkPath(l, props.memberId)}
+                    state={{
+                      back: here,
+                      target: `${props.name}’s emergency information`,
                     }}
+                    className="btn btn-quiet"
+                    aria-label={`Change the link${l.recipient_label ? ` for ${l.recipient_label}` : ''}`}
                   >
                     Change
-                  </Button>
+                  </Link>
                 )}
                 <Button
                   kind="quiet"
@@ -1050,23 +1071,11 @@ function ClinicianLinks(props: { memberId: string; name: string; mine: boolean }
           </li>
         ))}
       </ul>
-      <ErrorNote message={problem} />
+      <ErrorNote message={problem ?? reveal.problem} />
       <p className="notice status-line" role="status">
         {said}
       </p>
-      {changing && (
-        <ChangeLink
-          link={changing}
-          target={`${props.name}’s emergency information`}
-          returnFocus={changeOpener}
-          onCancel={() => setChanging(null)}
-          onDone={(words) => {
-            setChanging(null);
-            setSaid(words);
-            void reload();
-          }}
-        />
-      )}
+      {reveal.dialog}
       {ending && (
         <ConfirmDialog
           title="Take back this link?"

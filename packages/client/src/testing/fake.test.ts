@@ -1839,6 +1839,61 @@ describe('the fake vault, a link emailed to its recipient (0.9.0)', () => {
   });
 });
 
+describe('the fake vault, a link texted to its recipient (0.9.0-dev.69)', () => {
+  const refusal = (p: Promise<unknown>) =>
+    p.then(
+      () => null,
+      (err: { status?: number; code?: string }) => err,
+    );
+  it('texts its maker’s link three times a day at most, masked after; none while texts are not set up', async () => {
+    const vault = createFakeVault();
+    const api = createApi(createHttp({ baseUrl: 'https://fake.example', fetch: vault.fetch }));
+    const { access_token: token } = await api.setup({
+      household_name: 'The Fake family',
+      display_name: 'Fake Owner',
+      email: 'owner@example.test',
+      password: 'a long enough password',
+    });
+    expect((await api.capabilities()).features.link_texts).toBe(true);
+    const lease = await api.createDocument(token, { title: 'Lease', type_key: 'school_report' });
+    const made = await api.share(token, lease.id, { with_pin: true });
+    expect((await api.shares(token)).items[0]).toMatchObject({ textable: true, texted_to: null });
+    expect(
+      await refusal(api.textShare(token, made.share.id, { to: 'not a number' })),
+    ).toMatchObject({ status: 422, code: 'phone_number_invalid' });
+    for (const left of [2, 1, 0]) {
+      const sent = await api.textShare(token, made.share.id, { to: '07700 900123' });
+      expect(sent).toMatchObject({ sent_to: '•••• •••123', sends_left: left });
+    }
+    expect(
+      await refusal(api.textShare(token, made.share.id, { to: '07700 900123' })),
+    ).toMatchObject({ status: 429, code: 'text_link_limit' });
+    expect((await api.shares(token)).items[0]?.texted_to).toBe('•••• •••123');
+
+    // A request, the same way.
+    const ask = await api.createUploadRequest(token, {
+      title: 'Tax papers',
+      expires_at: new Date(Date.now() + 864e5).toISOString(),
+      with_pin: true,
+    });
+    expect(ask.pin).toMatch(/^\d{4}$/);
+    expect(ask.request).toMatchObject({ protection: ['pin'], textable: true });
+    expect(
+      await api.textUploadRequest(token, ask.request.id, { to: '+44 7700 900456' }),
+    ).toMatchObject({ sent_to: '•••• •••456' });
+    expect(
+      (await api.uploadRequests(token)).items.find((r) => r.id === ask.request.id)?.texted_to,
+    ).toBe('•••• •••456');
+
+    // Texts not set up: not offered, and refused.
+    vault.state.smsReady = false;
+    expect((await api.shares(token)).items[0]?.textable).toBe(false);
+    expect(
+      await refusal(api.textUploadRequest(token, ask.request.id, { to: '07700 900123' })),
+    ).toMatchObject({ status: 409, code: 'sms_not_set_up' });
+  });
+});
+
 describe('the fake vault, notifications by text (0.9.0, SMS2)', () => {
   it('keeps each person’s texts and quiet hours, off and nine to eight until changed', async () => {
     const vault = createFakeVault();

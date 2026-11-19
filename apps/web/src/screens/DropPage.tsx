@@ -108,7 +108,7 @@ const otherBrowser = (name: string | null) =>
 
 /** Typed wrong ten times: the request has stopped working for good. */
 const locked = (name: string | null) =>
-  `The password or code was typed wrong too many times, so this link has stopped working. Ask ${asker(name)} for a new one.`;
+  `The PIN, password or code was typed wrong too many times, so this link has stopped working. Ask ${asker(name)} for a new one.`;
 
 /** Past its end. */
 const expired = (end: string, name: string | null) =>
@@ -324,12 +324,16 @@ export function DropPage({ token }: { token: string | null }) {
   );
 }
 
-/** What Open asks for, in the sentence that says who asked. */
-function asksFor(needs: { password: boolean; code: boolean }): string {
-  if (needs.password && needs.code) {
-    return ' Open asks for the password they gave you, and a code we email to you.';
+/**
+ * What Open asks for, in the sentence that says who asked: a PIN
+ * (0.9.0-dev.69) or a password, and a code.
+ */
+function asksFor(needs: { pin: boolean; password: boolean; code: boolean }): string {
+  const secret = needs.pin ? 'the PIN' : needs.password ? 'the password' : null;
+  if (secret && needs.code) {
+    return ` Open asks for ${secret} they gave you, and a code we email to you.`;
   }
-  if (needs.password) return ' Open asks for the password they gave you.';
+  if (secret) return ` Open asks for ${secret} they gave you.`;
   if (needs.code) return ' Open asks for a code, which we email to you.';
   return '';
 }
@@ -347,9 +351,12 @@ function Preview({
   onOpened: (session: DropSession, carriedOn: boolean) => void;
   onOver: (message: string) => void;
 }) {
-  const needsPassword = preview.protection.includes('password');
+  // A PIN (0.9.0-dev.69) in a password's place: never both.
+  const needsPin = preview.protection.includes('pin');
+  const needsPassword = !needsPin && preview.protection.includes('password');
   const needsCode = preview.protection.includes('email_code');
   const oneBrowser = preview.protection.includes('this_device');
+  const [pin, setPin] = useState('');
   const [password, setPassword] = useState('');
   const [code, setCode] = useState('');
   const [busy, setBusy] = useState(false);
@@ -397,7 +404,9 @@ function Preview({
   useEffect(() => {
     if (refusals === 0) return;
     const field =
-      document.getElementById('drop-password') ?? document.getElementById('drop-code-input');
+      document.getElementById('drop-pin') ??
+      document.getElementById('drop-password') ??
+      document.getElementById('drop-code-input');
     field?.focus();
   }, [refusals]);
 
@@ -415,9 +424,11 @@ function Preview({
         return;
       }
       const session = await api.dropUnlock(token, {
+        ...(needsPin && pin ? { pin: pin.replace(/\s/g, '') } : {}),
         ...(needsPassword && password ? { password } : {}),
         ...(needsCode ? { code: readShareCode(code) ?? code.trim() } : {}),
       });
+      setPin('');
       setPassword('');
       setCode('');
       onOpened(session, false);
@@ -452,7 +463,9 @@ function Preview({
   };
 
   const ready =
-    (!needsPassword || password.length > 0) && (!needsCode || readShareCode(code) !== null);
+    (!needsPin || pin.trim().length > 0) &&
+    (!needsPassword || password.length > 0) &&
+    (!needsCode || readShareCode(code) !== null);
   return (
     <>
       <h1 id="drop-h" style={{ fontSize: 26 }} tabIndex={-1} ref={heading}>
@@ -461,7 +474,8 @@ function Preview({
       <form className="card stack" aria-labelledby="drop-h" onSubmit={(e) => void open(e)}>
         <p>
           {name ? <strong>{name}</strong> : 'Somebody'} asked you to send documents to{' '}
-          {preview.household_name}’s vault.{asksFor({ password: needsPassword, code: needsCode })}
+          {preview.household_name}’s vault.
+          {asksFor({ pin: needsPin, password: needsPassword, code: needsCode })}
         </p>
         <ul className="share-terms">
           <li>
@@ -481,6 +495,19 @@ function Preview({
             </li>
           )}
         </ul>
+        {/* A request's PIN (0.9.0-dev.69): four digits, told them apart from the link. */}
+        {needsPin && (
+          <Field
+            id="drop-pin"
+            label="The PIN they gave you"
+            value={pin}
+            onChange={setPin}
+            inputMode="numeric"
+            autoComplete="off"
+            maxLength={8}
+            hint="Four digits. It came separately from the link."
+          />
+        )}
         {needsPassword && (
           <Field
             id="drop-password"

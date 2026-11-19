@@ -36,6 +36,7 @@ import {
   type UploadRequestService,
 } from './requests.js';
 import { shareEmailBody } from '../documents/shares.js';
+import { linkTextBody } from '../link-texts.js';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -187,6 +188,28 @@ export function registerUploads(
       const asked = await uploads.emailable(principal(req), id);
       if (stepUp && !asked.justMade) await stepUp.require(principal(req), 'email_share');
       const sent = await uploads.emailLink(principal(req), id, body, metaOf(req));
+      reply.header('cache-control', 'no-store');
+      return sent;
+    },
+  );
+
+  /**
+   * A request's link texted to whoever it is for by the vault
+   * (0.9.0-dev.69; the owner's feedback of 18 Nov 2026), as it is emailed:
+   * through the household's own text messages, never with its PIN, password
+   * or what it asks for. The number, whose it is, that it can be sent and
+   * that texts are set up first; within JUST_MADE_MS of making it nothing
+   * more, later that it's them (`email_share`).
+   */
+  app.post<{ Params: { id: string } }>(
+    '/api/v1/upload-requests/:id/text',
+    { ...auth, ...changeLimit },
+    async (req, reply) => {
+      const id = parse(idParam, req.params).id;
+      const body = parse(linkTextBody, req.body ?? {});
+      const asked = await uploads.textable(principal(req), id);
+      if (stepUp && !asked.justMade) await stepUp.require(principal(req), 'email_share');
+      const sent = await uploads.textLink(principal(req), id, body, metaOf(req));
       reply.header('cache-control', 'no-store');
       return sent;
     },
