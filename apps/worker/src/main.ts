@@ -276,7 +276,7 @@ async function main(): Promise<void> {
   await boss.createQueue(JOBS.appsSweep, { retryLimit: 1, retryDelay: 300 });
   await boss.work(JOBS.appsSweep, async () => {
     const swept = await sweepApps(dbs.admin);
-    if (swept.sent + swept.stuck + swept.changes + swept.links > 0) {
+    if (swept.sent + swept.stuck + swept.changes + swept.links + swept.tokens > 0) {
       log('info', 'connected apps swept', swept);
     }
     const keys = await noticeAppKeys({

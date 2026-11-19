@@ -3,7 +3,9 @@ import {
   APP_CONNECTION_PREFIX,
   APP_CONNECTION_PREFIX_SIGNED,
   APP_SECRET_PATTERN,
+  APP_TOKEN_PATTERN,
   EXTERNAL_ID_PATTERN,
+  type AppAccessToken,
   type AppChanges,
   type AppConnection,
   type AppDeleted,
@@ -16,8 +18,8 @@ import {
   type AppLinkMode,
   type AppMe,
 } from '@fdv/shared';
-import { NetworkError } from './errors.js';
-import { createHttp, toError, type FetchLike, type Http } from './http.js';
+import { ApiRequestError, NetworkError } from './errors.js';
+import { createHttp, toError, type FetchLike, type Http, type ResponseLike } from './http.js';
 import { multipartBody } from './multipart.js';
 
 /**
@@ -31,6 +33,16 @@ import { multipartBody } from './multipart.js';
  * a hash of it; an app never makes, renews or retires its own keys. A key
  * lasts as long as the owner chose (or never expires): `me().key.expires_at`
  * says when, so an app can warn its own users in time.
+ *
+ * Since 0.9.0-dev.72 the key is sent once, to `POST /api/v1/apps/token`
+ * (OAuth 2.0 client credentials), for a short-lived access token, and every
+ * other request carries `Authorization: Bearer` with that: the client asks
+ * for one as it is first needed, keeps it in memory alone, asks again a
+ * minute before it ends or when the vault answers `401 app_token_expired`
+ * (or `app_token_invalid`), and never logs it. A vault from before tokens
+ * (its token route not there, or the key refused there as off its app
+ * routes, and its capability document not saying `connected_app_tokens`) is
+ * sent the key as Basic, as before, and asked again every 10 minutes.
  *
  * Its own entry (`@fdv/client/apps`), platform-neutral as the rest.
  */
@@ -183,9 +195,21 @@ export interface AppClientOptions {
   secret: string;
   /** The platform's fetch; `globalThis.fetch` when left out. */
   fetch?: FetchLike;
-  /** Unix milliseconds, for an error's Retry-After; now unless a test says. */
+  /**
+   * Unix milliseconds, for an error's Retry-After and when an access token
+   * is asked for again; now unless a test says.
+   */
   now?: () => number;
 }
+
+/** A vault that gave no token is asked again after this long (0.9.0-dev.72). */
+export const APP_TOKEN_REPROBE_MS = 10 * 60_000;
+
+/** Whether a refusal says the access token sent no longer works, and another may be asked for. */
+const tokenEnded = (e: unknown): boolean =>
+  e instanceof ApiRequestError &&
+  e.status === 401 &&
+  (e.code === 'app_token_expired' || e.code === 'app_token_invalid');
 
 /** A file to send, and what the app says of it. */
 export interface AppSend {
@@ -282,9 +306,121 @@ export function createAppClient(opts: AppClientOptions): AppClient {
   const problem = vaultOriginProblem(baseUrl);
   if (problem) throw new Error(`not a vault's address: ${problem}`);
   // The key as the vault writes it: nothing else ever reaches the header.
-  const authorization = basicAuthorization(opts.clientId, opts.secret);
+  const basic = basicAuthorization(opts.clientId, opts.secret);
   const fetch: FetchLike =
     opts.fetch ?? ((url, init) => (globalThis as unknown as { fetch: FetchLike }).fetch(url, init));
+  const clock = opts.now ?? (() => Date.now());
+
+  // ------------------------------------------- the access token (dev.72)
+
+  /** The token held, and until when it is used: in memory alone, never logged. */
+  let held: { token: string; until: number } | null = null;
+  /** The token being asked for, which every request waiting on one shares. */
+  let asking: Promise<string | null> | null = null;
+  /**
+   * Until when the key is sent as Basic: the vault gave no token (one from
+   * before 0.9.0-dev.72). Asked again after APP_TOKEN_REPROBE_MS, so a vault
+   * upgraded meanwhile is moved to tokens.
+   */
+  let basicUntil = 0;
+
+  /**
+   * Whether the vault says it gives tokens (`features.connected_app_tokens`),
+   * asked without the key (its capability document is public, and a vault
+   * before dev.72 refuses the key off the app routes); false when it cannot
+   * be asked.
+   */
+  const givesTokens = async (): Promise<boolean> => {
+    try {
+      const res = await fetch(`${baseUrl}/api/v1/capabilities`, {
+        method: 'GET',
+        headers: { accept: 'application/json', 'cache-control': 'no-cache, no-store' },
+        cache: 'no-store',
+      });
+      if (!res.ok) return false;
+      const caps = (await res.json()) as { features?: { connected_app_tokens?: unknown } };
+      return caps.features?.connected_app_tokens === true;
+    } catch {
+      return false;
+    }
+  };
+
+  /** A token, asked for with the key; null when the vault gives none. */
+  const mint = async (): Promise<string | null> => {
+    let res: ResponseLike;
+    try {
+      res = await fetch(`${baseUrl}/api/v1/apps/token`, {
+        method: 'POST',
+        headers: {
+          accept: 'application/json',
+          authorization: basic,
+          'content-type': 'application/x-www-form-urlencoded',
+          'cache-control': 'no-cache, no-store',
+        },
+        body: 'grant_type=client_credentials',
+        cache: 'no-store',
+      });
+    } catch (cause) {
+      throw new NetworkError('offline', undefined, { cause });
+    }
+    if (!res.ok) {
+      const e = await toError(res, clock());
+      // A vault from before tokens: no such route (404), or — as every vault
+      // from dev.63 to dev.71 answers the key off its app routes — `401
+      // app_key_not_accepted`. Unless the vault says it gives tokens, the key
+      // goes as Basic for a while, then the route is asked again.
+      const older =
+        (e.status === 404 && e.code === 'not_found') ||
+        (e.status === 401 && e.code === 'app_key_not_accepted');
+      if (older && !(await givesTokens())) {
+        basicUntil = clock() + APP_TOKEN_REPROBE_MS;
+        return null;
+      }
+      throw e;
+    }
+    const t = (await res.json()) as Partial<AppAccessToken>;
+    if (
+      typeof t.access_token !== 'string' ||
+      !APP_TOKEN_PATTERN.test(t.access_token) ||
+      typeof t.token_type !== 'string' ||
+      t.token_type.toLowerCase() !== 'bearer'
+    ) {
+      throw new Error('the vault answered no access token');
+    }
+    // Asked for again a minute before it ends, or halfway, when it is short.
+    const life = Math.max(1, Number(t.expires_in) || 0) * 1000;
+    held = { token: t.access_token, until: clock() + life - Math.min(60_000, life / 2) };
+    return t.access_token;
+  };
+
+  /**
+   * The Authorization a request is sent with: the token held while it
+   * lasts, else a new one; `failed`, the token the vault just refused,
+   * dropped first (unless another has taken its place meanwhile).
+   */
+  const authorization = async (failed?: string): Promise<string> => {
+    if (clock() < basicUntil) return basic;
+    if (failed !== undefined && held?.token === failed) held = null;
+    if (held && clock() < held.until) return `Bearer ${held.token}`;
+    asking ??= mint().finally(() => {
+      asking = null;
+    });
+    const t = await asking;
+    return t === null ? basic : `Bearer ${t}`;
+  };
+
+  /** A request with the token; once more with a new one when the vault says it ended. */
+  const authorized = async (
+    call: (authorization: string) => Promise<ResponseLike>,
+  ): Promise<ResponseLike> => {
+    const first = await authorization();
+    try {
+      return await call(first);
+    } catch (e) {
+      if (!tokenEnded(e) || !first.startsWith('Bearer ')) throw e;
+      return call(await authorization(first.slice('Bearer '.length)));
+    }
+  };
   /** An external id, as the contract allows it: safe in a path as it is. */
   const pathId = (id: string) => {
     if (!EXTERNAL_ID_PATTERN.test(id)) throw new Error('not an external_id');
@@ -297,11 +433,13 @@ export function createAppClient(opts: AppClientOptions): AppClient {
     target: string,
     body?: { bytes: Uint8Array; contentType: string },
   ) =>
-    http.raw(target, {
-      method,
-      headers: { authorization },
-      ...(body ? { upload: { kind: 'bytes' as const, ...body } } : {}),
-    });
+    authorized((authorization) =>
+      http.raw(target, {
+        method,
+        headers: { authorization },
+        ...(body ? { upload: { kind: 'bytes' as const, ...body } } : {}),
+      }),
+    );
   const json = async <T>(
     method: 'GET' | 'POST' | 'DELETE',
     target: string,
@@ -325,20 +463,23 @@ export function createAppClient(opts: AppClientOptions): AppClient {
     target: string,
     o: { range?: { start: number; end?: number }; ifNoneMatch?: string },
   ): Promise<AppDownload> => {
-    const headers: Record<string, string> = { authorization, accept: '*/*' };
-    if (o.range) headers.range = `bytes=${o.range.start}-${o.range.end ?? ''}`;
-    if (o.ifNoneMatch) headers['if-none-match'] = o.ifNoneMatch;
-    let res: Awaited<ReturnType<FetchLike>>;
-    try {
-      res = await fetch(`${baseUrl}${target}`, {
-        method: 'GET',
-        headers,
-      });
-    } catch (cause) {
-      // No answer: offline, as every other request says it, with the cause.
-      throw new NetworkError('offline', undefined, { cause });
-    }
-    if (res.status !== 304 && !res.ok) throw await toError(res, opts.now?.() ?? Date.now());
+    const res = await authorized(async (authorization) => {
+      const headers: Record<string, string> = { authorization, accept: '*/*' };
+      if (o.range) headers.range = `bytes=${o.range.start}-${o.range.end ?? ''}`;
+      if (o.ifNoneMatch) headers['if-none-match'] = o.ifNoneMatch;
+      let answer: ResponseLike;
+      try {
+        answer = await fetch(`${baseUrl}${target}`, {
+          method: 'GET',
+          headers,
+        });
+      } catch (cause) {
+        // No answer: offline, as every other request says it, with the cause.
+        throw new NetworkError('offline', undefined, { cause });
+      }
+      if (answer.status !== 304 && !answer.ok) throw await toError(answer, clock());
+      return answer;
+    });
     return {
       status: res.status as 200 | 206 | 304,
       etag: res.headers.get('etag'),

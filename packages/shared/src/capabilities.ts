@@ -775,6 +775,14 @@ export interface CapabilityFeatures {
    * gone. Absent from older vaults.
    */
   connected_app_keys?: boolean;
+  /**
+   * Short-lived access tokens (0.9.0-dev.72): an app trades its API key
+   * for an access token at `POST /api/v1/apps/token` (OAuth 2.0 client
+   * credentials) and sends `Authorization: Bearer` with it on every other
+   * app route. Basic there is deprecated. Absent from older vaults, which
+   * take Basic alone.
+   */
+  connected_app_tokens?: boolean;
 }
 
 export interface CapabilityLimits {

@@ -121,6 +121,12 @@ const BEARER = /\bBearer\s+[^\s"',;]+/gi;
  */
 const BASIC = /\bBasic\s+([A-Za-z0-9+/]+={0,2})/gi;
 const APP_SECRET = /\bfdvs_[A-Za-z0-9_-]+/g;
+/**
+ * And an app's access token (0.9.0-dev.72) on its own, by its `fdvt_`
+ * prefix: as a Bearer value it is cut with any other; written anywhere
+ * else in an error's words, it is cut too.
+ */
+const APP_TOKEN = /\bfdvt_[A-Za-z0-9_-]+/g;
 
 /** A Basic value, cut when it can be a key. */
 function cutBasic(whole: string, value: string): string {
@@ -147,7 +153,8 @@ export function errorForLog(err: unknown): Record<string, unknown> {
       .replace(NUMBER, '[number]')
       .replace(BEARER, 'Bearer [key]')
       .replace(BASIC, cutBasic)
-      .replace(APP_SECRET, 'fdvs_[secret]');
+      .replace(APP_SECRET, 'fdvs_[secret]')
+      .replace(APP_TOKEN, 'fdvt_[token]');
   if (!(err instanceof Error)) return { message: scrub(String(err)) };
   const e = err as Error & Record<string, unknown>;
   const out: Record<string, unknown> = {

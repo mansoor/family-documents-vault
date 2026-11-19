@@ -1104,6 +1104,44 @@ export interface Schema {
     expired_told_at: Timestamp | null;
   };
 
+  /**
+   * An access token an app traded its key for (0119, 0.9.0-dev.72): minutes
+   * long, bound to its key; the SHA-256 of the token alone is kept. The
+   * vault's alone.
+   */
+  connected_app_token: {
+    id: Generated<string>;
+    household_id: string;
+    app_id: string;
+    key_id: string;
+    token_hash: Buffer;
+    created_at: GeneratedTimestamp;
+    expires_at: Timestamp;
+  };
+
+  /** A network a key was used from (0119): an IPv4 /24 or an IPv6 /64. The vault's alone. */
+  connected_app_key_network: {
+    key_id: string;
+    household_id: string;
+    network: string;
+    first_seen_at: GeneratedTimestamp;
+    last_seen_at: GeneratedTimestamp;
+    /** The owners were emailed of it: once a key a day at most. */
+    told_at: Timestamp | null;
+  };
+
+  /** An app's requests on a household day, and what is usual for it (0119). The vault's alone. */
+  connected_app_day: {
+    app_id: string;
+    household_id: string;
+    /** YYYY-MM-DD. */
+    day: ColumnType<string, string, string>;
+    requests: Generated<number>;
+    /** The median of the seven days before; null with no day before to go by. */
+    usual: number | null;
+    told_at: Timestamp | null;
+  };
+
   /** What an app sent, by its external id (0109, APP1): its person's, and the vault's. */
   connected_app_intake: {
     id: Generated<string>;

@@ -5,6 +5,8 @@ import {
   APP_CLIENT_ID_PREFIX,
   APP_SECRET_PATTERN,
   APP_SECRET_PREFIX,
+  APP_TOKEN_PATTERN,
+  APP_TOKEN_PREFIX,
 } from '@fdv/shared';
 
 /**
@@ -37,6 +39,15 @@ export function newSecret(): string {
 /** What is kept of a secret. */
 export function secretHash(secret: string): Buffer {
   return createHash('sha256').update(secret, 'utf8').digest();
+}
+
+/**
+ * A new access token (0.9.0-dev.72): `fdvt_` and 32 random bytes,
+ * base64url, answered once; the vault keeps its SHA-256 (`secretHash`)
+ * alone, and finds it by that.
+ */
+export function newAccessToken(): string {
+  return `${APP_TOKEN_PREFIX}${randomBytes(32).toString('base64url')}`;
 }
 
 /** Compared with when there is no key to compare with: the same work, never a match. */
@@ -107,6 +118,61 @@ export function readBasic(
     return { kind: 'malformed' };
   }
   return { kind: 'basic', clientId: b.user, secret: b.rest };
+}
+
+/** What a request's Authorization says an app is (0.9.0-dev.72): its key, or a token for it. */
+export type AppCredentials =
+  | BasicCredentials
+  /** `Authorization: Bearer fdvt_…`: an access token, as the vault writes them. */
+  | { kind: 'token'; token: string };
+
+/** The token in `Bearer <token>`, when it is an app's (`fdvt_…`); null for anything else. */
+function bearerToken(v: string): string | null {
+  const m = /^bearer +(\S+)$/i.exec(v.trim());
+  return m && (m[1] as string).startsWith(APP_TOKEN_PREFIX) ? (m[1] as string) : null;
+}
+
+/**
+ * Whether a request carries a connected app's access token: `Bearer fdvt_…`.
+ * A sign-in's bearer token is no app's and is not taken for one.
+ */
+export function presentsAppToken(headers: Record<string, string | string[] | undefined>): boolean {
+  const v = headers.authorization;
+  if (Array.isArray(v)) return v.some((x) => presentsAppToken({ authorization: x }));
+  return typeof v === 'string' && bearerToken(v) !== null;
+}
+
+/**
+ * A request's credentials, as an app route reads them: its API key as Basic
+ * (`readBasic`), or `Bearer` with an access token as the vault writes them.
+ * A token not as the vault writes it is malformed; a header sent twice is
+ * no credential.
+ */
+export function readAppCredentials(
+  headers: Record<string, string | string[] | undefined>,
+): AppCredentials {
+  const v = headers.authorization;
+  if (typeof v === 'string') {
+    const token = bearerToken(v);
+    if (token !== null) {
+      return APP_TOKEN_PATTERN.test(token) ? { kind: 'token', token } : { kind: 'malformed' };
+    }
+  } else if (Array.isArray(v) && presentsAppToken(headers)) {
+    return { kind: 'malformed' };
+  }
+  return readBasic(headers);
+}
+
+/**
+ * The network an address is counted in for a key's unusual use
+ * (0.9.0-dev.72): an IPv4 address by its /24, an IPv6 address by its /64,
+ * an IPv4 address written as IPv6 as IPv4.
+ */
+export function networkOf(ip: string): string {
+  const bucket = addressBucket(ip);
+  if (bucket.endsWith('::/64')) return bucket;
+  const parts = bucket.split('.');
+  return parts.length === 4 ? `${parts.slice(0, 3).join('.')}.0/24` : bucket;
 }
 
 /**

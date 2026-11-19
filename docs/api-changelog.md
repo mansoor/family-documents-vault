@@ -328,6 +328,112 @@ needs a vault of 0.4.10 or later.
   - **A PIN for a request** (`upload_request_pin`): `POST /api/v1/upload-requests` takes `with_pin: true` (never with a password: `422`), and answers `pin` (four digits) once; `RevealedUploadRequest.pin` shows it again; `PATCH /api/v1/upload-requests/{id}` takes `secret: "pin"` and answers a new `pin` (taking a PIN away, or a password down to a PIN, reaches further: `change_share`). `UploadProtection` gains `pin` (in `protection` and the drop preview). **Note for older clients:** one that looks only for `password` in a request's `protection` will take a request with a PIN for an unprotected one (a phone app is to understand `pin` before it pins to this vault, `features.upload_request_pin`). `POST /api/v1/drop/unlock` takes `pin` (a PIN sent as `password` is read too); every wrong PIN uses up one of the request's ten tries, reserved before it is checked, and the tenth locks it. The email of a request with a PIN says it asks for a PIN, never which.
   - **Changed words:** a request locked by ten wrong tries is "a PIN, password or code" in the activity log and the asker's alert.
 
+- **Connected apps hardened before going live** (0.9.0-dev.72). **Additive**,
+  but for one **deprecation**; migration 0119. Nothing changes for a
+  signed-in client.
+  - **New `features`**, absent from older vaults: `connected_app_tokens`
+    (`true`).
+  - **New route: `POST /api/v1/apps/token`** — an access token, as OAuth 2.0's
+    client credentials grant (RFC 6749 §4.4) has it. Send the API key as
+    `Authorization: Basic base64(client_id:secret)` and the form body
+    `grant_type=client_credentials` (`Content-Type:
+application/x-www-form-urlencoded`). Answered `200` with `Cache-Control:
+no-store` and `Pragma: no-cache`:
+
+    ```json
+    {
+      "access_token": "fdvt_…",
+      "token_type": "Bearer",
+      "expires_in": 900,
+      "scope": "documents.send documents.read"
+    }
+    ```
+
+    `access_token` is `fdvt_` and 43 base64url characters (32 random bytes),
+    opaque; the vault keeps its SHA-256 alone. `scope` is what it may do, the
+    key's permissions among the app's, space-separated (informational: each
+    request is held to the key and the app as they are when it arrives). A
+    `scope` sent in the form is ignored. The key is checked exactly as on any
+    other app route, in the same order and with the same codes
+    (`app_key_invalid`, `app_revoked`, `app_key_revoked`, `app_key_expired`,
+    `address_not_allowed`, `https_required`, `member_locked`, …), but a paused
+    or waiting app is given tokens, as `GET /apps/me` answers it. Refusals of
+    its own: `400 invalid_request` (a body not sent as
+    `application/x-www-form-urlencoded`, an optional `charset` beside it —
+    `text/plain` and JSON are refused —; no `grant_type`, one sent twice, or
+    `client_secret` in the body: the key goes in the header alone), `400
+unsupported_grant_type` (any grant but `client_credentials`), `401
+app_key_required` for a Bearer token or a sign-in here (the key alone is
+    taken), and `429 rate_limited` (retriable, `Retry-After`) past 60 tries an
+    address a minute (an IPv6 address by its /64), asked before the key is
+    looked at, or 10 tokens a key a minute, asked before its use is noted
+    (counted on the app as a refusal, the minute's first alone). Errors are in
+    the vault's own envelope (`{ "error": { "code", "message", … } }`), not
+    RFC 6749 §5.2's.
+
+  - **Every other app route takes `Authorization: Bearer <access token>`.**
+    Checked first, before anything else of the request: a token the vault
+    never gave (or not as it writes them), `401 app_token_invalid` — counted
+    with the address's guesses, as a wrong secret is; past its 15 minutes,
+    `401 app_token_expired` (ask for another). Then exactly as with the key:
+    the app removed `401 app_revoked`, the key revoked `401 app_key_revoked`,
+    the key past its expiry `401 app_key_expired`, `403 app_paused` / `403
+app_not_approved` (but for `GET /apps/me`), the address, https, its
+    person, `403 scope_not_granted` against the key's permissions and the
+    app's, and the app's rate. So a token ends **at once** when its key is
+    revoked or expires, or its app is paused or removed. A sign-in's bearer
+    token on an app route is `401 app_key_required`, as before; an app's
+    token on any other route is `401 app_key_not_accepted`, as its key is.
+  - **Deprecated: the key as Basic on every app route but the token route.**
+    Still taken, as before, and answered with `Deprecation: @1795046400`
+    (RFC 9745: deprecated since 19 November 2026); it will be **removed in a
+    later 0.9.0 development build**, after which those routes take Bearer
+    alone. In `GET /api/v1/capabilities` `deprecations`: `{ "field":
+"Authorization: Basic on /api/v1/apps/* but POST /api/v1/apps/token",
+"removed_in": "0.9.0" }`. `APP_REFUSALS.app_key_required`'s words now
+    point at the token route.
+  - **Changed default:** `POST /api/v1/connected-apps/{id}/keys` takes
+    `expires_in_days` as optional; left out, the key lasts **90 days**.
+    `null` still means it never expires (Settings warns before sending it).
+  - **New field:** `AppKeyView.connection_string` — what to paste into the app
+    for that key (the vault's address and its client ID, never the secret),
+    present while the key is live. `ConnectedAppView.connection_string` (the
+    newest live key's) stays.
+  - **Unusual use** (no change to any answer): the owners are emailed, and the
+    activity log gains `app.key_new_network` (`client_id`, `network`) the first
+    time a key is used from an IPv4 /24 or IPv6 /64 it never was — not for its
+    very first — and `app.busy_day` (`requests`, `usual`) when an app's
+    requests on a household day pass five times its usual (the median of the
+    seven days before, a day with none counted as none; never for an app with
+    no day before) and 200. Each at most once a key, or an app, a day. A key
+    keeps 500 networks at most (past them a new one is neither kept nor told
+    of); one not seen in 90 days is forgotten by the hourly sweep.
+  - **The app's rate (120 requests a minute) is asked before anything of the
+    request is written**: a request past it notes no use, no network and no
+    day, and only the minute's first such refusal is counted on the app.
+  - **Client:** `createAppClient` trades the key for a token at the token
+    route, holds it in memory, asks again a minute before it ends (or halfway,
+    for a short one) and on `401 app_token_expired` or `app_token_invalid`
+    (sending that request once more), and never logs it. A vault from
+    before tokens answers the token route `401 app_key_not_accepted` (dev.63
+    to dev.71: it is not an app route there) or `404 not_found`; unless its
+    capability document (asked without the key) says
+    `connected_app_tokens: true`, the client then sends the key as Basic and
+    asks the token route again after 10 minutes (`APP_TOKEN_REPROBE_MS`), so
+    an upgraded vault moves it to tokens. `now` in its options
+    now also drives when a token is renewed. New shared names:
+    `APP_TOKEN_PREFIX`, `APP_TOKEN_PATTERN`, `APP_TOKEN_SECONDS`,
+    `APP_TOKENS_PER_KEY_PER_MINUTE`, `APP_TOKENS_PER_ADDRESS_PER_MINUTE`,
+    `APP_BASIC_DEPRECATION`, `APP_KEY_DEFAULT_DAYS`, `APP_BUSY_DAY_TIMES`,
+    `APP_BUSY_DAY_MIN` and the type `AppAccessToken`. **Fake vault**
+    (`@fdv/client/testing`): the token route, Bearer, tokens ended with their
+    key or app, the `Deprecation` header, the 90-day default and each key's
+    connection string; `expireAppTokens()` ends every token, as time would.
+    A contract scenario holds both vaults to it (`expireAppTokens` in
+    `ContractContext`, optional).
+  - **Logs:** an `fdvt_…` token is cut from an error's words, as a secret is,
+    and from a `Bearer` value as any other.
+
 - `FDV_APPS_LOCAL_HTTP=on` (0.9.0-dev.66, development only): `403 https_required` is no longer answered to a connected app calling over plain http when the vault's `FDV_BASE_URL` is `http://localhost`, `127.0.0.1` or `[::1]`. No change for any other vault. **Additive.**
 
 - `GET /api/v1/capabilities` — the capability document. Fetch it first,
@@ -8714,3 +8820,8 @@ validation_failed` with that `detail`; a reviewer who is not an owner
   0.9.0). Use `POST /api/v1/password-resets/lookup` and `/complete`, and
   `POST /api/v1/invitations/lookup` and `/accept`, with the token in the
   body.
+- `Authorization: Basic` with a connected app's API key on every
+  `/api/v1/apps/*` route but `POST /api/v1/apps/token` (since 0.9.0-dev.72;
+  removed in a later 0.9.0 development build). Ask for an access token at
+  `POST /api/v1/apps/token` and send `Authorization: Bearer` instead. Each
+  answer to Basic there carries `Deprecation: @1795046400`.

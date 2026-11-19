@@ -7,6 +7,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   APP_CHANGES_KEEP_DAYS,
   APP_LINKS_KEEP_DAYS,
+  APP_NETWORKS_KEEP_DAYS,
   noticeAppKeys,
   noticeReviewers,
   sweepApps,
@@ -218,6 +219,60 @@ describe.skipIf(!testAdminUrl())("the connected apps' sweep: links (APP3)", () =
     );
     expect(left.rows).toEqual([{ app_id: live, n: 2 }]);
     expect((await sweepApps(admin)).links).toBe(0);
+  });
+
+  it('lets an access token go once it ends, and a revoked key’s tokens, networks and old days at once; a network not seen in 90 days goes (0.9.0-dev.72)', async () => {
+    // Each app's key: a token live now, one ended an hour ago, one ended two
+    // days ago; a network it was used from; a day of requests now and one
+    // long ago. The removed app's key was revoked with it.
+    await admin.query(
+      "update connected_app_key set revoked_at = now(), revoked_reason = 'app_removed' where app_id = $1 and revoked_at is null",
+      [gone],
+    );
+    for (const id of [live, gone]) {
+      for (const [made, ends] of [
+        ['now()', "now() + interval '15 minutes'"],
+        ["now() - interval '75 minutes'", "now() - interval '1 hour'"],
+        ["now() - interval '2 days'", "now() - interval '2 days' + interval '15 minutes'"],
+      ] as const) {
+        await admin.query(
+          `insert into connected_app_token (household_id, app_id, key_id, token_hash, created_at, expires_at)
+           values ($1, $2, (select k.id from connected_app_key k where k.app_id = $2), gen_random_bytes(32),
+                   ${made}, ${ends})`,
+          [hh, id],
+        );
+      }
+      await admin.query(
+        `insert into connected_app_key_network (key_id, household_id, network, first_seen_at, last_seen_at)
+         values ((select k.id from connected_app_key k where k.app_id = $2), $1, '203.0.113.0/24', now(), now()),
+                ((select k.id from connected_app_key k where k.app_id = $2), $1, '198.51.100.0/24',
+                 now() - make_interval(days => $3), now() - make_interval(days => $3))`,
+        [hh, id, APP_NETWORKS_KEEP_DAYS + 1],
+      );
+      await admin.query(
+        `insert into connected_app_day (app_id, household_id, day, requests)
+         values ($2, $1, current_date, 3), ($2, $1, current_date - 40, 9)`,
+        [hh, id],
+      );
+    }
+    const swept = await sweepApps(admin);
+    // The live key's two ended; the revoked key's three.
+    expect(swept.tokens).toBe(2 + 3);
+    const left = await admin.query<{ app_id: string; n: number }>(
+      'select app_id, count(*)::int as n from connected_app_token group by app_id',
+    );
+    expect(left.rows).toEqual([{ app_id: live, n: 1 }]);
+    // The revoked key's networks all; the live key's not seen in 90 days.
+    const networks = await admin.query<{ app_id: string; network: string }>(
+      `select k.app_id, n.network from connected_app_key_network n
+         join connected_app_key k on k.id = n.key_id order by 1`,
+    );
+    expect(networks.rows).toEqual([{ app_id: live, network: '203.0.113.0/24' }]);
+    const days = await admin.query<{ app_id: string; n: number }>(
+      'select app_id, count(*)::int as n from connected_app_day group by app_id order by app_id',
+    );
+    expect(days.rows.map((r) => r.n)).toEqual([1, 1]);
+    expect((await sweepApps(admin)).tokens).toBe(0);
   });
 });
 

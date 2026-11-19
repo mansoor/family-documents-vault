@@ -1,5 +1,6 @@
 import {
   type AppLinkSession,
+  type AppKeyView,
   type ConnectedAppView,
   type SharedEmergency,
   type ShareOpening,
@@ -2043,7 +2044,8 @@ export function installFakeApi(state: FakeState) {
             detail: 'permissions',
           });
         }
-        const days = b.expires_in_days ?? null;
+        // Left out: 90 days (0.9.0-dev.72); null, never, said on purpose.
+        const days = b.expires_in_days === undefined ? 90 : b.expires_in_days;
         if (days !== null && (!Number.isInteger(days) || days < 1 || days > 3650)) {
           return refuse(422, 'validation_failed', 'How long it lasts: 1 to 3650 days.', {
             detail: 'expires_in_days',
@@ -2066,6 +2068,8 @@ export function installFakeApi(state: FakeState) {
           last_used_at: null,
           revoked_at: null,
           state: 'live' as const,
+          // What to paste for it (0.9.0-dev.72): its own client ID.
+          connection_string: connection(clientId),
         };
         const next: ConnectedAppView = {
           ...app,
@@ -2094,11 +2098,17 @@ export function installFakeApi(state: FakeState) {
         }
         state.connectedApps = state.connectedApps.map((a) => {
           if (a.id !== app.id) return a;
-          const keys = a.keys.map((k) =>
-            k.id === keyId && k.state === 'live'
-              ? { ...k, state: 'revoked' as const, revoked_at: new Date().toISOString() }
-              : k,
-          );
+          const keys = a.keys.map((k): AppKeyView => {
+            if (k.id !== keyId || k.state !== 'live') return k;
+            // What to paste goes with it (0.9.0-dev.72).
+            const revoked: AppKeyView = {
+              ...k,
+              state: 'revoked',
+              revoked_at: new Date().toISOString(),
+            };
+            delete revoked.connection_string;
+            return revoked;
+          });
           const newest = keys.filter((k) => k.state === 'live').at(-1);
           return { ...a, keys, connection_string: newest ? connection(newest.client_id) : '' };
         });

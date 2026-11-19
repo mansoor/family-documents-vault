@@ -246,6 +246,19 @@ describe('what the log may say about a request (0.5.0)', () => {
     expect(format).not.toContain('$http_authorization');
   });
 
+  it("never keeps a connected app's access token in an error's words (0.9.0-dev.72)", () => {
+    const token = `fdvt_${'C'.repeat(43)}`;
+    expect(errorForLog(new Error(`refused: Authorization: Bearer ${token}`)).message).toBe(
+      'refused: Authorization: Bearer [key]',
+    );
+    expect(errorForLog(new Error(`a token ${token} pasted`)).message).toBe(
+      'a token fdvt_[token] pasted',
+    );
+    const e = new Error(`stack with {"access_token":"${token}"}`);
+    const cut = errorForLog(e);
+    expect(JSON.stringify(cut)).not.toContain(token);
+  });
+
   it('leaves everything else as it was', () => {
     expect(loggableUrl('/api/v1/documents/7f1c')).toBe('/api/v1/documents/7f1c');
     expect(loggableUrl('/api/v1/shares')).toBe('/api/v1/shares');

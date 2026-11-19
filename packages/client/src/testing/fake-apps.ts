@@ -1,11 +1,13 @@
 import {
   APP_ACTS_AS_DEFAULT,
   APP_AUTH_FAILURES_PER_MINUTE,
+  APP_BASIC_DEPRECATION,
   APP_CLIENT_ID_PATTERN,
   APP_CONNECTION_PREFIX,
   APP_GRANTABLE_CATEGORIES,
   APP_HINTS,
   APP_KEY_DAYS_MAX,
+  APP_KEY_DEFAULT_DAYS,
   APP_KEY_NAME_MAX,
   APP_KEYS_MAX,
   APP_LINK_COOKIE,
@@ -16,6 +18,9 @@ import {
   APP_SCOPES_DEFAULT,
   APP_SCOPES_OFFERED,
   APP_SECRET_PATTERN,
+  APP_TOKEN_PATTERN,
+  APP_TOKEN_SECONDS,
+  APP_TOKENS_PER_KEY_PER_MINUTE,
   APP_REFUSALS,
   appInboxOf,
   appMayDownloadSent,
@@ -86,6 +91,14 @@ import type { FetchLike, ResponseLike } from '../http.js';
  * (the fake vault's `expireAppKey`). Each check is made in the order the
  * vault's routes make it.
  *
+ * Access tokens (0.9.0-dev.72), by the vault's rules: the key, as Basic, is
+ * traded at `POST /apps/token` (`grant_type=client_credentials`, a form)
+ * for a token kept on its key as a SHA-256 alone, fifteen minutes long;
+ * every other app route takes `Bearer` with one, and ends it with its key
+ * or its app. Basic there is still taken, with a `Deprecation` header. A
+ * test ends every token with `fakeExpireAppTokens` (the fake vault's
+ * `expireAppTokens`).
+ *
  * Acting as itself (APP8), by the vault's rules: an app connected without a
  * person acts as itself, on at once, its papers that nothing routes going
  * to its reviewer's Inbox (by default the owner connecting it); a reviewer
@@ -130,6 +143,10 @@ export interface FakeAppKey {
   revoked_at: string | null;
   /** Why: an owner revoked it, or its app was removed (the vault's restore revokes every key too). */
   revoked_reason?: 'owner' | 'app_removed' | 'restore' | 'creator' | null;
+  /** Its access tokens (0.9.0-dev.72): each one's SHA-256 (hex) and when it ends, never the token. */
+  tokens?: Array<{ sha256: string; expires_at: number }>;
+  /** Tokens it was given this minute. */
+  minted?: { minute: number; n: number };
 }
 
 export interface FakeIntake {
@@ -303,7 +320,7 @@ export interface FakeAppDeps {
 }
 
 const APP_ROUTE =
-  /^\/api\/v1\/apps\/(me|intake|intake\/[^/]+|intake\/[^/]+\/content|documents|documents\/[^/]+|documents\/[^/]+\/content|documents\/[^/]+\/links|changes)$/;
+  /^\/api\/v1\/apps\/(token|me|intake|intake\/[^/]+|intake\/[^/]+\/content|documents|documents\/[^/]+|documents\/[^/]+\/content|documents\/[^/]+\/links|changes)$/;
 
 async function sha256(bytes: Uint8Array): Promise<Uint8Array> {
   const own = new Uint8Array(bytes.length);
@@ -373,9 +390,42 @@ function basicOf(header: string | undefined): { user: string; rest: string | nul
     : { user: decoded.slice(0, colon), rest: decoded.slice(colon + 1) };
 }
 
-/** Whether a request carries a connected app's API key (its Basic user part `fdvc_…`). */
+/** The token in `Bearer fdvt_…` (0.9.0-dev.72): an app's access token; null for anything else. */
+const appTokenOf = (header: string | undefined): string | null => {
+  const t = /^bearer +(\S+)$/i.exec((header ?? '').trim())?.[1];
+  return t !== undefined && t.startsWith('fdvt_') ? t : null;
+};
+
+/**
+ * Whether a request carries a connected app's API key (its Basic user part
+ * `fdvc_…`) or an access token for one (`Bearer fdvt_…`).
+ */
 const presentsAppKey = (header: string | undefined) =>
-  basicOf(header)?.user.startsWith('fdvc_') ?? false;
+  (basicOf(header)?.user.startsWith('fdvc_') ?? false) || appTokenOf(header) !== null;
+
+/**
+ * Every access token of these apps ended now, as time would end it (a
+ * test's hook, 0.9.0-dev.72): the next request with one is `401
+ * app_token_expired`, and a client asks for another.
+ */
+export function fakeExpireAppTokens(apps: readonly FakeApp[]): number {
+  let n = 0;
+  for (const a of apps) {
+    for (const k of a.keys) {
+      for (const t of k.tokens ?? []) {
+        t.expires_at = Date.now() - 1000;
+        n += 1;
+      }
+    }
+  }
+  return n;
+}
+
+/** An answer with one more header. */
+const withHeader = (res: ResponseLike, name: string, value: string): ResponseLike => ({
+  ...res,
+  headers: { get: (n) => (n.toLowerCase() === name ? value : res.headers.get(n)) },
+});
 
 /** Failed authentications this minute, per fake vault (it knows no addresses: one bucket). */
 const FAILURES = new WeakMap<FakeApp[], { minute: number; n: number }>();
@@ -442,7 +492,11 @@ export function fakeAppRoutes(d: FakeAppDeps) {
     a: FakeApp,
     me: { memberId: string; role?: string },
   ): Promise<ConnectedAppView> => {
-    const keys = a.keys.map(keyView);
+    // Each live key with what to paste into the app for it (0.9.0-dev.72).
+    const keys = a.keys.map((k) => {
+      const v = keyView(k);
+      return v.state === 'live' ? { ...v, connection_string: connection(k.client_id) } : v;
+    });
     const newest = liveKeys(a)[liveKeys(a).length - 1];
     const itself = actsAs(a) === 'app';
     const mine = !itself && a.member_id === me.memberId;
@@ -759,7 +813,8 @@ export function fakeAppRoutes(d: FakeAppDeps) {
           'permissions',
         );
       }
-      const days = body.expires_in_days;
+      // Left out: 90 days (0.9.0-dev.72); null, never, said on purpose.
+      const days = body.expires_in_days === undefined ? APP_KEY_DEFAULT_DAYS : body.expires_in_days;
       if (
         days !== null &&
         (typeof days !== 'number' || !Number.isInteger(days) || days < 1 || days > APP_KEY_DAYS_MAX)
@@ -801,7 +856,7 @@ export function fakeAppRoutes(d: FakeAppDeps) {
         reapprove(a, who);
       }
       const made: ConnectedAppKeyMade = {
-        key: keyView(k),
+        key: { ...keyView(k), connection_string: connection(clientId) },
         client_id: clientId,
         secret,
         connection_string: connection(clientId),
@@ -1196,12 +1251,17 @@ export function fakeAppRoutes(d: FakeAppDeps) {
     headers: Record<string, string>,
     scope: AppScope | null,
     anyState: boolean,
-  ): Promise<{ a: FakeApp; key: FakeAppKey; scopes: AppScope[] } | ResponseLike> => {
-    // 1. Basic with an app's client ID, and nothing else that names a caller.
+    tokenRoute = false,
+  ): Promise<
+    { a: FakeApp; key: FakeAppKey; scopes: AppScope[]; via: 'basic' | 'token' } | ResponseLike
+  > => {
+    // 1. An access token (0.9.0-dev.72) or Basic with an app's client ID,
+    // and nothing else that names a caller; the token route, the key alone.
     const basic = basicOf(headers.authorization);
+    const token = appTokenOf(headers.authorization);
     if (
-      !basic ||
-      !basic.user.startsWith('fdvc_') ||
+      (token === null && (!basic || !basic.user.startsWith('fdvc_'))) ||
+      (tokenRoute && token !== null) ||
       headers.cookie ||
       headers['signature'] ||
       headers['signature-input']
@@ -1235,25 +1295,47 @@ export function fakeAppRoutes(d: FakeAppDeps) {
     };
     const refused = (status: number, code: keyof typeof APP_REFUSALS) =>
       d.fail(status, code, APP_REFUSALS[code]);
-    // 3. The client ID and the secret: unknown and wrong alike, compared in full.
-    const clientId = basic.user;
-    const secret = basic.rest ?? '';
-    const given = hex(await sha256(new TextEncoder().encode(secret)));
     let found: { a: FakeApp; key: FakeAppKey } | null = null;
-    for (const a of d.apps) {
-      const key = a.keys.find((k) => k.client_id === clientId);
-      if (key) found = { a, key };
+    if (token !== null) {
+      // 3a. A token, by its hash: one never given is a guess; one past its
+      // end is asked for again.
+      const given = hex(await sha256(new TextEncoder().encode(token)));
+      let ends: number | null = null;
+      for (const a of d.apps) {
+        for (const key of a.keys) {
+          const t = (key.tokens ?? []).find((x) => sameHex(x.sha256, given));
+          if (t) {
+            found = { a, key };
+            ends = t.expires_at;
+          }
+        }
+      }
+      if (!found || ends === null || !APP_TOKEN_PATTERN.test(token)) {
+        FAILURES.set(d.apps, { minute, n: failedNow + 1 });
+        return refused(401, 'app_token_invalid');
+      }
+      if (ends <= Date.now()) return refused(401, 'app_token_expired');
+    } else if (basic) {
+      // 3b. The client ID and the secret: unknown and wrong alike, compared in full.
+      const clientId = basic.user;
+      const secret = basic.rest ?? '';
+      const given = hex(await sha256(new TextEncoder().encode(secret)));
+      for (const a of d.apps) {
+        const key = a.keys.find((k) => k.client_id === clientId);
+        if (key) found = { a, key };
+      }
+      const matches = sameHex(given, found?.key.secret_sha256 ?? '0'.repeat(64));
+      if (
+        !found ||
+        !matches ||
+        basic.rest === null ||
+        !APP_CLIENT_ID_PATTERN.test(clientId) ||
+        !APP_SECRET_PATTERN.test(secret)
+      ) {
+        return guessed();
+      }
     }
-    const matches = sameHex(given, found?.key.secret_sha256 ?? '0'.repeat(64));
-    if (
-      !found ||
-      !matches ||
-      basic.rest === null ||
-      !APP_CLIENT_ID_PATTERN.test(clientId) ||
-      !APP_SECRET_PATTERN.test(secret)
-    ) {
-      return guessed();
-    }
+    if (!found) return guessed();
     const { a, key } = found;
     // 4. The app removed; the key revoked or past its expiry.
     if (a.revoked) return refused(401, 'app_revoked');
@@ -1275,11 +1357,102 @@ export function fakeAppRoutes(d: FakeAppDeps) {
     if (scope && !scopes.includes(scope)) {
       return d.fail(403, 'scope_not_granted', APP_REFUSALS.scope_not_granted);
     }
-    return { a, key, scopes };
+    return { a, key, scopes, via: token !== null ? 'token' : 'basic' };
   };
 
-  /** The app's side, with its API key. */
-  const app: (
+  /**
+   * `POST /apps/token` (0.9.0-dev.72): the grant, as a form, and a token
+   * for the key, fifteen minutes long; so many a key a minute.
+   */
+  const mintToken = async (
+    key: FakeAppKey,
+    scopes: AppScope[],
+    init: Parameters<FetchLike>[1],
+  ): Promise<ResponseLike> => {
+    const type = (init.headers['content-type'] ?? init.headers['Content-Type'] ?? '').toLowerCase();
+    const text =
+      typeof init.body === 'string'
+        ? init.body
+        : init.body instanceof Uint8Array
+          ? new TextDecoder().decode(init.body)
+          : null;
+    if (!type.startsWith('application/x-www-form-urlencoded') || text === null) {
+      return d.fail(400, 'invalid_request', APP_REFUSALS.invalid_request);
+    }
+    // The form's fields, each as many times as it was sent.
+    const form = text
+      .split('&')
+      .filter(Boolean)
+      .map((pair) => {
+        const [k = '', v = ''] = pair.split('=');
+        const plain = (x: string) => decodeURIComponent(x.replace(/\+/g, ' '));
+        return [plain(k), plain(v)] as const;
+      });
+    const all = (name: string) => form.filter(([k]) => k === name).map(([, v]) => v);
+    if (all('client_secret').length > 0 || all('grant_type').length !== 1) {
+      return d.fail(400, 'invalid_request', APP_REFUSALS.invalid_request);
+    }
+    if (all('grant_type')[0] !== 'client_credentials') {
+      return d.fail(400, 'unsupported_grant_type', APP_REFUSALS.unsupported_grant_type);
+    }
+    const minute = Math.floor(Date.now() / 60_000);
+    const n = key.minted && key.minted.minute === minute ? key.minted.n + 1 : 1;
+    key.minted = { minute, n };
+    if (n > APP_TOKENS_PER_KEY_PER_MINUTE) {
+      const wait = Math.max(1, Math.ceil(((minute + 1) * 60_000 - Date.now()) / 1000));
+      return d.ok(
+        {
+          error: {
+            code: 'rate_limited',
+            message: `Too many access tokens asked for at once. Try again in ${wait} seconds.`,
+            retriable: true,
+            request_id: 'fake',
+          },
+        },
+        429,
+        { 'retry-after': String(wait) },
+      );
+    }
+    const token = `fdvt_${randomText(32)}`;
+    const now = Date.now();
+    key.tokens = [
+      ...(key.tokens ?? []).filter((t) => t.expires_at > now),
+      {
+        sha256: hex(await sha256(new TextEncoder().encode(token))),
+        expires_at: now + APP_TOKEN_SECONDS * 1000,
+      },
+    ];
+    return d.ok(
+      {
+        access_token: token,
+        token_type: 'Bearer',
+        expires_in: APP_TOKEN_SECONDS,
+        scope: scopes.join(' '),
+      },
+      200,
+      { 'cache-control': 'no-store', pragma: 'no-cache' },
+    );
+  };
+
+  /**
+   * The app's side, with its API key or a token for it; the key as Basic
+   * anywhere but the token route answered with a `Deprecation` header
+   * (0.9.0-dev.72), once it is let through.
+   */
+  const app = async (
+    url: string,
+    init: Parameters<FetchLike>[1],
+    parts: Parameters<typeof appRoutes>[2],
+  ): Promise<ResponseLike | null> => {
+    const seen: { via: 'basic' | 'token' | null } = { via: null };
+    const res = await appRoutes(url, init, parts, seen);
+    return res && seen.via === 'basic'
+      ? withHeader(res, 'deprecation', APP_BASIC_DEPRECATION)
+      : res;
+  };
+
+  /** The app routes themselves. */
+  const appRoutes: (
     url: string,
     init: Parameters<FetchLike>[1],
     parts: (body: unknown) => Array<{
@@ -1289,7 +1462,8 @@ export function fakeAppRoutes(d: FakeAppDeps) {
       type?: string;
       filename?: string;
     }> | null,
-  ) => Promise<ResponseLike | null> = async (url, init, parts) => {
+    seen: { via: 'basic' | 'token' | null },
+  ) => Promise<ResponseLike | null> = async (url, init, parts, seen) => {
     const target = url.replace(/^[a-z]+:\/\/[^/]+/i, '');
     const path = target.split('?')[0] as string;
     const method = init.method ?? 'GET';
@@ -1310,20 +1484,26 @@ export function fakeAppRoutes(d: FakeAppDeps) {
           ? new TextEncoder().encode(init.body)
           : new Uint8Array();
     const me = path === '/api/v1/apps/me';
-    const scope: AppScope | null = me
-      ? null
-      : path.endsWith('/content')
-        ? 'documents.download'
-        : path.endsWith('/links')
-          ? 'documents.links'
-          : method === 'DELETE' && /^\/api\/v1\/apps\/documents\/[^/]+$/.test(path)
-            ? 'documents.delete'
-            : path.startsWith('/api/v1/apps/documents') || path === '/api/v1/apps/changes'
-              ? 'documents.read'
-              : 'documents.send';
-    const authed = await authenticate(headers, scope, me);
+    const tokenRoute = path === '/api/v1/apps/token';
+    if (tokenRoute && method !== 'POST')
+      return d.fail(404, 'not_found', 'That page does not exist.');
+    const scope: AppScope | null =
+      me || tokenRoute
+        ? null
+        : path.endsWith('/content')
+          ? 'documents.download'
+          : path.endsWith('/links')
+            ? 'documents.links'
+            : method === 'DELETE' && /^\/api\/v1\/apps\/documents\/[^/]+$/.test(path)
+              ? 'documents.delete'
+              : path.startsWith('/api/v1/apps/documents') || path === '/api/v1/apps/changes'
+                ? 'documents.read'
+                : 'documents.send';
+    const authed = await authenticate(headers, scope, me || tokenRoute, tokenRoute);
     if (!('a' in authed)) return authed;
     const { a, key, scopes } = authed;
+    if (tokenRoute) return mintToken(key, scopes, init);
+    seen.via = authed.via;
     const params = new Map(
       (target.split('?')[1] ?? '')
         .split('&')

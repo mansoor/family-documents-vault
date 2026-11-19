@@ -501,6 +501,19 @@ describe('what an app did, in the activity log (0.9.0, APP1)', () => {
       notable: true,
       actor_member_id: null,
     });
+    // Unusual use (0.9.0-dev.72): the vault's own lines too.
+    expect(
+      event('app.key_new_network', { network: '203.0.113.0/24' }, { actor: null }),
+    ).toMatchObject({
+      text: 'An API key of Acme Money was used from a new network',
+      notable: true,
+      actor_member_id: null,
+    });
+    expect(event('app.busy_day', { requests: 1200, usual: 40 }, { actor: null })).toMatchObject({
+      text: 'Acme Money made many more requests than usual today',
+      notable: true,
+      actor_member_id: null,
+    });
     expect(event('app.connected', {}, { actor: 'Olivia', actor_member_id: 'm-olivia' })?.text).toBe(
       'Olivia connected Acme Money, acting as Ahmed',
     );

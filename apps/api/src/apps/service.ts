@@ -28,6 +28,13 @@ import {
   APP_HINTS,
   APP_LOOKBACK_MAX_MONTHS,
   APP_AUTH_FAILURES_PER_MINUTE,
+  APP_BUSY_DAY_MIN,
+  APP_BUSY_DAY_TIMES,
+  APP_KEY_DEFAULT_DAYS,
+  APP_KEY_NETWORKS_MAX,
+  APP_TOKEN_SECONDS,
+  APP_TOKENS_PER_ADDRESS_PER_MINUTE,
+  APP_TOKENS_PER_KEY_PER_MINUTE,
   APP_IP_ALLOW_MAX,
   APP_IP_ALLOW_NAMES_MAX,
   APP_KEY_DAYS_MAX,
@@ -56,6 +63,7 @@ import {
   sealedAppHints,
   seesAdults,
   suspensionInEffect,
+  type AppAccessToken,
   type AppActsAs,
   type AppConnection,
   type AppGrant,
@@ -93,9 +101,12 @@ import { AppLinks } from './links.js';
 import { appLine } from './lines.js';
 import {
   addressBucket,
+  networkOf,
+  newAccessToken,
   newClientId,
   newSecret,
-  readBasic,
+  presentsAppToken,
+  readAppCredentials,
   secretHash,
   secretMatches,
 } from './keys.js';
@@ -158,7 +169,15 @@ export interface AppCaller {
 export interface AppRoute {
   scope: AppScope | null;
   anyState?: boolean;
+  /**
+   * `POST /apps/token` (0.9.0-dev.72): the key alone, as Basic, is taken
+   * there; an access token is not.
+   */
+  token?: boolean;
 }
+
+/** How a request proved it is the app: its key as Basic (deprecated off the token route), or a token. */
+export type AppVia = 'basic' | 'token';
 
 export interface AppOptions {
   /** FDV_BASE_URL. */
@@ -219,6 +238,14 @@ const inProgress = () =>
     'upload_in_progress',
     'This external_id is still arriving. Ask its status after a moment.',
     { retriable: true, retryAfter: 5 },
+  );
+/** Too many access tokens asked for this minute (0.9.0-dev.72). */
+const tooManyTokens = (wait: number) =>
+  new ApiError(
+    429,
+    'rate_limited',
+    `Too many access tokens asked for at once. Keep one until it expires; try again in ${wait} seconds.`,
+    { retriable: true, retryAfter: wait },
   );
 /** A moment's refusal, sent again later: nothing landed. */
 const busy = () =>
@@ -608,7 +635,48 @@ function keyView(k: KeyRow, now: number): AppKeyView {
   };
 }
 
+/** A key's view with what to paste into the app for it (0.9.0-dev.72), while it is live. */
+function withConnection(k: AppKeyView, url: string, instance: string | null): AppKeyView {
+  return k.state === 'live'
+    ? {
+        ...k,
+        connection_string: connectionString({ url, client_id: k.client_id, instance_id: instance }),
+      }
+    : k;
+}
+
+/** The owners' email when a key is used from a network it never was (0.9.0-dev.72). */
+export function newNetworkAlert(
+  app: string,
+  key: { clientId: string; name: string | null },
+  network: string,
+): { subject: string; body: string } {
+  const which = `${key.clientId}${key.name ? ` (“${key.name}”)` : ''}`;
+  return {
+    subject: `${app} was used from a new network`,
+    body: `The API key ${which} of ${app} was just used from a network it hasn’t been used from before (${network}). If ${app} has moved, or runs somewhere new, there is nothing to do. If not, revoke the key in Settings → Connected apps and generate a new one. Listing the addresses ${app} calls from there keeps a key from being used anywhere else.`,
+  };
+}
+
+/** The owners' email when an app's day is far past its usual (0.9.0-dev.72). */
+export function busyDayAlert(
+  app: string,
+  requests: number,
+  usual: number,
+): { subject: string; body: string } {
+  return {
+    subject: `${app} made many more requests than usual today`,
+    body: `${app} has made ${requests} requests to the vault today; on a usual day it makes about ${usual}. If it is catching up, or bringing in older papers, there is nothing to do. If not, pause it or revoke its keys in Settings → Connected apps.`,
+  };
+}
+
 export class AppService {
+  /** Access tokens given this minute (0.9.0-dev.72): each key's, and each address's. */
+  private readonly mints: {
+    minute: number;
+    keys: Map<string, number>;
+    addresses: Map<string, number>;
+  } = { minute: -1, keys: new Map(), addresses: new Map() };
   /** Requests each app made this minute: the rate. */
   private readonly rate = new Map<string, { minute: number; n: number }>();
   /** Failed authentications from each address this minute (APP6). */
@@ -955,14 +1023,30 @@ export class AppService {
    * its address, https, its person, the route's scope (the app's and the
    * key's both) and its rate. Nothing is cached: a key revoked is refused
    * on the very next request. Answers the app and its person as they are now.
+   *
+   * Since 0.9.0-dev.72 an access token (`Authorization: Bearer fdvt_…`)
+   * stands in for the key on every route but `POST /apps/token`: found by
+   * its hash (an unknown one a guess, `app_token_invalid`; one past its end
+   * `app_token_expired`), then checked against its key and app exactly as
+   * the key is, so it ends with either at once. Answers too whether the key
+   * came as Basic, which the routes say is deprecated.
    */
-  async authenticate(req: FastifyRequest, route: AppRoute): Promise<{ caller: AppCaller }> {
+  async authenticate(
+    req: FastifyRequest,
+    route: AppRoute,
+  ): Promise<{ caller: AppCaller; via: AppVia }> {
     const h = req.headers;
     const now = this.now();
     const minute = Math.floor(now / 60_000);
-    // 1. Basic, and nothing else that names a caller: no cookie, no bearer token.
-    const creds = readBasic(h);
-    if (creds.kind === 'none' || (h.cookie !== undefined && /\S/.test(h.cookie))) {
+    // 1. An access token (0.9.0-dev.72) or the key as Basic, and nothing
+    // else that names a caller: no cookie, no sign-in's bearer token. The
+    // token route takes the key alone.
+    const creds = readAppCredentials(h);
+    if (
+      creds.kind === 'none' ||
+      (route.token === true && (creds.kind === 'token' || presentsAppToken(h))) ||
+      (h.cookie !== undefined && /\S/.test(h.cookie))
+    ) {
       throw err(401, 'app_key_required');
     }
     // 2. An address that keeps failing waits for its minute to end, before
@@ -989,7 +1073,38 @@ export class AppService {
     const failed = (): void => {
       counts.set(address, (counts.get(address) ?? 0) + 1);
     };
-    // 3. A key the vault made, and its secret: the same work, and the same
+    // 3a. An access token (0.9.0-dev.72), by its hash: one the vault
+    // never gave is a guess; one past its end is asked for again.
+    if (creds.kind === 'token' || (creds.kind === 'malformed' && presentsAppToken(h))) {
+      const byToken =
+        creds.kind === 'token'
+          ? (
+              await sql<{
+                household_id: string;
+                app_id: string;
+                key_id: string;
+                token_expires_at: Date;
+                permissions: string[];
+                expires_at: Date | null;
+                key_revoked: boolean;
+                revoked: boolean;
+                paused_reason: 'owner' | 'restored' | null;
+                approval: 'waiting' | 'approved';
+                ip_allow: string[];
+                ip_allow_names: string[];
+              }>`select household_id, app_id, key_id, token_expires_at, permissions, expires_at,
+                        key_revoked, revoked, paused_reason, approval, ip_allow, ip_allow_names
+                   from connected_app_token_find(${secretHash(creds.token)})`.execute(this.db)
+            ).rows[0]
+          : undefined;
+      if (!byToken) {
+        failed();
+        throw err(401, 'app_token_invalid');
+      }
+      if (byToken.token_expires_at.getTime() <= now) throw err(401, 'app_token_expired');
+      return this.admitted(req, route, byToken, 'token', now, minute);
+    }
+    // 3b. A key the vault made, and its secret: the same work, and the same
     // answer, for an unknown client ID as for a wrong secret.
     const found =
       creds.kind === 'basic'
@@ -1017,7 +1132,33 @@ export class AppService {
       failed();
       throw err(401, 'app_key_invalid');
     }
-    const at = found;
+    return this.admitted(req, route, found, 'basic', now, minute);
+  }
+
+  /**
+   * The rest of `authenticate`, once a key or a token for it is known: the
+   * same checks, in the same order, whichever it came with.
+   */
+  private async admitted(
+    req: FastifyRequest,
+    route: AppRoute,
+    at: {
+      household_id: string;
+      app_id: string;
+      key_id: string;
+      permissions: string[];
+      expires_at: Date | null;
+      key_revoked: boolean;
+      revoked: boolean;
+      paused_reason: 'owner' | 'restored' | null;
+      approval: 'waiting' | 'approved';
+      ip_allow: string[];
+      ip_allow_names: string[];
+    },
+    via: AppVia,
+    now: number,
+    minute: number,
+  ): Promise<{ caller: AppCaller; via: AppVia }> {
     // From here the request is truly the app's: a refusal is counted on it.
     const refuse = async (e: ApiError): Promise<never> => {
       await this.noteRefusal(at.household_id, at.app_id, e.code).catch(() => undefined);
@@ -1050,14 +1191,52 @@ export class AppService {
     ) {
       await refuse(err(403, 'https_required'));
     }
+    // 7b. Its rate: so many requests a minute, whichever key — asked before
+    // anything of the request is written (0.9.0-dev.72), so a request past it
+    // notes no use, no network and no day. Only the first refusal of the
+    // minute is counted on the app; the rest write nothing at all.
+    const wait = Math.max(1, Math.ceil(((minute + 1) * 60_000 - now) / 1000));
+    const over = async (n: number, limit: number, e: ApiError): Promise<void> => {
+      if (n <= limit) return;
+      if (n === limit + 1) await refuse(e);
+      throw e;
+    };
+    const r = this.rate.get(at.app_id);
+    const n = r && r.minute === minute ? r.n + 1 : 1;
+    this.rate.set(at.app_id, { minute, n });
+    await over(
+      n,
+      APP_REQUESTS_PER_MINUTE,
+      new ApiError(
+        429,
+        'rate_limited',
+        `Too many requests at once. Try again in ${wait} seconds.`,
+        {
+          retriable: true,
+          retryAfter: wait,
+        },
+      ),
+    );
+    // 7c. And on the token route, the key's tokens this minute (0.9.0-dev.72),
+    // before its use is noted; the address's were asked before anything.
+    if (route.token === true) {
+      if (this.mints.minute !== minute) this.resetMints(minute);
+      const k = (this.mints.keys.get(at.key_id) ?? 0) + 1;
+      this.mints.keys.set(at.key_id, k);
+      await over(k, APP_TOKENS_PER_KEY_PER_MINUTE, tooManyTokens(wait));
+    }
     // 8. The key's use and the app's noted, and the app and its person
-    // read as they are now.
+    // read as they are now; and (0.9.0-dev.72) the network it came from and
+    // the day's requests, for the owners' alerts on unusual use.
+    let unusual: Array<{ subject: string; body: string }> = [];
+    let owners: string[] = [];
     const app = await withSystem(this.db, at.household_id, async (trx) => {
-      await trx
+      const key = await trx
         .updateTable('connected_app_key')
         .set({ last_used_at: sql<Date>`now()` })
         .where('id', '=', at.key_id)
-        .execute();
+        .returning(['client_id', 'name'])
+        .executeTakeFirst();
       await trx
         .updateTable('connected_app')
         .set({ last_used_at: sql<Date>`now()` })
@@ -1091,8 +1270,37 @@ export class AppService {
           'ah.suspend_reason',
         ])
         .where('a.id', '=', at.app_id)
-        .executeTakeFirst();
+        .executeTakeFirst()
+        .then(async (row) => {
+          if (row && row.revoked_at === null && key) {
+            unusual = await this.watchUse(trx, {
+              householdId: at.household_id,
+              appId: at.app_id,
+              keyId: at.key_id,
+              key: { clientId: key.client_id, name: key.name },
+              app: row.name,
+              memberId: row.member_id,
+              zone: householdZone(row.timezone),
+              address: clientAddressOf(req),
+            });
+            if (unusual.length > 0) owners = await this.owners(trx);
+          }
+          return row;
+        });
     });
+    // The owners told of unusual use, by email, once its lines are written:
+    // never in the request's way.
+    for (const n of owners.length > 0 ? unusual : []) {
+      await this.opts
+        .alert({
+          householdId: at.household_id,
+          accountIds: owners,
+          subject: n.subject,
+          body: n.body,
+          emailOnly: true,
+        })
+        .catch(() => undefined);
+    }
     if (!app || app.revoked_at !== null) throw err(401, 'app_revoked');
     // An app acting as itself (APP8) has no person: its being live, and its
     // key, are what it is asked. One acting as a person asks theirs.
@@ -1120,25 +1328,8 @@ export class AppService {
     if (route.scope && !scopes.includes(route.scope)) {
       await refuse(err(403, 'scope_not_granted'));
     }
-    // And its rate: so many requests a minute, whichever key.
-    const r = this.rate.get(at.app_id);
-    const n = r && r.minute === minute ? r.n + 1 : 1;
-    this.rate.set(at.app_id, { minute, n });
-    if (n > APP_REQUESTS_PER_MINUTE) {
-      const wait = Math.max(1, Math.ceil(((minute + 1) * 60_000 - now) / 1000));
-      await refuse(
-        new ApiError(
-          429,
-          'rate_limited',
-          `Too many requests at once. Try again in ${wait} seconds.`,
-          {
-            retriable: true,
-            retryAfter: wait,
-          },
-        ),
-      );
-    }
     return {
+      via,
       caller: {
         appId: at.app_id,
         keyId: at.key_id,
@@ -1154,6 +1345,177 @@ export class AppService {
         state: appState(app),
         pausedReason: app.paused_reason,
       },
+    };
+  }
+
+  /**
+   * Unusual use (0.9.0-dev.72), noted in the request's own transaction as
+   * the vault: the network the request came from (an IPv4 /24, an IPv6
+   * /64), and the app's requests today. A key used from a network it never
+   * was — but for its very first — and an app's day far past its usual
+   * (more than APP_BUSY_DAY_TIMES its median of the seven days before, and
+   * more than APP_BUSY_DAY_MIN) are each written in the activity log and
+   * answered as the owners' emails to send: once a key a day, and once an
+   * app a day. A network already seen is noted again an hour at most; a key
+   * keeps APP_KEY_NETWORKS_MAX at most, and is told of no new one past them.
+   */
+  private async watchUse(
+    trx: Db,
+    w: {
+      householdId: string;
+      appId: string;
+      keyId: string;
+      key: { clientId: string; name: string | null };
+      app: string;
+      memberId: string | null;
+      zone: string;
+      address: string | null;
+    },
+  ): Promise<Array<{ subject: string; body: string }>> {
+    const told: Array<{ subject: string; body: string }> = [];
+    if (w.address) {
+      const network = networkOf(w.address);
+      // Noted again an hour at most; a network not known yet kept only while
+      // the key has fewer than APP_KEY_NETWORKS_MAX.
+      const seen = await sql<{ fresh: boolean }>`
+        insert into connected_app_key_network (key_id, household_id, network)
+        select ${w.keyId}, ${w.householdId}, ${network}
+         where exists (select 1 from connected_app_key_network
+                        where key_id = ${w.keyId} and network = ${network})
+            or (select count(*) from connected_app_key_network where key_id = ${w.keyId})
+               < ${APP_KEY_NETWORKS_MAX}
+        on conflict (key_id, network) do update set last_seen_at = now()
+         where connected_app_key_network.last_seen_at < now() - interval '1 hour'
+        returning (xmax = 0) as fresh`.execute(trx);
+      if (seen.rows[0]?.fresh === true) {
+        // Not its very first network, and no other told of in the last day.
+        const fresh = await sql<{ network: string }>`
+          update connected_app_key_network n set told_at = now()
+           where n.key_id = ${w.keyId} and n.network = ${network}
+             and exists (select 1 from connected_app_key_network o
+                          where o.key_id = n.key_id and o.network <> n.network)
+             and not exists (select 1 from connected_app_key_network o
+                              where o.key_id = n.key_id and o.told_at > now() - interval '1 day')
+          returning n.network`.execute(trx);
+        if (fresh.rows.length > 0) {
+          await appendAudit(trx, {
+            householdId: w.householdId,
+            action: 'app.key_new_network',
+            objectType: 'member',
+            objectId: w.memberId,
+            detail: { app_id: w.appId, app: w.app, client_id: w.key.clientId, network },
+          });
+          told.push(newNetworkAlert(w.app, w.key, network));
+        }
+      }
+    }
+    const day = localToday(w.zone, new Date(this.now()));
+    type DayRow = { requests: number; usual: number | null; told_at: Date | null };
+    let row = (
+      await sql<DayRow>`
+        update connected_app_day set requests = requests + 1
+         where app_id = ${w.appId} and day = ${day}::date
+        returning requests, usual, told_at`.execute(trx)
+    ).rows[0];
+    if (!row) {
+      // The day's first request: what is usual for it, from the seven days
+      // before (a day with none counted as none) — when it had a day before.
+      row = (
+        await sql<DayRow>`
+          insert into connected_app_day (app_id, household_id, day, requests, usual)
+          select ${w.appId}, ${w.householdId}, ${day}::date, 1,
+                 case when exists (select 1 from connected_app_day p
+                                    where p.app_id = ${w.appId} and p.day < ${day}::date)
+                      then (select percentile_disc(0.5) within group (order by coalesce(d.requests, 0))
+                              from generate_series(${day}::date - 7, ${day}::date - 1,
+                                                   interval '1 day') as g(on_day)
+                              left join connected_app_day d
+                                on d.app_id = ${w.appId} and d.day = g.on_day::date)
+                 end
+          on conflict (app_id, day) do update set requests = connected_app_day.requests + 1
+          returning requests, usual, told_at`.execute(trx)
+      ).rows[0];
+    }
+    if (
+      row &&
+      row.usual !== null &&
+      row.told_at === null &&
+      row.requests > APP_BUSY_DAY_MIN &&
+      row.requests > APP_BUSY_DAY_TIMES * row.usual
+    ) {
+      const busy = await sql<{ requests: number }>`
+        update connected_app_day set told_at = now()
+         where app_id = ${w.appId} and day = ${day}::date and told_at is null
+        returning requests`.execute(trx);
+      if (busy.rows.length > 0) {
+        await appendAudit(trx, {
+          householdId: w.householdId,
+          action: 'app.busy_day',
+          objectType: 'member',
+          objectId: w.memberId,
+          detail: { app_id: w.appId, app: w.app, requests: row.requests, usual: row.usual },
+        });
+        told.push(busyDayAlert(w.app, row.requests, row.usual));
+      }
+    }
+    return told;
+  }
+
+  /** This minute's token counts, the last minute's forgotten. */
+  private resetMints(minute: number): void {
+    this.mints.minute = minute;
+    this.mints.keys = new Map();
+    this.mints.addresses = new Map();
+  }
+
+  /**
+   * The token route's address limit (0.9.0-dev.72), asked before its key is
+   * looked at: APP_TOKENS_PER_ADDRESS_PER_MINUTE tries an address a minute
+   * (an IPv6 address by its /64), whatever their keys. No app is known yet,
+   * so nothing is counted on one, as a guessing address's wait is not.
+   */
+  mintAddressCheck(req: FastifyRequest): void {
+    const now = this.now();
+    const minute = Math.floor(now / 60_000);
+    if (this.mints.minute !== minute) this.resetMints(minute);
+    const address = addressBucket(clientAddressOf(req) ?? '-');
+    const n = (this.mints.addresses.get(address) ?? 0) + 1;
+    this.mints.addresses.set(address, n);
+    if (n > APP_TOKENS_PER_ADDRESS_PER_MINUTE) {
+      throw tooManyTokens(Math.max(1, Math.ceil(((minute + 1) * 60_000 - now) / 1000)));
+    }
+  }
+
+  /**
+   * `POST /apps/token` (0.9.0-dev.72): an access token for the key the
+   * request came with, as OAuth 2.0's client credentials grant answers it.
+   * Its limits — APP_TOKENS_PER_ADDRESS_PER_MINUTE an address, before the
+   * key is looked at (`mintAddressCheck`), and APP_TOKENS_PER_KEY_PER_MINUTE
+   * a key, before its use is noted (`admitted`) — were asked already. The
+   * token is answered this once; the vault keeps its hash, bound to the key,
+   * for APP_TOKEN_SECONDS.
+   */
+  async mintToken(c: AppCaller): Promise<AppAccessToken> {
+    const now = this.now();
+    const token = newAccessToken();
+    await withSystem(this.db, c.householdId, (trx) =>
+      trx
+        .insertInto('connected_app_token')
+        .values({
+          household_id: c.householdId,
+          app_id: c.appId,
+          key_id: c.keyId,
+          token_hash: secretHash(token),
+          created_at: new Date(now),
+          expires_at: new Date(now + APP_TOKEN_SECONDS * 1000),
+        })
+        .execute(),
+    );
+    return {
+      access_token: token,
+      token_type: 'Bearer',
+      expires_in: APP_TOKEN_SECONDS,
+      scope: c.scopes.join(' '),
     };
   }
 
@@ -2599,7 +2961,7 @@ export class AppService {
               }
             : null,
         ip_allow: [...(a.ip_allow ?? []), ...(a.ip_allow_names ?? [])],
-        keys: all.map((k) => keyView(k, now)),
+        keys: all.map((k) => withConnection(keyView(k, now), address.url, instance)),
         last_used_at: a.last_used_at ? a.last_used_at.toISOString() : null,
         today: sent,
         refused_today: a.refused_on === day ? a.refused_today : 0,
@@ -3284,8 +3646,12 @@ export class AppService {
     return APP_SCOPES_OFFERED.filter((s) => (v as unknown[]).includes(s));
   }
 
-  /** How long a key lasts: 1 to APP_KEY_DAYS_MAX days, or null for never. */
+  /**
+   * How long a key lasts: 1 to APP_KEY_DAYS_MAX days, or null for never;
+   * APP_KEY_DEFAULT_DAYS when nothing is said (0.9.0-dev.72).
+   */
   private static checkedDays(v: unknown): number | null {
+    if (v === undefined) return APP_KEY_DEFAULT_DAYS;
     if (v === null) return null;
     if (typeof v !== 'number' || !Number.isInteger(v) || v < 1 || v > APP_KEY_DAYS_MAX) {
       throw invalid(

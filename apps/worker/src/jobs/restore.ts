@@ -952,6 +952,12 @@ begin
   if to_regclass('public.connected_app_link') is not null then
     delete from public.connected_app_link;
   end if;
+  -- And their access tokens (0119, 0.9.0-dev.72): every key is revoked
+  -- above, which ends them; they go too, as nothing from before the
+  -- restore is to work again.
+  if to_regclass('public.connected_app_token') is not null then
+    delete from public.connected_app_token;
+  end if;
   if to_regclass('public.reading_check') is not null then
     update public.reading_check set state = 'failed', failure = 'restored', finished_at = now()
      where state in ('waiting', 'running');
@@ -1475,6 +1481,11 @@ const VAULTS_OWN = [
   { table: 'phone_code', what: 'the codes texted to confirm a number' },
   // A code texted to one's own number (0088, SMS3): between the vault and the phone.
   { table: 'sms_code', what: 'the codes texted for a reset, a sign-in or a step-up' },
+  // A connected app's access tokens, the networks its keys were used from
+  // and its days of requests (0119, 0.9.0-dev.72): the vault's alone.
+  { table: 'connected_app_token', what: 'a connected app’s access tokens' },
+  { table: 'connected_app_key_network', what: 'the networks a connected app’s key was used from' },
+  { table: 'connected_app_day', what: 'a connected app’s requests a day' },
 ];
 
 /**
@@ -1559,6 +1570,12 @@ const UNIQUE_INDEXES = [
     name: 'connected_app_link_session_once',
     table: 'connected_app_link',
     what: 'a connected app’s link session, once',
+  },
+  // A connected app's access token (0119, 0.9.0-dev.72): its hash, once.
+  {
+    name: 'connected_app_token_once',
+    table: 'connected_app_token',
+    what: 'a connected app’s access token, once',
   },
   // One Reading check waiting or running a household (0074, R0).
   {
@@ -1762,6 +1779,17 @@ const REQUIRED_CHECKS = [
     table: 'connected_app_link',
     what: 'a connected app’s link, to view or to download',
   },
+  // A connected app's access token (0119, 0.9.0-dev.72): a hash, and minutes long.
+  {
+    name: 'connected_app_token_hash_length',
+    table: 'connected_app_token',
+    what: 'a connected app’s access token kept as its hash',
+  },
+  {
+    name: 'connected_app_token_expires_soon',
+    table: 'connected_app_token',
+    what: 'a connected app’s access token, an hour long at most',
+  },
 ];
 
 /**
@@ -1955,6 +1983,11 @@ const ACTOR_GUARDED = [
   // Its links (0111, APP3): counted by the owners and its person, written
   // by the vault alone.
   'connected_app_link',
+  // Its access tokens, its keys' networks and its days of requests (0119,
+  // 0.9.0-dev.72): the vault's alone.
+  'connected_app_token',
+  'connected_app_key_network',
+  'connected_app_day',
 ];
 
 /**

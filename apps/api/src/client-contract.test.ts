@@ -379,6 +379,19 @@ describe.skipIf(!testAdminUrl())('the client contract, against the real API', ()
         await admin.end();
       }
     },
+    // Every app's access token past its end (0.9.0-dev.72), as time would
+    // make it: as the owning role (the vault alone writes them).
+    expireAppTokens: async () => {
+      const admin = createPool(h.adminUrl, 1);
+      try {
+        await admin.query(
+          `update connected_app_token
+              set created_at = now() - interval '20 minutes', expires_at = now() - interval '1 second'`,
+        );
+      } finally {
+        await admin.end();
+      }
+    },
   };
 
   beforeAll(async () => {

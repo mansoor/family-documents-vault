@@ -1435,6 +1435,9 @@ const RULES: Record<string, Rule> = {
   // widening, resuming, and generating and revoking keys are an owner's
   // with a passkey or a code; its person alone turns it on; an owner
   // pauses or removes any, its person theirs.
+  // An access token for its key (0.9.0-dev.72): the key alone, as Basic;
+  // a sign-in, a cookie or a token is told to send one.
+  'POST /api/v1/apps/token': { who: 'app', body: () => ({ grant_type: 'client_credentials' }) },
   'GET /api/v1/apps/me': { who: 'app' },
   'POST /api/v1/apps/intake': { who: 'app', file: 'pdf' },
   'GET /api/v1/apps/intake': { who: 'app', query: () => 'external_ids=a,b' },
