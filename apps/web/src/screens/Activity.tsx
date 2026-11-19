@@ -28,8 +28,8 @@ import { exactWords, relativeWords, useFamilyZone } from '../family-time.js';
  * before. Which lines anybody is given is the vault's to say, as ever: a
  * filter only leaves some of them out.
  *
- * One document's activity (0.9.0, DA): `?document=<id>`, from the Activity
- * button on its page, asks the vault for the lines about that document and
+ * One document's activity (0.9.0, DA): `?document=<id>`, from "See all
+ * activity" in the Activity panel on its page (0.9.0-dev.67), asks the vault for the lines about that document and
  * the links that gave it — the same lines the whole log shows the reader,
  * no others — said by a chip ("About ‘Richa’s visa’") whose × shows the
  * whole log again. A vault without `features.document_activity` shows the
@@ -375,12 +375,12 @@ function emptyWords(filtered: boolean, older: boolean, oneDocument: boolean): st
 }
 
 /** "About ‘Passport’" as part of a sentence: "about ‘Passport’". */
-function chipLower(words: string): string {
+export function chipLower(words: string): string {
   return words.charAt(0).toLowerCase() + words.slice(1);
 }
 
 /** When, on the household's clock, as the From and To days are counted. */
-function When({ at, timezone }: { at: string; timezone: string | null }) {
+export function When({ at, timezone }: { at: string; timezone: string | null }) {
   return (
     <time dateTime={at} title={relativeWords(at, timezone ?? undefined)}>
       {exactWords(at, timezone ?? undefined)}
@@ -414,7 +414,7 @@ function Who({ line, family }: { line: ActivityLine; family: readonly Member[] }
 }
 
 /** What happened: the sentence, and the way to the document it is about where there is one. */
-function What({ line }: { line: ActivityLine }) {
+export function What({ line }: { line: ActivityLine }) {
   return line.document_id ? (
     <Link className="line-link" to={`/documents/${line.document_id}`}>
       {line.text}

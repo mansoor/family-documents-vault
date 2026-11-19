@@ -3,6 +3,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 import axe from 'axe-core';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { App } from './App.js';
+import { expectSharedDialog } from './dialog-testing.js';
 import { SharePage } from './screens/SharePage.js';
 import { AISHA, fresh, installFakeApi, ME, signedIn, type FakeState } from './test-api.js';
 
@@ -164,11 +165,38 @@ describe('Emergency information on a person’s page (0.9.0, H4)', () => {
     ).toBeInTheDocument();
   });
 
+  it('who can see it: someone named who can no longer be chosen is taken off, and said so', async () => {
+    const state = at('/people/me', {
+      emergencyOf: {
+        me: page({
+          chosen: [
+            { member_id: 'm-0', name: 'Aisha' },
+            { member_id: 'm-9', name: 'Pat' },
+          ],
+        }),
+      },
+    });
+    const c = await card();
+    fireEvent.click(within(c).getByRole('button', { name: 'Who can see it' }));
+    expect(
+      within(c).getByText('Pat can no longer be chosen and was taken off.'),
+    ).toBeInTheDocument();
+    fireEvent.click(within(c).getByRole('button', { name: 'Save' }));
+    expect(await within(c).findByText('Who can see it is saved.')).toBeInTheDocument();
+    const put = state.calls.find(
+      (x) => x.method === 'PUT' && x.url === '/api/v1/members/me/emergency/audience',
+    );
+    expect(put?.body).toEqual({ audience: 'adults', chosen_member_ids: ['m-0'] });
+  });
+
   it('a wallet card holds only what is ticked, and prints the card alone', async () => {
     at('/people/me', { emergencyOf: { me: page() } });
     const c = await card();
     fireEvent.click(within(c).getByRole('button', { name: 'Print a wallet card' }));
     const sheet = await screen.findByRole('dialog', { name: 'Print a wallet card' });
+    // The app's one dialog (0.9.0-dev.67), wide for the card.
+    expectSharedDialog(sheet, 'Print a wallet card');
+    expect(sheet).toHaveClass('dialog-wide');
     const preview = within(sheet).getByLabelText('Wallet card for Mansoor Seikh');
     expect(within(preview).getByText(/Penicillin/)).toBeInTheDocument();
     // Medications left off.
@@ -239,6 +267,7 @@ describe('Emergency information on a person’s page (0.9.0, H4)', () => {
 
     fireEvent.click(within(c).getByRole('button', { name: 'Share with a clinician' }));
     const sheet = await screen.findByRole('dialog', { name: 'Share with a clinician' });
+    expectSharedDialog(sheet, 'Share with a clinician', 'Cancel');
     fireEvent.click(within(sheet).getByLabelText('Medications'));
     fireEvent.change(within(sheet).getByLabelText('Who it is for (only you see this)'), {
       target: { value: 'Dr Patel' },
@@ -269,9 +298,11 @@ describe('Emergency information on a person’s page (0.9.0, H4)', () => {
     fireEvent.click(
       await within(c).findByRole('button', { name: 'Change the link for St Mary’s A&E' }),
     );
+    // Named by its title, as every dialog is (0.9.0-dev.67).
     const change = await screen.findByRole('dialog', {
-      name: 'Change the link for a clinician',
+      name: /^Change the link to .*’s emergency information$/,
     });
+    expectSharedDialog(change, /^Change the link to .*’s emergency information$/, 'Cancel');
     expect(within(change).getByLabelText('Who is it for?')).toHaveValue('St Mary’s A&E');
     expect(within(change).getByText(/It is to view, always/)).toBeInTheDocument();
     expect(within(change).queryByRole('button', { name: 'View and download' })).toBeNull();

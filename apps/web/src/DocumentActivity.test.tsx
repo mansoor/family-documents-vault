@@ -7,9 +7,10 @@ import { fresh, installFakeApi, PASSPORT, signedIn, type FakeState } from './tes
 /**
  * One document's activity (0.9.0, DA; the owner's ask of 16 Nov 2026): an
  * Activity button on a document's page, for whoever reads the activity log,
- * opens the Activity page with that document's lines alone, said by a chip
- * whose × shows the whole log again. Without the vault's say-so, nothing
- * changes.
+ * opens that document's lines inline under the row (0.9.0-dev.67, the
+ * owner's feedback of 18 Nov 2026), with "See all activity" for the
+ * Activity page with them alone, said by a chip whose × shows the whole log
+ * again. Without the vault's say-so, nothing changes.
  */
 
 type Role = 'owner' | 'adult' | 'teen' | 'viewer';
@@ -94,11 +95,23 @@ const shownLines = () =>
     .map((r) => r.querySelectorAll('td')[2]?.textContent ?? r.textContent);
 
 describe("a document's Activity button", () => {
-  it('is in its row of actions for whoever reads the log, and opens its lines alone', async () => {
+  const panelLines = (panel: HTMLElement) =>
+    within(within(panel).getByRole('list', { name: /^What has been happening/ }))
+      .getAllByRole('listitem')
+      .map((li) => li.querySelector('.doc-activity-what')?.textContent);
+  const panelOf = (button: HTMLElement) => {
+    const panel = document.getElementById(button.getAttribute('aria-controls') ?? '');
+    if (!panel) throw new Error('no panel');
+    return panel;
+  };
+
+  it('opens its lines inline under the row, as the other sections do, and folds them again', async () => {
     const state = open('/documents/doc-1', {});
     const row = await screen.findByRole('toolbar', { name: 'Document actions' });
-    const button = within(row).getByRole('link', { name: 'Activity' });
-    expect(button).toHaveAttribute('href', '/activity?document=doc-1');
+    const button = within(row).getByRole('button', { name: 'Activity' });
+    expect(button).toHaveAttribute('aria-expanded', 'false');
+    // Nothing is read until it is first opened.
+    expect(state.calls.some((c) => c.url.includes('/api/v1/documents/doc-1/activity'))).toBe(false);
     // One of the toolbar's stops: reached with the arrow keys, as the rest.
     fireEvent.keyDown(within(row).getByRole('button', { name: /^History/ }), {
       key: 'End',
@@ -108,27 +121,99 @@ describe("a document's Activity button", () => {
     expect(document.activeElement).toBe(button);
 
     fireEvent.click(button);
-    expect(await screen.findByText(CHIP)).toBeVisible();
-    await waitFor(() => expect(shownLines()).toEqual(ABOUT.map((l) => l.text)));
-    expect(window.location.search).toBe('?document=doc-1');
-    expect(state.calls.some((c) => c.url.includes('/api/v1/documents/doc-1/activity'))).toBe(true);
+    expect(button).toHaveAttribute('aria-expanded', 'true');
+    const panel = panelOf(button);
+    expect(panel).toBeVisible();
+    expect(within(panel).getByRole('heading', { name: 'Activity' })).toBeInTheDocument();
+    // The Activity page's lines for it, in its words, newest first.
+    await waitFor(() => expect(panelLines(panel)).toEqual(ABOUT.map((l) => l.text)));
+    expect(
+      within(panel).getByRole('list', {
+        name: "What has been happening, about ‘Mansoor's passport’, newest first",
+      }),
+    ).toBeInTheDocument();
+    // Still the document's page.
+    expect(window.location.pathname).toBe('/documents/doc-1');
     await expectAccessible();
+
+    // The whole Activity page, for this document alone.
+    const all = within(panel).getByRole('link', { name: 'See all activity' });
+    expect(all).toHaveAttribute('href', '/activity?document=doc-1');
+
+    // Escape folds it, the focus back on its button; the button opens it again.
+    fireEvent.keyDown(all, { key: 'Escape' });
+    expect(panel).not.toBeVisible();
+    expect(button).toHaveAttribute('aria-expanded', 'false');
+    expect(document.activeElement).toBe(button);
+    fireEvent.click(button);
+    expect(panel).toBeVisible();
+    fireEvent.click(button);
+    expect(panel).not.toBeVisible();
+    // Opening another section folds it: one at a time.
+    fireEvent.click(button);
+    fireEvent.click(within(row).getByRole('button', { name: /^History/ }));
+    expect(panel).not.toBeVisible();
+  });
+
+  it('goes to the Activity page for it alone from See all activity', async () => {
+    open('/documents/doc-1#activity', {});
+    fireEvent.click(await screen.findByRole('link', { name: 'See all activity' }));
+    expect(await screen.findByText(CHIP)).toBeVisible();
+    expect(window.location.pathname).toBe('/activity');
+    expect(window.location.search).toBe('?document=doc-1');
+  });
+
+  it('shows older lines, and says so plainly when there are none', async () => {
+    const state = open('/documents/doc-1', { activityPage: 2 });
+    const row = await screen.findByRole('toolbar', { name: 'Document actions' });
+    const button = within(row).getByRole('button', { name: 'Activity' });
+    fireEvent.click(button);
+    const panel = panelOf(button);
+    await waitFor(() => expect(panelLines(panel)).toEqual(ABOUT.slice(0, 2).map((l) => l.text)));
+    fireEvent.click(within(panel).getByRole('button', { name: 'Show older' }));
+    await waitFor(() => expect(panelLines(panel)).toEqual(ABOUT.map((l) => l.text)));
+    expect(within(panel).queryByRole('button', { name: 'Show older' })).toBeNull();
+    expect(
+      state.calls.some((c) => c.url.includes('/api/v1/documents/doc-1/activity?before=6')),
+    ).toBe(true);
+    cleanup();
+
+    atWidth(320);
+    open('/documents/doc-1#activity', { documentActivity: { 'doc-1': [] } });
+    expect(
+      await screen.findByText('Nothing in the activity log is about this document yet.'),
+    ).toBeVisible();
+    expect(screen.getByRole('link', { name: 'See all activity' })).toBeVisible();
+    await expectAccessible();
+  });
+
+  it('never names a sensitive document', async () => {
+    open('/documents/doc-1#activity', {
+      documents: [{ ...PASSPORT, sensitive_effective: true }] as never,
+    });
+    expect(
+      await screen.findByRole('list', {
+        name: 'What has been happening, about a sensitive document, newest first',
+      }),
+    ).toBeInTheDocument();
   });
 
   it('is there for a teen too, and never for a viewer', async () => {
     open('/documents/doc-1', {}, 'teen');
     const row = await screen.findByRole('toolbar', { name: 'Document actions' });
-    expect(within(row).getByRole('link', { name: 'Activity' })).toBeVisible();
+    expect(within(row).getByRole('button', { name: 'Activity' })).toBeVisible();
     cleanup();
-    open('/documents/doc-1', {}, 'viewer');
+    const state = open('/documents/doc-1#activity', {}, 'viewer');
     await screen.findByRole('heading', { name: "Mansoor's passport" });
-    expect(screen.queryByRole('link', { name: 'Activity' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Activity' })).toBeNull();
+    expect(screen.queryByRole('link', { name: 'See all activity' })).toBeNull();
+    expect(state.calls.some((c) => c.url.includes('/activity'))).toBe(false);
   });
 
   it('is not offered by a vault that does not say it can', async () => {
     open('/documents/doc-1', {}, 'owner', false);
     const row = await screen.findByRole('toolbar', { name: 'Document actions' });
-    expect(within(row).queryByRole('link', { name: 'Activity' })).toBeNull();
+    expect(within(row).queryByRole('button', { name: 'Activity' })).toBeNull();
   });
 });
 

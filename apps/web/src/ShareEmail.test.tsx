@@ -2,6 +2,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 import axe from 'axe-core';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { App } from './App.js';
+import { expectSharedDialog } from './dialog-testing.js';
 import { fresh, installFakeApi, PASSPORT, signedIn, type FakeState } from './test-api.js';
 
 /**
@@ -186,6 +187,9 @@ describe('Email the link from Sharing, for a link the reader made (0.9.0)', () =
     const sheet = await screen.findByRole('dialog', {
       name: "The link to “Mansoor's passport”",
     });
+    // Show the link: the app's one dialog (0.9.0-dev.67), wide.
+    expectSharedDialog(sheet, "The link to “Mansoor's passport”", 'Hide it');
+    expect(sheet).toHaveClass('dialog-wide');
     // Both ways to send it, and where it was emailed before, masked.
     expect(within(sheet).getByRole('button', { name: 'Copy the link' })).toBeVisible();
     expect(within(sheet).getByRole('button', { name: 'Email the link' })).toBeVisible();

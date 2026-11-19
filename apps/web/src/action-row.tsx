@@ -8,7 +8,7 @@ import {
   type ReactNode,
   type RefObject,
 } from 'react';
-import { Link, useLocation } from 'react-router';
+import { useLocation } from 'react-router';
 import { TrashIcon } from './ui.js';
 
 /**
@@ -27,8 +27,10 @@ import { TrashIcon } from './ui.js';
  * `#who-can-see-it`, or the id of anything inside one — opens it.
  *
  * A document's row also has Activity (0.9.0, DA), for whoever reads the
- * activity log: a link, not a section — it opens the Activity page with
- * that document's lines alone.
+ * activity log: a section like the rest since 0.9.0-dev.67 (the owner's
+ * feedback of 18 Nov 2026), its lines under the row, with the way to the
+ * Activity page for that document alone. It is read only once it is first
+ * opened (`lazy`), so a page nobody asks it of costs nothing more.
  *
  * The row is a toolbar, as the editor's is: one Tab stop, the arrow keys
  * along it, Home and End. Tab goes on from it into the panel that is open,
@@ -42,7 +44,8 @@ import { TrashIcon } from './ui.js';
  * Done, a save) folds, and begins afresh next time.
  */
 
-export type ActionSectionKey = 'visibility' | 'tags' | 'collections' | 'share' | 'history';
+export type ActionSectionKey =
+  'visibility' | 'tags' | 'collections' | 'share' | 'history' | 'activity';
 
 export interface ActionSection {
   key: ActionSectionKey;
@@ -56,6 +59,8 @@ export interface ActionSection {
   render: (done: () => void) => ReactNode;
   /** Busy: Escape does not fold it, as a sheet's does not. */
   busy?: boolean;
+  /** Drawn only once it is first opened, then kept as the rest are: what it reads costs nothing until asked. */
+  lazy?: boolean;
 }
 
 /** The words a link uses for each section. */
@@ -66,6 +71,7 @@ const HASHES: Record<string, ActionSectionKey> = {
   collections: 'collections',
   share: 'share',
   history: 'history',
+  activity: 'activity',
 };
 
 const storeKey = (kind: 'note' | 'document', memberId: string | null) =>
@@ -120,8 +126,6 @@ export function ActionRow({
   trashRef?: RefObject<HTMLButtonElement | null>;
   /** What Download or the Trash could not do, said under the row. */
   error?: ReactNode;
-  /** Where Activity goes (0.9.0, DA): this document's lines; none, no button. */
-  activity?: string | null;
 }) {
   const { kind, memberId, sections } = props;
   const id = useId();
@@ -129,6 +133,10 @@ export function ActionRow({
   const asked = hash.length > 1 ? decodeURIComponent(hash.slice(1)) : '';
   const [open, setOpen] = useState<ActionSectionKey | null>(
     () => HASHES[asked] ?? remembered(kind, memberId),
+  );
+  // The sections opened so far: a lazy one is drawn from its first time on.
+  const [opened, setOpened] = useState<ReadonlySet<ActionSectionKey>>(
+    () => new Set(open ? [open] : []),
   );
   // Each section's turn: a new one begins it afresh.
   const [turns, setTurns] = useState<Partial<Record<ActionSectionKey, number>>>({});
@@ -145,6 +153,7 @@ export function ActionRow({
 
   const choose = (key: ActionSectionKey | null) => {
     setOpen(key);
+    if (key) setOpened((o) => (o.has(key) ? o : new Set([...o, key])));
     remember(kind, memberId, key);
   };
 
@@ -218,10 +227,10 @@ export function ActionRow({
 
   // The row's buttons, in order: one of them reached by Tab, the arrows along.
   const first = props.onDownload ? 1 : 0;
-  const count = first + sections.length + (props.activity ? 1 : 0) + (props.onTrash ? 1 : 0);
+  const count = first + sections.length + (props.onTrash ? 1 : 0);
   const current = active < count ? active : 0;
   const onToolbarKey = (e: KeyboardEvent<HTMLDivElement>) => {
-    // Its buttons, and Activity's link (0.9.0, DA).
+    // Its buttons.
     const all = [...(toolbar.current?.querySelectorAll<HTMLElement>('[data-action]') ?? [])];
     const at = all.indexOf(e.target as HTMLElement);
     if (at < 0) return;
@@ -279,12 +288,6 @@ export function ActionRow({
             )}
           </button>
         ))}
-        {props.activity && (
-          <Link to={props.activity} className="btn action-btn" {...stop(first + sections.length)}>
-            <ActionIcon name="activity" />
-            Activity
-          </Link>
-        )}
         {props.onTrash && (
           <button
             ref={trashRef}
@@ -310,7 +313,9 @@ export function ActionRow({
             onKeyDown={(e) => onPanelKey(e, s)}
           >
             {s.heading && <h2 className="visually-hidden">{s.heading}</h2>}
-            <PanelBody key={turns[s.key] ?? 0}>{s.render(() => done(s.key))}</PanelBody>
+            {(!s.lazy || opened.has(s.key)) && (
+              <PanelBody key={turns[s.key] ?? 0}>{s.render(() => done(s.key))}</PanelBody>
+            )}
           </div>
         ))}
       </div>

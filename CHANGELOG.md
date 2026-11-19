@@ -6,6 +6,17 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.9.0-dev.67] - 2026-11-19 — a document's activity on its page, and every pop-up in one style
+
+### Changed
+
+- **A document's Activity opens on its page.** The **Activity** button in a document's row of actions now opens the document's own activity under the row, as History, Tags, Collections and Share a link open theirs: the same panel, one open at a time, folded again by its button or Escape (the focus back on the button), and `#activity` in the address opens it. It shows the lines the Activity page shows for the document, in the same words — a sensitive document is never named — newest first, with **Show older**, and **See all activity** goes to the Activity page filtered to it. It is read only once it is first opened. As before, only for whoever may read the activity log, never a caregiver, and only on a vault that offers one document's activity.
+- **Every pop-up in one style.** **Add managers** (a collection's ⋯), **Print a wallet card** and **Share with a clinician** (the emergency page), and **Show the link** and **Change** in Sharing (for links and for requests' links, and Change on the emergency page too) are now the app's one dialog, as "are you sure?" is: padding, an edge, rounded corners and a shadow, the title as its name, and one row of buttons ending with the one that closes it. The link dialogs and the wallet card are wider, no longer a long narrow panel; a tall dialog scrolls inside, and on a phone it fills the width. Every other pop-up over the page is rounded and lifted the same way. Nothing they do has changed.
+
+### Fixed
+
+- **Who can see emergency information** no longer gets stuck: someone named once who can no longer be chosen (now a viewer or an owner) is taken off when the form opens, and the form says so; before, every save was refused.
+
 ## [0.9.0-dev.66] - 2026-11-18 — connected apps over plain http, for development
 
 ### Added

@@ -5,11 +5,11 @@ import {
   type ChangedShare,
   type ShareChangeInput,
 } from '@fdv/shared';
-import { useState } from 'react';
+import { useState, type ReactNode, type RefObject } from 'react';
 import { api, type Share } from '../api.js';
 import { describeError, useApp } from '../app-context.js';
 import { endWords, familyZoneNow } from '../family-time.js';
-import { Button, Check, ErrorNote } from '../ui.js';
+import { Button, Check, Dialog, ErrorNote } from '../ui.js';
 import {
   LinkOptions,
   readLinkOptions,
@@ -32,6 +32,10 @@ import {
  * or weakened, its title shown — asks to confirm it's you first (the vault
  * asks, the step-up sheet answers). A new PIN or made-up password is shown
  * here, once, as when a link is made, and can be shown again from Sharing.
+ *
+ * In the app's one dialog (0.9.0-dev.67), wide, from Sharing and from a
+ * person's emergency page alike (`returnFocus` given); in a card in Share a
+ * link's place on a document's page.
  */
 export function ChangeLink(props: {
   link: Share;
@@ -40,8 +44,10 @@ export function ChangeLink(props: {
   /** Changed: what to say about it. */
   onDone: (said: string) => void;
   onCancel: () => void;
-  /** A change is being saved: the sheet it is in stays open. */
+  /** A change is being saved: the panel it is in stays open. */
   onBusy?: (busy: boolean) => void;
+  /** In a dialog over the page, the focus going back to this (the button that opened it) once it is closed. */
+  returnFocus?: RefObject<HTMLElement | null>;
 }) {
   const { link } = props;
   const { guarded, caps } = useApp();
@@ -140,20 +146,41 @@ export function ChangeLink(props: {
   };
 
   if (newSecret) {
+    const changed = () => props.onDone(`The link to ${props.target} is changed.`);
     return (
-      <NewSecret
-        what="link"
-        pin={newSecret.pin ?? null}
-        password={newSecret.password ?? null}
-        showAgain={newSecret.share.revealable === true}
-        onDone={() => props.onDone(`The link to ${props.target} is changed.`)}
-      />
+      <Frame
+        // Its own dialog, not the form's: the focus starts inside it again.
+        key="new-secret"
+        title={`The new ${newSecret.pin ? 'PIN' : 'password'}`}
+        returnFocus={props.returnFocus}
+        onClose={changed}
+        closeLabel="Done"
+        closePrimary
+      >
+        <NewSecretWords
+          what="link"
+          pin={newSecret.pin ?? null}
+          password={newSecret.password ?? null}
+          showAgain={newSecret.share.revealable === true}
+        />
+      </Frame>
     );
   }
 
   return (
-    <div className="card stack">
-      <h2 style={{ fontSize: 18 }}>Change the link to {props.target}</h2>
+    <Frame
+      title={`Change the link to ${props.target}`}
+      wide
+      busy={busy}
+      returnFocus={props.returnFocus}
+      onClose={props.onCancel}
+      closeLabel="Cancel"
+      actions={
+        <Button disabled={busy || nothing || problem !== null} onClick={() => void save()}>
+          {busy ? 'Saving…' : 'Save the changes'}
+        </Button>
+      }
+    >
       <p className="muted">
         It stays the same link, to the same {link.collection_id ? 'documents' : 'document'}. Change
         what you like; anything that lets it do more asks you to confirm it’s you.
@@ -189,15 +216,57 @@ export function ChangeLink(props: {
           onChange={setShowTitle}
         />
       )}
+      {nothing && <p className="muted">Nothing is changed yet.</p>}
+    </Frame>
+  );
+}
+
+/**
+ * Where a change is drawn: the app's one dialog when it is over the page
+ * (`returnFocus`), or a card in the panel's place, with the same title,
+ * words and row of buttons.
+ */
+function Frame(props: {
+  title: string;
+  returnFocus?: RefObject<HTMLElement | null> | undefined;
+  busy?: boolean;
+  wide?: boolean;
+  onClose: () => void;
+  closeLabel: string;
+  closePrimary?: boolean;
+  actions?: ReactNode;
+  children: ReactNode;
+}) {
+  if (props.returnFocus) {
+    return (
+      <Dialog
+        title={props.title}
+        wide={props.wide === true}
+        busy={props.busy === true}
+        returnFocus={props.returnFocus}
+        onClose={props.onClose}
+        closeLabel={props.closeLabel}
+        closePrimary={props.closePrimary === true}
+        actions={props.actions}
+      >
+        {props.children}
+      </Dialog>
+    );
+  }
+  return (
+    <div className="card stack">
+      <h2 style={{ fontSize: 18 }}>{props.title}</h2>
+      {props.children}
       <div className="row">
-        <Button disabled={busy || nothing || problem !== null} onClick={() => void save()}>
-          {busy ? 'Saving…' : 'Save the changes'}
-        </Button>
-        <Button kind="quiet" disabled={busy} onClick={props.onCancel}>
-          Cancel
+        {props.actions}
+        <Button
+          kind={props.closePrimary ? 'primary' : 'quiet'}
+          disabled={props.busy === true}
+          onClick={props.onClose}
+        >
+          {props.closeLabel}
         </Button>
       </div>
-      {nothing && <p className="muted">Nothing is changed yet.</p>}
     </div>
   );
 }
@@ -214,12 +283,27 @@ export function NewSecret(props: {
   showAgain: boolean;
   onDone: () => void;
 }) {
+  return (
+    <div className="card stack">
+      <h2 style={{ fontSize: 18 }}>The new {props.pin ? 'PIN' : 'password'}</h2>
+      <NewSecretWords {...props} />
+      <Button onClick={props.onDone}>Done</Button>
+    </div>
+  );
+}
+
+/** What NewSecret says, under its title: in a card on a page, or in a dialog (ChangeLink). */
+function NewSecretWords(props: {
+  what: 'link' | 'request';
+  pin: string | null;
+  password: string | null;
+  showAgain: boolean;
+}) {
   const [copied, setCopied] = useState(false);
   const secret = props.pin ?? props.password ?? '';
   const what = props.pin ? 'PIN' : 'password';
   return (
-    <div className="card stack">
-      <h2 style={{ fontSize: 18 }}>The new {what}</h2>
+    <>
       <p className="muted">
         The {props.what} is changed. The old {what}, if it had one, no longer works.
       </p>
@@ -249,7 +333,6 @@ export function NewSecret(props: {
           ? ' You can see it again with Show the link.'
           : ' It is shown only now, so write it down.'}
       </p>
-      <Button onClick={props.onDone}>Done</Button>
-    </div>
+    </>
   );
 }

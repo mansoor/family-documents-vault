@@ -23,7 +23,15 @@ import {
   type EmergencyPerson,
   type EmergencyView,
 } from '@fdv/shared';
-import { useEffect, useRef, useState, type FormEvent, type ReactNode, type RefObject } from 'react';
+import {
+  useEffect,
+  useId,
+  useRef,
+  useState,
+  type FormEvent,
+  type ReactNode,
+  type RefObject,
+} from 'react';
 import { Link } from 'react-router';
 import { api, ApiRequestError, type Member } from './api.js';
 import { describeError, useApp, useLoad } from './app-context.js';
@@ -34,12 +42,12 @@ import {
   Button,
   Check,
   ConfirmDialog,
+  Dialog,
   ErrorNote,
   Field,
   LoadFailed,
   OnTop,
   Select,
-  Sheet,
   Switch,
   TextArea,
 } from './ui.js';
@@ -585,10 +593,17 @@ function EmergencyAudienceForm(props: {
 }) {
   const { withToken } = useApp();
   const [audience, setAudience] = useState<EmergencyAudience>(props.view.audience);
-  const [chosen, setChosen] = useState<string[]>(props.view.chosen.map((c) => c.member_id));
+  const candidates = props.view.candidates ?? [];
+  // Only people who may still be chosen: someone named once who is now a
+  // viewer or an owner has no box to untick, and the vault refuses a list
+  // that names them, so they are taken off here and said so.
+  const choosable = new Set(candidates.map((c) => c.member_id));
+  const dropped = props.view.chosen.filter((c) => !choosable.has(c.member_id));
+  const [chosen, setChosen] = useState<string[]>(
+    props.view.chosen.map((c) => c.member_id).filter((id) => choosable.has(id)),
+  );
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
-  const candidates = props.view.candidates ?? [];
   const save = async (e: FormEvent) => {
     e.preventDefault();
     setBusy(true);
@@ -632,6 +647,12 @@ function EmergencyAudienceForm(props: {
           </div>
         ))}
       </fieldset>
+      {dropped.length > 0 && (
+        <p className="muted field-note">
+          {dropped.map((c) => c.name).join(', ')} can no longer be chosen and{' '}
+          {dropped.length === 1 ? 'was' : 'were'} taken off.
+        </p>
+      )}
       {candidates.length > 0 && (
         <fieldset className="emergency-list-edit">
           <legend>And these people too</legend>
@@ -721,13 +742,17 @@ function WalletCard(props: {
   );
   return (
     <>
-      <Sheet
-        label="Print a wallet card"
-        busy={false}
+      <Dialog
+        title="Print a wallet card"
+        wide
         returnFocus={props.returnFocus}
         onClose={props.onClose}
+        actions={
+          <Button kind="primary" disabled={ticked.length === 0} onClick={print}>
+            Print
+          </Button>
+        }
       >
-        <h2 className="section-h">Print a wallet card</h2>
         <p className="muted">
           Tick what goes on it. It needs nothing but the paper: no link, and no code to scan.
         </p>
@@ -748,15 +773,7 @@ function WalletCard(props: {
           ))}
         </fieldset>
         <div className="wallet-card-preview">{card}</div>
-        <div className="row">
-          <Button kind="primary" disabled={ticked.length === 0} onClick={print}>
-            Print
-          </Button>
-          <Button kind="quiet" onClick={props.onClose}>
-            Close
-          </Button>
-        </div>
-      </Sheet>
+      </Dialog>
       {/* What the printer is given: the card alone (styles.css, @media print). */}
       <OnTop>
         <div className="wallet-print-root" aria-hidden="true">
@@ -826,14 +843,24 @@ function ClinicianShare(props: {
     }
   };
   const link = made ? (made.link_url ?? `${window.location.origin}/s#${made.link_token}`) : '';
+  const formId = useId();
   return (
-    <Sheet
-      label="Share with a clinician"
+    <Dialog
+      title="Share with a clinician"
+      wide
       busy={busy}
       returnFocus={props.returnFocus}
       onClose={props.onClose}
+      closeLabel={made ? 'Done' : 'Cancel'}
+      closePrimary={made !== null}
+      actions={
+        !made && (
+          <Button kind="primary" type="submit" form={formId} disabled={busy}>
+            {busy ? 'Making…' : 'Make the link'}
+          </Button>
+        )
+      }
     >
-      <h2 className="section-h">Share with a clinician</h2>
       {made ? (
         <div className="stack">
           <p>
@@ -859,12 +886,9 @@ function ClinicianShare(props: {
               <span className="muted">Tell them this some other way, not in the same message.</span>
             </div>
           )}
-          <Button kind="primary" onClick={props.onClose}>
-            Done
-          </Button>
         </div>
       ) : (
-        <form className="stack" onSubmit={(e) => void make(e)} noValidate>
+        <form id={formId} className="stack" onSubmit={(e) => void make(e)} noValidate>
           <p className="muted">
             A link to look at what you tick, and nothing else — no documents. It stops working on
             its own after the hours you choose, and nobody can find it by searching.
@@ -930,17 +954,9 @@ function ClinicianShare(props: {
             With a PIN or a password, that page says neither in any case.
           </p>
           <ErrorNote message={problem} />
-          <div className="row">
-            <Button kind="primary" type="submit" disabled={busy}>
-              {busy ? 'Making…' : 'Make the link'}
-            </Button>
-            <Button kind="quiet" disabled={busy} onClick={props.onClose}>
-              Cancel
-            </Button>
-          </div>
         </form>
       )}
-    </Sheet>
+    </Dialog>
   );
 }
 
@@ -965,7 +981,6 @@ function ClinicianLinks(props: { memberId: string; name: string; mine: boolean }
   const [ending, setEnding] = useState<EmergencyLink | null>(null);
   // A link changed (0.9.0, LK), by whoever made it: its form, filled in.
   const [changing, setChanging] = useState<EmergencyLink | null>(null);
-  const [saving, setSaving] = useState(false);
   const [said, setSaid] = useState<string | null>(null);
   const changeOpener = useRef<HTMLElement | null>(null);
   const [busy, setBusy] = useState(false);
@@ -1040,24 +1055,17 @@ function ClinicianLinks(props: { memberId: string; name: string; mine: boolean }
         {said}
       </p>
       {changing && (
-        <Sheet
-          label="Change the link for a clinician"
-          busy={saving}
+        <ChangeLink
+          link={changing}
+          target={`${props.name}’s emergency information`}
           returnFocus={changeOpener}
-          onClose={() => setChanging(null)}
-        >
-          <ChangeLink
-            link={changing}
-            target={`${props.name}’s emergency information`}
-            onBusy={setSaving}
-            onCancel={() => setChanging(null)}
-            onDone={(words) => {
-              setChanging(null);
-              setSaid(words);
-              void reload();
-            }}
-          />
-        </Sheet>
+          onCancel={() => setChanging(null)}
+          onDone={(words) => {
+            setChanging(null);
+            setSaid(words);
+            void reload();
+          }}
+        />
       )}
       {ending && (
         <ConfirmDialog
