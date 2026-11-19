@@ -1947,8 +1947,14 @@ function AppCard(props: {
           <dd>{todayWords(app)}</dd>
           {app.counts && (
             <>
-              <dt>What it sent you</dt>
-              <dd>{`${app.counts.waiting} waiting in your Inbox, ${app.counts.filed} filed`}</dd>
+              {/* An owner is told the app's own totals, whoever's Inbox
+                  (0.9.0-dev.68); its person, what came to them. Counts alone. */}
+              <dt>{owner ? 'What it sent the family' : 'What it sent you'}</dt>
+              <dd>
+                {owner
+                  ? `${app.counts.waiting} waiting in the family’s Inboxes, ${app.counts.filed} filed`
+                  : `${app.counts.waiting} waiting in your Inbox, ${app.counts.filed} filed`}
+              </dd>
             </>
           )}
           {app.refused_today > 0 && (

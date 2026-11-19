@@ -4872,8 +4872,27 @@ export const contractScenarios: Scenario[] = [
       expect(path).toMatch(/^\/api\/v1\/app-links\/[A-Za-z0-9_-]{43}$/);
       const get = (p: string, cookie?: string) =>
         fetch(`${api.http.baseUrl}${p}`, { method: 'GET', headers: cookie ? { cookie } : {} });
+      // Its address is a page that opens nothing (0.9.0-dev.68): a link
+      // preview's GETs leave it; the browser shows an Open button, and the
+      // POST one click sends is the open.
+      const open = (p: string, headers: Record<string, string> = {}) =>
+        fetch(`${api.http.baseUrl}${p}`, { method: 'POST', headers });
+      for (let i = 0; i < 2; i++) {
+        const page = await get(path);
+        expect(page.status).toBe(200);
+        expect(page.headers.get('content-type') ?? '').toMatch(/^text\/html/);
+        expect(page.headers.get('cache-control')).toBe('no-store');
+        expect(page.headers.get('referrer-policy')).toBe('same-origin');
+        expect(page.headers.get('set-cookie')).toBeNull();
+        const words = await page.text();
+        expect(words).not.toMatch(/<script/i);
+        expect(words).toMatch(/<button type="submit">Open<\/button>/);
+      }
+      // From another site: refused, and the link is still there.
+      const foreign = await open(path, { 'sec-fetch-site': 'cross-site' });
+      expect(foreign.status).toBe(403);
       // Opened: a session's cookie for its path alone, and on to the page.
-      const opened = await get(path);
+      const opened = await open(path, { 'sec-fetch-site': 'same-origin' });
       expect([opened.status, opened.headers.get('location')]).toEqual([303, '/a']);
       const set = opened.headers.get('set-cookie') ?? '';
       expect(set).toMatch(/^__Secure-fdv_app_link=[A-Za-z0-9_-]{43};/);
@@ -4883,15 +4902,14 @@ export const contractScenarios: Scenario[] = [
       expect(set).toMatch(/SameSite=Lax/i);
       const cookie = set.split(';')[0] as string;
       // Once: opened again, the page says so.
-      const again = await get(path);
+      const again = await open(path);
       expect([again.status, again.headers.get('location')]).toEqual([303, '/a#used']);
       const session = await get('/api/v1/app-links/session', cookie);
       expect(session.status).toBe(200);
-      expect(await session.json()).toMatchObject({
-        app: 'Linker',
-        mode: 'view',
-        title: 'Linked water bill',
-      });
+      const said = (await session.json()) as { opened_on?: unknown };
+      expect(said).toMatchObject({ app: 'Linker', mode: 'view', title: 'Linked water bill' });
+      // The day it was opened, for the page's watermark (0.9.0-dev.68).
+      expect(String(said.opened_on)).toMatch(/^\d{4}-\d{2}-\d{2}$/);
       // Without its cookie, nothing.
       expect((await get('/api/v1/app-links/session')).status).toBe(410);
       // A download link needs documents.download too.

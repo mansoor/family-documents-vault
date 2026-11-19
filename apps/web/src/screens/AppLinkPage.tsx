@@ -2,12 +2,13 @@ import {
   APP_LINK_FULL_WORDS,
   APP_LINK_OVER_WORDS,
   APP_REFUSALS,
+  appLinkWatermark,
   type AppLinkSession,
 } from '@fdv/shared';
 import { useEffect, useRef, useState, type RefObject } from 'react';
 import { api, ApiRequestError } from '../api.js';
 import { describeError } from '../app-context.js';
-import { browserZone, dateTimeWords } from '../family-time.js';
+import { browserZone, dateOnlyWords, dateTimeWords } from '../family-time.js';
 import { useFixedTitle } from '../page-title.js';
 import { Logo } from '../ui.js';
 
@@ -16,7 +17,11 @@ import { Logo } from '../ui.js';
  * share link's is: none of the family's app around it, no sign-in. The app
  * sent its user's browser to a single-use link; the vault gave this browser
  * a session of ten minutes and sent it here. It shows the pages the vault
- * drew of one document, never the file, with the app's name across the top.
+ * drew of one document, never the file, with the app's name across the top
+ * — and, since 0.9.0-dev.68, a light watermark across each page: "Opened
+ * through Acme Money · 19 November 2026", repeated, low in contrast. It is
+ * drawn over the page, not into it, lets every click and selection through,
+ * and is never read out (the line at the top says the same).
  *
  * The link itself sends a browser here with `#used`, `#ended` or
  * `#elsewhere` when it cannot open, and a download link with `#full` when
@@ -37,6 +42,22 @@ const BACKOFF_MAX_MS = 30_000;
 const FIRST_TRIES = 3;
 
 const OVER = new Set(['link_ended', 'link_other_address']);
+
+/** How many lines of the watermark a page carries, top to bottom. */
+const WATERMARK_LINES = 7;
+/** Between its words on a line: two em spaces. */
+const GAP = '\u2003\u2003';
+
+/** The watermark over one page: its words, repeated, and nothing a reader or a click meets. */
+function Watermark({ words }: { words: string }) {
+  return (
+    <div className="app-link-watermark" aria-hidden="true" data-testid="app-link-watermark">
+      {Array.from({ length: WATERMARK_LINES }, (_, i) => (
+        <span key={i}>{`${words}${GAP}${words}`}</span>
+      ))}
+    </div>
+  );
+}
 
 /** What a hash the link sent the browser here with says. */
 function hashWords(hash: string): string | null {
@@ -168,6 +189,7 @@ function Opened({
 }) {
   const [broken, setBroken] = useState<number[]>([]);
   const title = session.title ?? 'A document';
+  const watermark = appLinkWatermark(session.app, dateOnlyWords(session.opened_on));
   return (
     <>
       <p className="status" role="note">
@@ -180,18 +202,21 @@ function Opened({
         {session.pages.state === 'ready' && session.pages.count > 0 ? (
           <ol className="shared-pages" aria-label={`The pages of ${title}`}>
             {Array.from({ length: session.pages.count }, (_, i) => i + 1).map((n) => (
-              <li key={n}>
+              <li key={n} className="app-link-page">
                 {broken.includes(n) ? (
                   <p className="muted">
                     Page {n} could not be shown. Reload the page to try again.
                   </p>
                 ) : (
-                  <img
-                    src={api.appLinkPageUrl(n)}
-                    alt={`Page ${n} of ${session.pages.count}`}
-                    loading={n > 2 ? 'lazy' : 'eager'}
-                    onError={() => setBroken((b) => [...b, n])}
-                  />
+                  <>
+                    <img
+                      src={api.appLinkPageUrl(n)}
+                      alt={`Page ${n} of ${session.pages.count}`}
+                      loading={n > 2 ? 'lazy' : 'eager'}
+                      onError={() => setBroken((b) => [...b, n])}
+                    />
+                    <Watermark words={watermark} />
+                  </>
                 )}
               </li>
             ))}

@@ -653,11 +653,12 @@ describe.skipIf(!testAdminUrl())(
       expect(await lines(owner)).toContain(
         'Owner via Capped took back a file it sent to Sara Khan’s Inbox',
       );
-      // What it sent its person, in Settings: its own Inbox alone.
+      // What it sent, in Settings: to an owner, the app's own totals,
+      // whoever's Inbox (0.9.0-dev.68) — the one still in another's counts.
       const view = (await send(owner, 'GET', '/api/v1/connected-apps')).json<{
         items: ConnectedAppView[];
       }>();
-      expect(view.items.find((x) => x.id === a.appId)?.counts).toEqual({ waiting: 0, filed: 0 });
+      expect(view.items.find((x) => x.id === a.appId)?.counts).toEqual({ waiting: 1, filed: 0 });
     });
 
     it('filed automatically as the person it went to, by the same rule', async () => {

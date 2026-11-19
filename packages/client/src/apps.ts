@@ -245,7 +245,11 @@ export interface AppClient {
    * A link for its user's browser (APP3, `documents.links`; a download link
    * needs `documents.download` too): send the browser to `url` at once. It
    * opens once, within 2 minutes, for a session of 10 minutes there. It
-   * ends when the key that made it is revoked or expires.
+   * ends when the key that made it is revoked or expires. Since
+   * 0.9.0-dev.68 `url` is a page that opens nothing when fetched — a link
+   * preview or a scanner leaves it — and shows the user an Open button; one
+   * click opens it. Send the user's browser there, never fetch it from the
+   * app.
    */
   link(id: string, mode: AppLinkMode): Promise<AppLinkMinted>;
   /**

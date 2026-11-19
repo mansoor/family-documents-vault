@@ -242,6 +242,73 @@ needs a vault of 0.4.10 or later.
 
 ## Unreleased
 
+- Connected apps: privacy follow-ups (0.9.0-dev.68).
+  - **A view or download link now opens on a deliberate step. Changed
+    behaviour for integrators — read this.** `GET /api/v1/app-links/{token}`
+    (the `url` that `POST /api/v1/apps/documents/{id}/links` returns) **no
+    longer opens the link**. It answers `200` with a small HTML page that
+    consumes nothing, so a chat's, a mail scanner's or a browser's link
+    preview fetching it — or a mail scanner rendering it in a browser of its
+    own — no longer uses it up (a `HEAD` the same). **The browser shows an
+    Open button; one click opens it**: a plain form, no script, sending
+    **`POST /api/v1/app-links/{token}`** (the same address; an empty form
+    body, `application/x-www-form-urlencoded`, or none). That POST is the
+    open, with exactly the rules the GET had: within 2
+    minutes of minting, once, a session of 10 minutes bound to the address it
+    was opened from, `303` to `/a` (view) or `/api/v1/app-links/session/file`
+    (download), and `303 /a#used` or `/a#ended` otherwise.
+    - **What to do:** nothing, if your app sends its user's browser to `url`
+      (a redirect or a link the user taps) — the user then taps **Open**
+      once, on the vault's page. If your app or your tests **fetch
+      `url` themselves** expecting the `303` and the cookie, they now get the
+      page: send the browser there instead, or (in tests) `POST` the same
+      address.
+    - **The page:** `Cache-Control: no-store`,
+      `Referrer-Policy: same-origin` (so its own POST carries a real
+      `Origin`), `X-Robots-Tag: noindex, nofollow`,
+      `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, and a
+      `Content-Security-Policy` of its own — `default-src 'none'` (no script
+      at all), its one style by a nonce new on every answer,
+      `form-action 'self'`, `base-uri 'none'`, `frame-ancestors 'none'`. It
+      says "Open the document" and that the link works once. A token the vault could
+      not have made is `303 /a#ended` at once; any other well-formed token
+      gets the same page, whether it is good or not.
+    - **The POST** is refused `403 forbidden` — and nothing is consumed — when
+      `Sec-Fetch-Site` is `cross-site` or `same-site`, or when its `Origin`,
+      else its `Referer`, names a host other than the vault's (the one it was
+      asked at, or the one its links are made on). `Sec-Fetch-Site`
+      `same-origin` or `none`, or none sent (an older browser), and no
+      `Origin` or `Origin: null`, are not refused on their own: the token is
+      the secret. Only this route reads a form body; every other route still
+      refuses one.
+    - **Proxies:** none changed. The public-only site's `apps-on.caddy` and
+      the web container's nginx pass `/api/v1/app-links/*` whatever the
+      method; the token is cut from both logs as before.
+  - **`AppLinkSession`** (`GET /api/v1/app-links/session`) gains `opened_on`
+    (`YYYY-MM-DD`, the day it was opened on the family's calendar): the `/a`
+    page's watermark, "Opened through Acme Money · 19 November 2026", drawn
+    over each page, never into the images. **Additive.**
+  - **`ConnectedAppView.counts`** is now given to **every owner**, as the
+    app's own totals (what waits and what was filed, whoever's Inbox it went
+    to) — not only to the person it acts as, who still sees what came to
+    their own Inbox. Counts alone: nothing of any send or document. Was
+    `null` for an owner other than the app's person. **Additive** (a value
+    where there was `null`).
+  - **An app's move to the Trash is told.** `DELETE /api/v1/apps/documents/{id}`
+    with the app set to `trash` now emails the document's person (when they
+    sign in) and every owner — each only if the document's visibility lets
+    them see it — "Acme Money moved a document to the Trash", naming the
+    document only where the household's and their own neutral wording let it
+    be, never a sensitive one and never to a viewer. At most 5 such emails an
+    app a day: the next is one "Acme Money moved more documents to the
+    Trash" to the owners, then none until the app's last day has fewer. No
+    change to the API's answer.
+  - **Client:** `appLinkSession()` and `AppClient.link()` documented for the
+    new flow. **Fake vault** (`@fdv/client/testing`): the same — the GET page
+    with its Open button and no script, the POST open, `403` from another site
+    (`Sec-Fetch-Site` or `Origin`), `opened_on`, owners' counts; the
+    contract scenario holds both vaults to it.
+
 - `FDV_APPS_LOCAL_HTTP=on` (0.9.0-dev.66, development only): `403 https_required` is no longer answered to a connected app calling over plain http when the vault's `FDV_BASE_URL` is `http://localhost`, `127.0.0.1` or `[::1]`. No change for any other vault. **Additive.**
 
 - `GET /api/v1/capabilities` — the capability document. Fetch it first,
@@ -8108,7 +8175,9 @@ not_found`. `200 { document_id, result: 'unlinked' | 'trashed' }` as the
         minutes) and answers `303` to `/a` (view) or
         `/api/v1/app-links/session/file` (download). Used: `303
 /a#used`; too late, made up, or no longer readable: `303 /a#ended`.
-        20 a minute an address.
+        20 a minute an address. (Since 0.9.0-dev.68 this is the `POST` to the
+        same address; the `GET` is a page that opens nothing: see the top of
+        Unreleased.)
       - `GET /api/v1/app-links/session`: `{ app, mode, title, pages: {
 state: 'ready' | 'drawing' | 'none', count }, ends_at }`.
       - `GET /api/v1/app-links/session/pages/{n}`: a view's page, a JPEG

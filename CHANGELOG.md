@@ -6,6 +6,25 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.9.0-dev.68] - 2026-11-19 — connected apps: privacy follow-ups
+
+### Changed
+
+- **A connected app's link opens on a deliberate step.** The link an app sends its user's browser to is now a small page, "Open the document", that opens nothing by being fetched or shown: one click on its **Open** button opens the link, and nothing on it does so by itself. A chat's or a browser's preview of the link, or an email scanner that opens it in a browser of its own, no longer uses it up, so the user is no longer told "used or ended" for a link they never opened. Everything else is as before: once, within 2 minutes, for 10 minutes in that browser at that address. The page is sent with strict headers (never stored, indexed or framed, no script at all, a referrer only to the vault itself), and an open sent from another site's page is refused. An app that sends its user's browser to the link needs no change; one that fetched the link itself must send the browser there instead (docs/api-changelog.md).
+- **A watermark on a document opened from an app.** The pages a connected app's view link shows now carry a light, repeated watermark — "Opened through Acme Money · 19 November 2026", in the family's date format — over each page. It is drawn over the pages, not into them, lets every click through, and hides nothing.
+- **An app's move to the Trash is told.** When a connected app set to move what it deletes to the Trash does so, the document's person and every owner are emailed ("Acme Money moved a document to the Trash") — each only if they may see the document (a teen is never told of an Adults only paper). The email names the app; it names the document only where the household's and the person's own neutral wording allow, never a sensitive document and never to a viewer. At most five such emails an app a day: then one more tells the owners it moved more, and the activity log lists every one. Before, only the activity log said so.
+- **Every owner sees what an app sent.** In **Settings → Connected apps**, every owner now sees how many of the files an app sent wait for a look and were filed — the app's totals, whoever's Inbox they went to — not only the person it acts as. Counts alone: nothing of what was sent.
+
+### Kept as they are
+
+Looked at again in this round, and decided to stay:
+
+- **Whether an app's `person` name matched** can still be worked out from whether its file was filed or is waiting (a name that matches one person goes to their Inbox).
+- **Household papers may file automatically** from an app, under the same rules as any other.
+- **A rule the vault learned** from the family's filing counts as the reading agreeing, for filing automatically.
+- **An app's reads** stay one "looked up documents" line an hour in the activity log.
+- **A document removed for good** keeps its id in an app's changes feed for 90 days.
+
 ## [0.9.0-dev.67] - 2026-11-19 — a document's activity on its page, and every pop-up in one style
 
 ### Changed

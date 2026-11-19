@@ -489,9 +489,13 @@ it may read_ (with reading ticked too), the app can show its user a document it 
 for a link at the moment the user clicks, and sends their browser straight to it. The link
 works **once**, and only within **2 minutes**; opening it gives that browser **10
 minutes** with the document, at the address it was opened from (a page reloaded from
-another network is refused, and the user opens it again from the app). The browser is
-shown the pages the vault drew of the document, with "Opened through Acme Money" across the
-top, on a page of its own (`/a`) — never the vault's own screens, and never the file. A
+another network is refused, and the user opens it again from the app). Opening it is one
+deliberate click: the link's address is a small page, "Open the document", with an **Open**
+button and nothing that opens it by itself — so a chat's preview of the link, or an email
+scanner that opens it in a browser of its own, no longer uses it up. The browser is shown the pages the vault drew of the document, with "Opened through
+Acme Money" across the top, on a page of its own (`/a`) — never the vault's own screens,
+and never the file — and a light watermark across each page, "Opened through Acme Money ·
+19 November 2026", drawn over the pages rather than into them. A
 Word or Excel file has no pages to show. A download link, which saves the file instead,
 needs _Download documents it is allowed_ ticked too, and every byte it gives counts against
 the app's own downloads for the day: what the app may not download itself, its user may not
@@ -512,7 +516,10 @@ stays in the vault, and is no longer the app's), or **it moves it to the Trash**
 person it acts as would, where it can be restored for 30 days. Either way the app lets go
 of it: taken out of the Trash, the document is the family's. The activity log says "Ahmed
 via Acme Money let go of …; it is still in the vault" or "Ahmed via Acme Money moved … to the
-Trash".
+Trash". A move to the Trash is also emailed to the document's person and every owner who
+may see it ("Acme Money moved a document to the Trash"), naming the document only as the
+family's neutral wording allows, and never a sensitive one; at most five such emails an app
+a day, then one saying it moved more.
 
 **Connecting one.** An owner opens _Settings → Connected apps → Connect an app_ and
 confirms it is them with a passkey or an authenticator code — never the password alone,
@@ -603,7 +610,9 @@ answers 404 to an address that hides a slash or a dot in its encoding. Settings 
 be connected to an app on the internet.
 
 **Removing one.** _Settings → Connected apps_ lists each app with whom it acts as, what
-it may do, its API keys, when it was last used, and today's files and refused requests.
+it may do, its API keys, when it was last used, today's files and refused requests, and
+how many of the files it sent wait for a look and were filed (every owner sees the app's
+totals; its person, what came to their own Inbox — counts alone).
 An owner can pause one, change what it may do, generate or revoke a key, and remove it
 (which revokes every key it has); the person it acts
 as can turn it on and remove it. A removed app's next request is refused; what it sent
@@ -663,7 +672,8 @@ connection string gives (`$VAULT`).
    ```
 
 5. **Make a view link for your user** (needs _Show its user documents_), and send their
-   browser to its `url` at once:
+   browser to its `url` at once. Don't fetch the `url` yourself: it is a page that opens
+   nothing, and the browser opens the link from it (since 0.9.0-dev.68):
 
    ```sh
    curl -sS -X POST "$VAULT/api/v1/apps/documents/$DOCUMENT_ID/links" \
@@ -704,7 +714,7 @@ npm or pnpm and no token (from CI too):
 ```json
 {
   "dependencies": {
-    "@fdv/client": "https://github.com/mansoor/family-documents-vault/releases/download/v0.9.0-dev.67/fdv-client-0.9.0-dev.67.tgz"
+    "@fdv/client": "https://github.com/mansoor/family-documents-vault/releases/download/v0.9.0-dev.68/fdv-client-0.9.0-dev.68.tgz"
   }
 }
 ```

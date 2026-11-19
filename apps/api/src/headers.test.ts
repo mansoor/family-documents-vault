@@ -267,6 +267,10 @@ describe('the public-only site', () => {
     for (const shown of ['/api/v1/app-links/abc', '/api/v1/app-links/session/pages/1']) {
       expect(caddyMatches(paths, shown), shown).toBe(true);
     }
+    // A link's address is a page (GET) and its open (POST, 0.9.0-dev.68):
+    // nothing here, nor in nginx, limits the method.
+    expect(on).not.toMatch(/\bmethod\b/);
+    expect(await readFile(root('docker/nginx.conf'), 'utf8')).not.toMatch(/limit_except/);
     for (const hidden of ['/api/v1/app-linksx', '/ab', '/a/b']) {
       expect(caddyMatches([...paths, ...page], hidden), hidden).toBe(false);
     }

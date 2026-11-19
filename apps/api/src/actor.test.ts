@@ -107,6 +107,11 @@ const ALLOWED = [
   'apps/links.ts AppLinks.open',
   'apps/links.ts AppLinks.inSession',
   'apps/links.ts AppLinks.remove',
+  // Every owner sees how many of what an app sent wait, and were filed
+  // (0.9.0-dev.68): the rows are each person's alone (0109), so the vault
+  // counts them for an owner — after the owner's own transaction, two
+  // numbers an app, and nothing of any document or send.
+  'apps/service.ts AppService.withTotals',
   // An app's item filed automatically (0.9.0, APP4): the worker's job names
   // only an item, so which app sent it, whom it acts as and whether it still
   // files automatically are found by the vault; the filing itself is done

@@ -21,7 +21,14 @@ import type { Principal } from '../auth/service.js';
 import type { StepUpService } from '../auth/step-up.js';
 import { cutOff } from '../documents/routes.js';
 import { ApiError } from '../errors.js';
+import { crossSite, looksLikeToken, openPage } from './links.js';
 import { AppService, type AppCaller, type AppRoute } from './service.js';
+
+/**
+ * A link's own address (APP3): a GET is the page that opens it, a POST the
+ * open (0.9.0-dev.68). The page sets its own Content-Security-Policy.
+ */
+export const APP_LINK_TOKEN_ROUTE = '/api/v1/app-links/:token';
 
 /**
  * Connected apps (0.9.0, APP1): the family's routes, signed in, and the
@@ -474,21 +481,73 @@ export function registerApps(
     });
 
     /**
-     * The link itself, opened by the browser: within two minutes, once. A
+     * The link's address, as the browser (or a link preview) first asks it
+     * (0.9.0-dev.68): a small page that consumes nothing and has no
+     * script; its Open button sends a POST to the same address. A token the
+     * vault could not have made is "ended" at once; any other gets the same
+     * page, so the page says nothing of whether the link is good. Its own
+     * strict policy, with a nonce for its style, and `Referrer-Policy:
+     * same-origin`, so the POST it sends carries a real Origin (app.ts
+     * leaves both, and adds the public routes' other headers).
+     */
+    app.get<{ Params: { token: string } }>(APP_LINK_TOKEN_ROUTE, tight, async (req, reply) => {
+      const { token } = req.params;
+      if (!looksLikeToken(token)) return reply.redirect(`${APP_LINK_PAGE}#ended`, 303);
+      const page = openPage(token);
+      void reply.header('content-security-policy', page.csp);
+      void reply.header('referrer-policy', 'same-origin');
+      void reply.header('x-frame-options', 'DENY');
+      void reply.header('cache-control', 'no-store');
+      void reply.type('text/html; charset=utf-8');
+      return reply.send(page.html);
+    });
+
+    /**
+     * The open itself, from that page: within two minutes, once. A
      * session's cookie, and on (303) to the page or the file, so the token
      * leaves the address bar. Used, or too late: the page says so.
+     *
+     * A form's POST, so its body (form-encoded, and empty) is taken here
+     * alone: nowhere else does the vault read a form, which a page on any
+     * site could send. And one from anywhere but the link's own page —
+     * `Sec-Fetch-Site` cross-site or same-site, or its Origin, else its
+     * Referer, naming another host — is refused before anything is looked
+     * at; the token is the secret, and it is not consumed.
      */
-    app.get<{ Params: { token: string } }>(
-      '/api/v1/app-links/:token',
-      tight,
-      async (req, reply) => {
+    void app.register(async (scope) => {
+      scope.addContentTypeParser(
+        'application/x-www-form-urlencoded',
+        { parseAs: 'string', bodyLimit: 1024 },
+        (_req, _body, done) => done(null, {}),
+      );
+      scope.post<{ Params: { token: string } }>(APP_LINK_TOKEN_ROUTE, tight, async (req, reply) => {
+        const header = (name: string) => {
+          const v = req.headers[name];
+          return typeof v === 'string' ? v : undefined;
+        };
+        if (
+          crossSite(
+            {
+              secFetchSite: header('sec-fetch-site'),
+              origin: header('origin'),
+              referer: header('referer'),
+            },
+            [header('host'), links.linkAddress()],
+          )
+        ) {
+          throw new ApiError(
+            403,
+            'forbidden',
+            'Open the link from the app, in the browser it sent you to.',
+          );
+        }
         const opened = await links.open(req.params.token, clientAddressOf(req), metaOf(req));
         if (opened.kind !== 'session') {
           return reply.redirect(`${APP_LINK_PAGE}#${opened.kind}`, 303);
         }
-        // Secure always, as a share's is; Lax, not Strict: the open is a
-        // navigation from the app's site, and the cookie must come with the
-        // request it is sent on to. Its path keeps it off everything else.
+        // Secure always, as a share's is; Lax, not Strict: the cookie must
+        // come with the request it is sent on to. Its path keeps it off
+        // everything else.
         void reply.setCookie(APP_LINK_COOKIE, opened.cookie, {
           path: APP_LINK_SESSION_PATH,
           httpOnly: true,
@@ -500,8 +559,8 @@ export function registerApps(
           opened.mode === 'view' ? APP_LINK_PAGE : `${APP_LINK_SESSION_PATH}/file`,
           303,
         );
-      },
-    );
+      });
+    });
   }
 
   // ---------------------------------------------------------- the family's

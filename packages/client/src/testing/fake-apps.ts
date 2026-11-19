@@ -438,7 +438,10 @@ export function fakeAppRoutes(d: FakeAppDeps) {
     if (actsAs(a) === 'app') return;
     if (a.member_id !== who.memberId && a.approval === 'approved') a.approval = 'waiting';
   };
-  const view = async (a: FakeApp, me: { memberId: string }): Promise<ConnectedAppView> => {
+  const view = async (
+    a: FakeApp,
+    me: { memberId: string; role?: string },
+  ): Promise<ConnectedAppView> => {
     const keys = a.keys.map(keyView);
     const newest = liveKeys(a)[liveKeys(a).length - 1];
     const itself = actsAs(a) === 'app';
@@ -472,9 +475,11 @@ export function fakeAppRoutes(d: FakeAppDeps) {
       today: { files: a.files_today, bytes: a.bytes_today },
       refused_today: 0,
       last_refusal: null,
-      counts: mine
-        ? { waiting: states.filter((s) => s.state === 'waiting').length, filed: 0 }
-        : null,
+      // An owner sees the app's totals (0.9.0-dev.68); its person theirs.
+      counts:
+        mine || me.role === 'owner'
+          ? { waiting: states.filter((s) => s.state === 'waiting').length, filed: 0 }
+          : null,
       grants: [...(a.grants ?? [])],
       daily_read_bytes: 1024 ** 3,
       read_today: 0,
@@ -1820,10 +1825,11 @@ export function fakeAppRoutes(d: FakeAppDeps) {
   };
 
   /**
-   * What its user's browser asks (APP3): the token, once, within two
-   * minutes, then the session's cookie on the session's path alone. Each
-   * request asks the app's rule again: a document it may no longer read,
-   * an app paused or removed, ends it.
+   * What its user's browser asks (APP3): the token's address, which a GET
+   * answers with a page that opens nothing and a POST opens (0.9.0-dev.68),
+   * once, within two minutes; then the session's cookie on the session's
+   * path alone. Each request asks the app's rule again: a document it may
+   * no longer read, an app paused or removed, ends it.
    */
   const links = async (
     url: string,
@@ -1832,7 +1838,9 @@ export function fakeAppRoutes(d: FakeAppDeps) {
     const path = url.replace(/^[a-z]+:\/\/[^/]+/i, '').split('?')[0] as string;
     if (!path.startsWith('/api/v1/app-links/')) return null;
     const method = init.method ?? 'GET';
-    if (method !== 'GET') return d.fail(404, 'not_found', 'Nothing here.');
+    const tokenAt = /^\/api\/v1\/app-links\/([^/]+)$/.exec(path);
+    const opening = method === 'POST' && tokenAt !== null && tokenAt[1] !== 'session';
+    if (method !== 'GET' && !opening) return d.fail(404, 'not_found', 'Nothing here.');
     const headers = Object.fromEntries(
       Object.entries(init.headers).map(([k, v]) => [k.toLowerCase(), v]),
     );
@@ -1872,6 +1880,7 @@ export function fakeAppRoutes(d: FakeAppDeps) {
         title: s.r.doc.title,
         pages: s.l.mode === 'view' ? { state: 'ready', count: 1 } : { state: 'none', count: 0 },
         ends_at: new Date(s.l.session_until as number).toISOString(),
+        opened_on: new Date(s.l.opened_at ?? Date.now()).toISOString().slice(0, 10),
       });
     }
     const pageAt = /^\/api\/v1\/app-links\/session\/pages\/(\d+)$/.exec(path);
@@ -1907,7 +1916,37 @@ export function fakeAppRoutes(d: FakeAppDeps) {
         'content-length': String(v.bytes.length),
       });
     }
-    const token = /^\/api\/v1\/app-links\/([^/]+)$/.exec(path)?.[1] ?? '';
+    const token = tokenAt?.[1] ?? '';
+    if (!opening) {
+      // The page a link's address gives: it opens nothing, and has no
+      // script; its Open button is the open. One the vault could not have
+      // made is "ended" at once.
+      if (!/^[A-Za-z0-9_-]{43}$/.test(token)) return redirect(`${APP_LINK_PAGE}#ended`);
+      return d.raw(
+        200,
+        new TextEncoder().encode(
+          `<!doctype html><h1>Open the document</h1><p>This link works once: open it here, in this browser.</p><form method="post" action="/api/v1/app-links/${token}"><button type="submit">Open</button></form>`,
+        ),
+        {
+          'content-type': 'text/html; charset=utf-8',
+          'cache-control': 'no-store',
+          'referrer-policy': 'same-origin',
+          'x-robots-tag': 'noindex, nofollow',
+          'content-security-policy':
+            "default-src 'none'; style-src 'nonce-fake'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
+        },
+      );
+    }
+    // From anywhere but its own page: refused, and nothing used.
+    const site = (headers['sec-fetch-site'] ?? '').toLowerCase();
+    const origin = headers.origin;
+    if (
+      site === 'cross-site' ||
+      site === 'same-site' ||
+      (origin && origin !== 'null' && !/^https?:\/\/fake\.example(:\d+)?$/.test(origin))
+    ) {
+      return d.fail(403, 'forbidden', 'Open the link from the app, in the browser it sent you to.');
+    }
     const found = all().find((x) => x.l.token === token);
     if (!found) return redirect(`${APP_LINK_PAGE}#ended`);
     const { a, l } = found;

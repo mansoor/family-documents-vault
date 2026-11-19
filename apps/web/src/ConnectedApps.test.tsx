@@ -270,15 +270,22 @@ describe('Settings → Connected apps (0.9.0, APP1)', () => {
     expect(
       within(card).getByRole('button', { name: 'Generate an API key for Acme Money' }),
     ).toBeDisabled();
-    // What it sent is Ahmed's alone to see.
+    // What it sent: every owner sees the app's totals (0.9.0-dev.68),
+    // whoever's Inbox — counts alone.
     expect(within(card).queryByText('What it sent you')).toBeNull();
-    // The owner's own: waiting for them, and its counts theirs.
+    expect(within(card).getByText('What it sent the family')).toBeInTheDocument();
+    expect(
+      within(card).getByText('3 waiting in the family’s Inboxes, 9 filed'),
+    ).toBeInTheDocument();
+    // The owner's own: waiting for them, and its counts the app's totals too.
     const mine = screen.getByRole('region', { name: 'Ledger' });
     expect(within(mine).getByText('Acting as you')).toBeInTheDocument();
     expect(within(mine).getByText('Waiting for you to turn it on')).toBeInTheDocument();
     expect(within(mine).getByText('None yet')).toBeInTheDocument();
     expect(within(mine).getByText('Not yet')).toBeInTheDocument();
-    expect(within(mine).getByText('3 waiting in your Inbox, 9 filed')).toBeInTheDocument();
+    expect(
+      within(mine).getByText('3 waiting in the family’s Inboxes, 9 filed'),
+    ).toBeInTheDocument();
     expect(within(mine).getByRole('button', { name: 'Turn on Ledger' })).toBeInTheDocument();
     // The routes are published: no warning.
     expect(screen.queryByText(/FDV_PUBLIC_APPS/)).toBeNull();

@@ -1,3 +1,5 @@
+import { existsSync, readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
 import axe from 'axe-core';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -41,6 +43,7 @@ describe('a connected app’s link’s page (APP3)', () => {
           title: 'Northgate statement, Oct 2026',
           pages: { state: 'ready', count: 2 },
           ends_at: ENDS,
+          opened_on: '2026-11-19',
         },
       }),
     );
@@ -65,6 +68,64 @@ describe('a connected app’s link’s page (APP3)', () => {
     await expectAccessible();
   });
 
+  it('carries a light watermark across each page: the app and the day, over the page, never in it (0.9.0-dev.68)', async () => {
+    installFakeApi(
+      fresh({
+        appLink: {
+          app: 'Acme Money',
+          mode: 'view',
+          title: 'Northgate statement, Oct 2026',
+          pages: { state: 'ready', count: 2 },
+          ends_at: ENDS,
+          opened_on: '2026-11-19',
+        },
+      }),
+    );
+    render(<AppLinkPage hash="" />);
+    await screen.findByAltText('Page 1 of 2');
+    const marks = screen.getAllByTestId('app-link-watermark');
+    // One over each page, beside its picture: the picture is the vault's
+    // drawing, untouched.
+    expect(marks).toHaveLength(2);
+    for (const [i, mark] of marks.entries()) {
+      const page = mark.closest('li');
+      expect(page).toHaveClass('app-link-page');
+      expect(mark.parentElement).toBe(page);
+      expect(page?.querySelector('img')?.getAttribute('src')).toBe(
+        `/api/v1/app-links/session/pages/${i + 1}`,
+      );
+      // Repeated, in the family's date format, and hidden from a screen
+      // reader, which hears the same from the line at the top.
+      const lines = [...mark.querySelectorAll('span')].map((x) => x.textContent ?? '');
+      expect(lines.length).toBeGreaterThan(3);
+      for (const line of lines) {
+        expect(line).toContain('Opened through Acme Money · 19 November 2026');
+      }
+      expect(mark).toHaveAttribute('aria-hidden', 'true');
+    }
+    expect(screen.getByAltText('Page 2 of 2')).toBeInTheDocument();
+    await expectAccessible();
+  });
+
+  it('draws its watermark letting every click through, low in contrast, over the page (CSS)', () => {
+    const file = ['src/styles.css', 'apps/web/src/styles.css']
+      .map((p) => resolve(process.cwd(), p))
+      .find((p) => existsSync(p));
+    const css = (file ? readFileSync(file, 'utf8') : '').replace(/\/\*[\s\S]*?\*\//g, '');
+    const rule = (selector: string) =>
+      [...css.matchAll(/([^{}]+)\{([^}]*)\}/g)].find((m) => m[1]?.trim() === selector)?.[2] ?? '';
+    const mark = rule('.app-link-watermark');
+    expect(mark).toMatch(/position:\s*absolute/);
+    expect(mark).toMatch(/inset:\s*0/);
+    expect(mark).toMatch(/pointer-events:\s*none/);
+    expect(mark).toMatch(/user-select:\s*none/);
+    expect(mark).toMatch(/overflow:\s*hidden/);
+    const opacity = Number(/opacity:\s*([\d.]+)/.exec(mark)?.[1]);
+    expect(opacity).toBeGreaterThan(0);
+    expect(opacity).toBeLessThanOrEqual(0.2);
+    expect(rule('.app-link-page')).toMatch(/position:\s*relative/);
+  });
+
   it('says the pages are being prepared while they are drawn', async () => {
     installFakeApi(
       fresh({
@@ -74,6 +135,7 @@ describe('a connected app’s link’s page (APP3)', () => {
           title: null,
           pages: { state: 'drawing', count: 0 },
           ends_at: ENDS,
+          opened_on: '2026-11-19',
         },
       }),
     );
@@ -91,6 +153,7 @@ describe('a connected app’s link’s page (APP3)', () => {
         title: 'A bill',
         pages: { state: 'drawing' as const, count: 0 },
         ends_at: ENDS,
+        opened_on: '2026-11-19',
       };
       const state = fresh({ appLink: drawing });
       installFakeApi(state);
@@ -127,6 +190,7 @@ describe('a connected app’s link’s page (APP3)', () => {
           title: 'A bill',
           pages: { state: 'drawing', count: 0 },
           ends_at: ENDS,
+          opened_on: '2026-11-19',
         },
       });
       installFakeApi(state);
