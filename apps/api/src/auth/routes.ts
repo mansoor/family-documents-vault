@@ -1,8 +1,10 @@
-import type { FastifyInstance, FastifyRequest } from 'fastify';
+import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
+import { REFRESH_COOKIE_HEADER, REFRESH_COOKIE_MODE } from '@fdv/shared';
 import { z } from 'zod';
 import { ApiError } from '../errors.js';
 import { clientAddressOf } from '../client-address.js';
 import type { AuthService, Principal, RequestMeta } from './service.js';
+import { DEVICE_PROOF_DAYS } from './sign-in-guard.js';
 import type { TotpService } from './totp.js';
 import type { PasskeyService } from './passkeys.js';
 import type { StepUpService } from './step-up.js';
@@ -36,8 +38,128 @@ const setupBody = z.object({
   email,
   password,
 });
-const passwordBody = z.object({ email, password: z.string().min(1).max(1024) });
-const refreshBody = z.object({ refresh_token: z.string().min(1).max(512) });
+const passwordBody = z.object({
+  email,
+  password: z.string().min(1).max(1024),
+  // 0.9.0: the proof an app kept from its last sign-in (`Tokens.device_proof`).
+  device_proof: z.string().max(200).optional(),
+});
+/**
+ * A refresh without the cookie header: a token, or (empty or left out) a
+ * session that is over as far as this client goes — an old web page's,
+ * whose token went to the cookie from another tab — `401 session_ended`.
+ */
+const refreshBody = z.object({ refresh_token: z.string().max(512).optional() });
+/** A browser's (0.9.0): its token in its cookie, or — once, moving to one — in the body. */
+const cookieRefreshBody = z.object({ refresh_token: z.string().min(1).max(512).optional() });
+
+/**
+ * A browser's refresh token (0.9.0): an HttpOnly cookie, sent back only to
+ * /api/v1/auth — a refresh and a sign-out read it — and never to another
+ * site's page (SameSite=Strict). Script on the page cannot read it, so a
+ * flaw that ran script there could not carry the sign-in off.
+ */
+export const REFRESH_COOKIE = 'fdv_refresh';
+export const REFRESH_COOKIE_PATH = '/api/v1/auth';
+/**
+ * A browser's proof that it signed in to an account before (0.9.0,
+ * `KnownDevices`): beside the refresh token's, with the same options, so
+ * that failed tries from anywhere else never make this browser wait.
+ */
+export const DEVICE_COOKIE = 'fdv_device';
+
+/**
+ * A forgotten password is answered after this long, whatever the address
+ * (0.9.0): an address with a sign-in issues a link and queues an email,
+ * one without does nothing, and the time it took must not say which.
+ */
+export const FORGOT_ANSWER_MS = 500;
+
+/** Whether the request asks for its refresh token as a cookie: the web app's every request. */
+export function wantsRefreshCookie(req: FastifyRequest): boolean {
+  return req.headers[REFRESH_COOKIE_HEADER] === REFRESH_COOKIE_MODE;
+}
+
+/**
+ * Whether a request that would spend the cookie came from the vault's own
+ * page (0.9.0). The header it must carry is one no other site's page can
+ * send here (the API answers no cross-origin request); and a browser's own
+ * word: `Sec-Fetch-Site: same-origin`, which every current browser sends —
+ * or, from one too old to, an `Origin` naming the host the request came to.
+ * (Not both: a proxy in front of the vault may pass a Host of its own.)
+ */
+export function fromOwnPage(req: FastifyRequest): boolean {
+  if (!wantsRefreshCookie(req)) return false;
+  const site = req.headers['sec-fetch-site'];
+  if (site !== undefined) return site === 'same-origin';
+  const origin = req.headers.origin;
+  if (origin !== undefined) {
+    let host: string;
+    try {
+      host = new URL(origin).hostname.toLowerCase();
+    } catch {
+      return false;
+    }
+    if (host !== req.hostname.toLowerCase()) return false;
+  }
+  return true;
+}
+
+/** No refresh token at all, in the body or a cookie: this client's session is over. */
+const noRefreshToken = () =>
+  new ApiError(401, 'session_ended', 'Please sign in again.', {
+    detail: 'no refresh token',
+    reason: 'expired',
+  });
+
+const notFromOwnPage = () =>
+  new ApiError(403, 'cross_site_refused', "That didn't come from the vault's own page.");
+
+/**
+ * The cookie's options. Secure whenever the request reached the vault over
+ * https — as the proxy in front of it says, believed only from the vault's
+ * own network (FDV_TRUST_PROXY, client-address.ts) — so that it never
+ * travels over plain http once it has been given over https. Over plain
+ * http on the home network (port 8080) it cannot be: a browser keeps no
+ * Secure cookie from an http page but localhost's. HttpOnly and
+ * SameSite=Strict hold either way.
+ */
+function cookieOptions(req: FastifyRequest) {
+  return {
+    path: REFRESH_COOKIE_PATH,
+    httpOnly: true,
+    sameSite: 'strict' as const,
+    secure: req.protocol === 'https',
+  };
+}
+
+function setRefreshCookie(
+  req: FastifyRequest,
+  reply: FastifyReply,
+  token: string,
+  maxAgeSeconds: number,
+): void {
+  void reply.setCookie(REFRESH_COOKIE, token, { ...cookieOptions(req), maxAge: maxAgeSeconds });
+}
+
+function clearRefreshCookie(req: FastifyRequest, reply: FastifyReply): void {
+  void reply.clearCookie(REFRESH_COOKIE, cookieOptions(req));
+}
+
+/** An answer that gives tokens: a sign-in's, a refresh's, an invitation accepted. */
+function givesTokens(
+  payload: unknown,
+): payload is { refresh_token: string; refresh_expires_in: number } {
+  if (typeof payload !== 'object' || payload === null) return false;
+  const p = payload as Record<string, unknown>;
+  return (
+    typeof p.access_token === 'string' &&
+    typeof p.refresh_token === 'string' &&
+    p.refresh_token !== '' &&
+    typeof p.refresh_expires_in === 'number' &&
+    typeof p.household_id === 'string'
+  );
+}
 
 export function parse<T>(schema: z.ZodType<T>, body: unknown): T {
   const r = schema.safeParse(body);
@@ -78,11 +200,15 @@ export function metaOf(req: FastifyRequest): RequestMeta {
     typeof installation === 'string' && UUID.test(installation) ? installation.toLowerCase() : null;
   // A user agent is kept to its first 512 characters: all a person needs, and all we store.
   const agent = req.headers['user-agent'];
+  // A browser's proof that it signed in before (0.9.0), from its cookie; an
+  // app's comes in the sign-in's body.
+  const proof = wantsRefreshCookie(req) ? req.cookies[DEVICE_COOKIE] : undefined;
   // An address, never text a proxy passed on that is none (5.30).
   return {
     ip: clientAddressOf(req),
     userAgent: agent ? agent.slice(0, 512) : null,
     installationId,
+    deviceProof: typeof proof === 'string' && proof.length <= 200 ? proof : null,
   };
 }
 
@@ -119,6 +245,28 @@ export function registerAuth(
 
   const tight = { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } };
 
+  // A browser's refresh token goes in its cookie, never in what script on
+  // the page can read (0.9.0): wherever tokens are given — a sign-in, a
+  // refresh, an invitation accepted — to a request that asks for it.
+  app.addHook('preSerialization', async (req, reply, payload) => {
+    if (!wantsRefreshCookie(req) || reply.statusCode >= 300 || !givesTokens(payload)) {
+      return payload;
+    }
+    setRefreshCookie(req, reply, payload.refresh_token, payload.refresh_expires_in);
+    void reply.header('cache-control', 'no-store');
+    const { device_proof: proof, ...rest } = payload as typeof payload & { device_proof?: unknown };
+    // This browser is one the account knows (0.9.0): its proof, in a
+    // cookie of its own beside the refresh token's, for 90 days. Signing
+    // out leaves it: it is about the device, not the session.
+    if (typeof proof === 'string') {
+      void reply.setCookie(DEVICE_COOKIE, proof, {
+        ...cookieOptions(req),
+        maxAge: DEVICE_PROOF_DAYS * 24 * 60 * 60,
+      });
+    }
+    return { ...rest, refresh_token: '' };
+  });
+
   app.post('/api/v1/setup', tight, async (req, reply) => {
     const body = parse(setupBody, req.body);
     const tokens = await auth.setup(
@@ -136,7 +284,11 @@ export function registerAuth(
 
   app.post('/api/v1/auth/password', tight, async (req) => {
     const body = parse(passwordBody, req.body);
-    return auth.signInWithPassword(body.email, body.password, metaOf(req));
+    const meta = metaOf(req);
+    return auth.signInWithPassword(body.email, body.password, {
+      ...meta,
+      deviceProof: body.device_proof ?? meta.deviceProof ?? null,
+    });
   });
 
   app.post('/api/v1/auth/mfa', tight, async (req) => {
@@ -163,13 +315,35 @@ export function registerAuth(
   });
 
   app.post('/api/v1/auth/refresh', tight, async (req) => {
-    const body = parse(refreshBody, req.body);
-    return auth.refresh(body.refresh_token, metaOf(req));
+    if (!wantsRefreshCookie(req)) {
+      const body = parse(refreshBody, req.body ?? {});
+      if (!body.refresh_token) throw noRefreshToken();
+      return auth.refresh(body.refresh_token, metaOf(req));
+    }
+    // A browser (0.9.0). A token in the body is one kept from before: spent
+    // once, its successor in the cookie (the hook above), and forgotten.
+    const body = parse(cookieRefreshBody, req.body ?? {});
+    if (body.refresh_token) return auth.refresh(body.refresh_token, metaOf(req));
+    if (!fromOwnPage(req)) throw notFromOwnPage();
+    const kept = req.cookies[REFRESH_COOKIE];
+    if (!kept) throw noRefreshToken();
+    return auth.refresh(kept, metaOf(req));
   });
 
-  app.post('/api/v1/auth/logout', { preHandler: app.requireAuth }, async (req, reply) => {
-    const p = req.principal as Principal;
-    await auth.revokeSession(p, p.sessionId, metaOf(req), 'logout');
+  app.post('/api/v1/auth/logout', async (req, reply) => {
+    const browser = wantsRefreshCookie(req);
+    const kept = browser ? req.cookies[REFRESH_COOKIE] : undefined;
+    if (req.headers.authorization !== undefined || !kept) {
+      await app.requireAuth(req);
+      const p = req.principal as Principal;
+      await auth.revokeSession(p, p.sessionId, metaOf(req), 'logout');
+    } else {
+      // A browser with no access token to hand (0.9.0): the session its
+      // cookie names ends, from the vault's own page only.
+      if (!fromOwnPage(req)) throw notFromOwnPage();
+      await auth.signOutByRefresh(kept, metaOf(req));
+    }
+    if (browser) clearRefreshCookie(req, reply);
     // A browser signing out forgets what it kept of this vault, including
     // what versions before 0.5.0 let it keep. Browsers act on it over https
     // and on localhost; apps ignore it.
@@ -180,6 +354,18 @@ export function registerAuth(
   app.get('/api/v1/auth/sessions', { preHandler: app.requireAuth }, async (req) => {
     return { items: await auth.listSessions(req.principal as Principal) };
   });
+
+  // Every other device of one's own signed out at once (0.9.0), once it's
+  // confirmed to be them: any credential they have.
+  app.post(
+    '/api/v1/auth/sessions/sign-out-others',
+    { preHandler: app.requireAuth },
+    async (req) => {
+      const p = req.principal as Principal;
+      await stepUp?.require(p, 'sign_out_others');
+      return auth.signOutOthers(p, metaOf(req));
+    },
+  );
 
   app.delete<{ Params: { id: string } }>(
     '/api/v1/auth/sessions/:id',
@@ -383,13 +569,40 @@ export function registerAuth(
   // Changing one while signed in. Not rate-limited beyond the global
   // ceiling: it already takes either the current password or a step-up.
   app.post('/api/v1/auth/password/change', { preHandler: app.requireAuth }, async (req, reply) => {
-    await passwords.change(req.principal as Principal, parse(changeBody, req.body), metaOf(req));
+    const p = req.principal as Principal;
+    const body = parse(changeBody, req.body);
+    const meta = metaOf(req);
+    // A current password tried is counted per session (0.9.0), as
+    // confirming it's you is, and reserved before it is checked.
+    const guard = auth.guard;
+    const attempt =
+      guard && body.current_password
+        ? await guard.begin(guard.subjectOfSession(p.sessionId))
+        : null;
+    try {
+      await passwords.change(p, body, meta);
+      if (guard && attempt) await guard.succeeded(attempt);
+    } catch (err) {
+      if (guard && attempt && err instanceof ApiError && err.code === 'invalid_credentials') {
+        await guard.failed(attempt, p.accountId, 'password', meta, 'step_up');
+      }
+      throw err;
+    } finally {
+      if (guard && attempt) await guard.release(attempt);
+    }
     return reply.status(204).send();
   });
 
   // And the three for somebody who cannot sign in at all.
   app.post('/api/v1/auth/password/forgot', tight, async (req, reply) => {
-    await passwords.forgot(parse(forgotBody, req.body).email, metaOf(req));
+    const address = parse(forgotBody, req.body).email;
+    // Answered after the same time whatever the address (0.9.0): the work
+    // goes on beside the wait, and is not waited for beyond it.
+    const answer = new Promise<void>((resolve) => setTimeout(resolve, FORGOT_ANSWER_MS));
+    void passwords.forgot(address, metaOf(req)).catch((err: unknown) => {
+      req.log.error({ err }, 'a forgotten password could not be answered');
+    });
+    await answer;
     // Always the same answer. Whether the address is known is not this
     // endpoint's news to give.
     return reply.status(202).send({
@@ -411,6 +624,7 @@ export function registerAuth(
   app.post('/api/v1/password-resets/complete', tight, async (req, reply) => {
     const body = parse(completeBody, req.body ?? {});
     const { email } = await passwords.reset(body.token, body.password, metaOf(req), body.code);
+    await auth.failuresCleared(email);
     // No session, as below.
     return reply.status(200).send({ email });
   });
@@ -443,6 +657,7 @@ export function registerAuth(
         parse(resetBody, req.body).password,
         metaOf(req),
       );
+      await auth.failuresCleared(email);
       // No session handed back on purpose: an account with two-step
       // sign-in must still be asked for its code, and a reset that
       // returned a session would walk straight past it.

@@ -50,6 +50,14 @@ export interface StoredSession {
 export interface TokenStore {
   load(): Promise<StoredSession | null>;
   save(session: StoredSession | null): Promise<void>;
+  /**
+   * This device's proof that it signed in before (0.9.0,
+   * `Tokens.device_proof`), kept across signing out — it is about the
+   * device, not the session. Optional: a store without these simply never
+   * sends one, and its sign-ins wait with everybody else's tries.
+   */
+  loadDeviceProof?(): Promise<string | null>;
+  saveDeviceProof?(proof: string): Promise<void>;
 }
 
 /**
@@ -147,6 +155,17 @@ export class SessionCore {
       role: tokens.role,
     };
     await this.store.save(this.stored);
+    if (tokens.device_proof && this.store.saveDeviceProof) {
+      await this.store.saveDeviceProof(tokens.device_proof);
+    }
+  }
+
+  /**
+   * The proof this device keeps that it signed in before (0.9.0), for
+   * `api.signIn`'s third argument; null where the store keeps none.
+   */
+  async deviceProof(): Promise<string | null> {
+    return this.store.loadDeviceProof ? this.store.loadDeviceProof() : null;
   }
 
   async clear(): Promise<void> {

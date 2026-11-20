@@ -16,6 +16,12 @@ export interface ErrorBody {
     reason?: string;
     /** A step-up only a passkey or a code answers, never the password (0.9.0). */
     factor?: true;
+    /**
+     * Seconds to wait before trying again, as Retry-After says (0.9.0):
+     * signing in waiting after too many failures (`sign_in_throttled`), and
+     * every other answer that sends Retry-After.
+     */
+    retry_after?: number;
   };
 }
 
@@ -51,6 +57,7 @@ export class ApiError extends Error {
     if (this.options.action !== undefined) error.action = this.options.action;
     if (this.options.reason !== undefined) error.reason = this.options.reason;
     if (this.options.factor === true) error.factor = true;
+    if (this.options.retryAfter !== undefined) error.retry_after = this.options.retryAfter;
     return { error };
   }
 }

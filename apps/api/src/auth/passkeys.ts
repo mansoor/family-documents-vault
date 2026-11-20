@@ -236,6 +236,13 @@ export class PasskeyService {
 
     const challenge = await this.takeChallenge('authenticate', credential.account_id, response);
 
+    // One of theirs, refused: a line in the person's Activity (0.9.0), never
+    // a wait — a passkey has nothing to guess, and is the way in that never
+    // waits.
+    const refusedHere = (err: ApiError): never => {
+      this.auth.guard?.noted(credential.account_id, meta);
+      throw err;
+    };
     let verification;
     try {
       verification = await verifyAuthenticationResponse({
@@ -257,16 +264,18 @@ export class PasskeyService {
       // means the key may have been copied, and "try again" is the wrong
       // advice.
       if (/counter/i.test(err instanceof Error ? err.message : '')) {
-        throw new ApiError(
-          401,
-          'passkey_rejected',
-          'That passkey looks like a copy. Sign in another way and remove it.',
+        return refusedHere(
+          new ApiError(
+            401,
+            'passkey_rejected',
+            'That passkey looks like a copy. Sign in another way and remove it.',
+          ),
         );
       }
-      if (unverified(err)) throw new ApiError(401, 'passkey_rejected', NOT_VERIFIED);
-      throw rejected();
+      if (unverified(err)) return refusedHere(new ApiError(401, 'passkey_rejected', NOT_VERIFIED));
+      return refusedHere(rejected());
     }
-    if (!verification.verified) throw rejected();
+    if (!verification.verified) return refusedHere(rejected());
 
     await this.db
       .updateTable('credential')

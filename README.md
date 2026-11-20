@@ -771,7 +771,7 @@ npm or pnpm and no token (from CI too):
 ```json
 {
   "dependencies": {
-    "@fdv/client": "https://github.com/mansoor/family-documents-vault/releases/download/v0.9.0-dev.74/fdv-client-0.9.0-dev.74.tgz"
+    "@fdv/client": "https://github.com/mansoor/family-documents-vault/releases/download/v0.9.0-dev.75/fdv-client-0.9.0-dev.75.tgz"
   }
 }
 ```
@@ -1032,9 +1032,11 @@ there moves it with "Use the server's default" in Settings → Time zone.
 - A refresh token presented twice is treated as stolen and that device is signed out — with one exception, for answers that never arrive (a phone on a network that loses them, a browser page reloaded while it was refreshing): the token just replaced may be presented once more, within 30 seconds, by the same client — the same app installation, or the same browser from the same address. Anyone else presenting it, or presenting it later, ends the session. Every refresh token names the session it belongs to, so this holds for any token the vault ever gave that session, however many refreshes ago: somebody who copied a token and used it, and its successor, before you did is caught when yours comes in, and you are when theirs does. (A device that still holds a token from before this kind is given one of the new kind at its next refresh, and the vault remembers the old token from then on, however many refreshes later; tokens it had replaced before the upgrade are remembered only as before.)
 - **Sign out everywhere.** An owner can sign somebody out of every device at once from their page (**People → their name → Account**), with a passkey or a code from an authenticator app — for a lost phone, or a password somebody else knows. Another owner too, who is told by email; anybody it is about is emailed. Their sign-in stays as it was: they sign in again with their own password. To keep them out, lock their sign-in instead.
 - When a session ends, the app is told why — it expired, it was signed out, its token was used twice, or the person was taken out of the household — so it can say so in plain words.
-- Every signed-in device is listed in **Settings → Your account → Signed-in devices**; any of them can be signed out from another.
+- Every signed-in device is listed in **Settings → Your account → Signed-in devices**; any of them can be signed out from another, and **Sign out my other devices** signs out every one but the one you are using, once you have confirmed it's you (asked first, as anything that cannot be undone is).
+- **In a browser, the refresh token is never where the page's scripts can read it.** It is an `HttpOnly` cookie, `SameSite=Strict`, sent back only to `/api/v1/auth`; the page keeps only the 15-minute access token, in memory, and renews it with the cookie when it loads. The cookie is `Secure` whenever the vault was reached over **https** — as the proxy in front of it says, believed only from the vault's own network (`FDV_TRUST_PROXY`) — so once given over https it never travels over plain http. Over plain http on the home network (port 8080) a browser would not keep a `Secure` cookie, so there it is not; another reason to [put the vault behind https](#reaching-it-from-the-rest-of-the-house). A browser still signed in from before 0.9.0 spends the token it kept, once, for the cookie, and forgets it. The phone app, and any other client, keeps its refresh token as before.
+- **A code from an authenticator app works once.** A code already given, or one from before it, is refused at signing in, at confirming it's you and at setting the app up: a code seen over your shoulder, or passed on by a copy of the sign-in page, does not work a second time. Wait for the next one.
 - The token signing key is derived from `FDV_MASTER_KEY`. [Rotating the master key](#rotating-the-master-key) signs everyone out.
-- Sign-in attempts are limited to 10 per minute per address.
+- Sign-in attempts are limited to 10 per minute per address, and **five failures on one account make signing in to it from an unknown device wait**: a minute, then five, then fifteen — never longer — whichever addresses they come from. Devices that have signed in before are counted on their own. See [Security events](#security-events).
 
 ### Inviting the rest of the family
 
@@ -2038,6 +2040,68 @@ alert per new installation, naming the phone ("the app on a Google Pixel
 8a"). A browser only describes itself, so a browser update can make a
 familiar computer look new: it errs towards telling you about a sign-in you
 already knew about rather than staying quiet about one you did not.
+
+### Security events
+
+**Failed sign-ins are counted per account.** A wrong password, or a code
+(from an authenticator app or by text) that didn't match, counts against the
+account, whichever address it came from. After **five**, signing in to that
+account with a password or a code waits **a minute**; the next failure makes
+it wait **five minutes**, and every one after that **fifteen**, never longer.
+While it waits the vault answers `429 sign_in_throttled`, with `retry_after`
+(seconds) and `Retry-After`, even to the right password. The count starts
+again 24 hours after the first failure it counts, when a sign-in succeeds,
+or when the password is reset. Each try is reserved before it is checked, so
+tries sent at the same moment cannot get past the limit. An address with no
+account here is counted and answered exactly the same, so none of this tells
+anybody which addresses have accounts. "Forgot password" also answers after
+the same half-second whatever the address.
+
+**Your own devices are never made to wait by somebody else.** Each sign-in
+gives the device a proof that it has signed in to the account — in a
+browser an `HttpOnly` cookie (`fdv_device`, beside the refresh token's, with
+the same rules), to an app that keeps it a `device_proof` it sends back —
+good for 90 days and renewed at each sign-in. A device that shows one is
+counted on its own: whoever keeps failing from elsewhere makes only
+_unknown_ devices wait, never the phone or browser you already use (its own
+wrong tries still make it wait). The proof opens nothing; it only keeps your
+device's count apart. An app that doesn't keep it (the phone app until it
+does) is counted with the unknown devices. **A passkey never waits**: it has
+nothing to guess.
+
+**Confirming it's you is counted per session.** A wrong password or code
+when confirming it's you, or a wrong current password when changing it,
+counts on that session alone — only somebody already signed in reaches it —
+and waits in the same steps, never making your sign-in wait.
+
+**What is recorded.** Each failure is a line in the person's **Activity** —
+_A sign-in to Sam's account failed: the password was wrong_ — saying which
+step failed (password, code or passkey) and whether signing in now waits,
+never what was typed nor the address, at most ten lines an hour per account.
+The person and the owners see these lines; nobody else does. A failure for an
+address with no account is never in anybody's Activity.
+
+**Who is told.** After five failures in an incident — it lasts until a day
+passes with no failure — the person is emailed (and pushed to on browsers
+where they turned notifications on, and sent one text if they asked for
+alerts by text), **once per incident**. If the password was right and only
+the code was wrong, the email says so: somebody knows the password. For an
+owner's account, **the other owners are emailed too**, once per incident
+(never texted).
+
+**In the API's log.** Every failure and every wait is a line in the API's
+log, with the account's id (never an address typed) and where it came from:
+
+```bash
+docker compose logs api | grep '"event":"sign_in_failed"'
+```
+
+```bash
+docker compose logs api | grep '"event":"sign_in_throttled"'
+```
+
+`docker compose logs --since 24h api` narrows either to the last day. New
+devices signing in are covered [above](#when-a-new-device-signs-in).
 
 ## How your files are protected
 

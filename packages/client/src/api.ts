@@ -210,6 +210,7 @@ import type {
   MyCaregivers,
   PersonCaregivers,
 } from '@fdv/shared';
+import { REFRESH_COOKIE_HEADER, REFRESH_COOKIE_MODE } from '@fdv/shared';
 import type { Http, ResponseLike, UploadBody } from './http.js';
 import {
   batchItemUpload,
@@ -289,10 +290,16 @@ export function createApi(http: Http) {
       email: string;
       password: string;
     }) => request<Tokens>('/api/v1/setup', { method: 'POST', body }),
-    signIn: (email: string, password: string) =>
+    /**
+     * `deviceProof` (0.9.0): the `Tokens.device_proof` this device was given
+     * at its last sign-in (`SessionCore.deviceProof()` keeps it, where the
+     * store can). Sent, failed tries from anywhere else never make this
+     * device wait (`429 sign_in_throttled`). Left out, as before.
+     */
+    signIn: (email: string, password: string, deviceProof?: string | null) =>
       request<Tokens | MfaChallenge>('/api/v1/auth/password', {
         method: 'POST',
-        body: { email, password },
+        body: deviceProof ? { email, password, device_proof: deviceProof } : { email, password },
       }),
     /**
      * The second step. `method` (0.9.0, `features.sms_codes`) says which code
@@ -315,7 +322,30 @@ export function createApi(http: Http) {
       request<TextCodeSent>('/api/v1/auth/mfa/text', { method: 'POST', body: { mfa_token } }),
     refresh: (refresh_token: string) =>
       request<Tokens>('/api/v1/auth/refresh', { method: 'POST', body: { refresh_token } }),
+    /**
+     * A browser's refresh (0.9.0): the refresh token is the HttpOnly cookie
+     * the vault set, never one the page holds; the answer's `refresh_token`
+     * is empty, and the next is in the cookie. For the vault's own page
+     * only (`403 cross_site_refused` otherwise); no cookie, `401
+     * session_ended`. A phone has no use for it.
+     */
+    refreshWithCookie: () =>
+      request<Tokens>('/api/v1/auth/refresh', {
+        method: 'POST',
+        body: {},
+        headers: { [REFRESH_COOKIE_HEADER]: REFRESH_COOKIE_MODE },
+      }),
     logout: (token: string) => request<void>('/api/v1/auth/logout', { method: 'POST', token }),
+    /**
+     * Signing a browser out with no access token to hand (0.9.0): the
+     * session its cookie names ends, and the cookie with it. `204` whether
+     * or not there was one.
+     */
+    logoutWithCookie: () =>
+      request<void>('/api/v1/auth/logout', {
+        method: 'POST',
+        headers: { [REFRESH_COOKIE_HEADER]: REFRESH_COOKIE_MODE },
+      }),
     me: (token: string) => request<Me>('/api/v1/me', { token }),
     /**
      * The person has seen that an owner made a link to hand over for their
@@ -328,6 +358,18 @@ export function createApi(http: Http) {
       request<{ items: SessionRow[] }>('/api/v1/auth/sessions', { token }),
     revokeSession: (token: string, id: string) =>
       request<void>(`/api/v1/auth/sessions/${id}`, { method: 'DELETE', token }),
+    /**
+     * Every other device of one's own signed out at once (0.9.0): every
+     * session but this one ends, and its devices are told nothing more.
+     * Asks them to confirm it's them first, with any credential (`403
+     * step_up_required`, `sign_out_others`). How many ended.
+     */
+    signOutOtherDevices: (token: string) =>
+      request<{ ended: number }>('/api/v1/auth/sessions/sign-out-others', {
+        method: 'POST',
+        body: {},
+        token,
+      }),
     totpEnrol: (token: string) =>
       request<{ secret: string; otpauth_url: string }>('/api/v1/auth/totp/enrol', {
         method: 'POST',

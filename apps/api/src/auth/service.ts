@@ -25,6 +25,8 @@ import argon2 from 'argon2';
 import { sql } from 'kysely';
 import { ApiError } from '../errors.js';
 import type { SetupToken } from './setup-token.js';
+import { KnownDevices, type SignInGuard } from './sign-in-guard.js';
+import { CODE_USED_MESSAGE, type CodeCheck } from './totp.js';
 import {
   ACCESS_TTL_SECONDS,
   hashRefreshToken,
@@ -70,6 +72,11 @@ export interface RequestMeta {
   userAgent?: string | null;
   /** The app installation making the request (X-FDV-Installation); browsers send none. */
   installationId?: string | null;
+  /**
+   * The proof this device keeps that it signed in to an account before
+   * (0.9.0): a browser's cookie, or an app's `device_proof` sent back.
+   */
+  deviceProof?: string | null;
 }
 
 /**
@@ -303,9 +310,13 @@ export class AuthService {
      */
     private readonly mfa: {
       isEnabled: (accountId: string) => Promise<boolean>;
-      mfaToken: (accountId: string, proof?: string) => Promise<string>;
-      mfaClaims: (token: string) => Promise<{ accountId: string; proof: string | null }>;
+      mfaToken: (accountId: string, proof?: string, device?: string | null) => Promise<string>;
+      mfaClaims: (
+        token: string,
+      ) => Promise<{ accountId: string; proof: string | null; device?: string | null }>;
       verify: (accountId: string, code: string) => Promise<boolean>;
+      /** The code checked and taken (0.9.0): right, wrong, or used already. */
+      checkCode?: (accountId: string, code: string) => Promise<CodeCheck>;
     } | null = null,
     /** Pushes the worker sends (4.13): "you were signed out" to a session's phones. */
     private readonly push: (input: PushRequest) => Promise<void> = async () => undefined,
@@ -321,11 +332,24 @@ export class AuthService {
        * test harness, whose tests are not about it, unless one asks.
        */
       twoStep?: boolean;
+      /**
+       * Failed sign-ins counted per account (0.9.0, sign-in-guard.ts): a
+       * wait after five in a row, a line in the person's Activity, an alert.
+       */
+      guard?: SignInGuard;
     } = {},
   ) {
     this.familyKey = refreshFamilyKey(signingKey);
     this.twoStepHeld = opts.twoStep ?? true;
+    this.guard = opts.guard ?? null;
+    this.devices = new KnownDevices(signingKey);
   }
+
+  /** The proofs devices keep that they signed in before (0.9.0, sign-in-guard.ts). */
+  readonly devices: KnownDevices;
+
+  /** Failed sign-ins, counted per account (0.9.0); none where nothing asked for it. */
+  readonly guard: SignInGuard | null;
 
   /** Whether two-step sign-in is held to (the constructor's `twoStep`). */
   private readonly twoStepHeld: boolean;
@@ -512,12 +536,54 @@ export class AuthService {
       .where('email', '=', email)
       .executeTakeFirst();
 
-    const hash = account?.password_hash ?? (await DUMMY_HASH_PROMISE);
-    const ok = await argon2.verify(hash, password);
-    if (!account?.password_hash || !ok || account.disabled_at) throw invalidCredentials();
+    // Counted (0.9.0), the try reserved before it is checked: from a device
+    // that signed in to the account before, on that device's own count;
+    // from anywhere else, on the account's; an address with no account on
+    // its own, waiting and answered just as one with an account is.
+    const guard = this.guard;
+    const device = account ? this.devices.deviceOf(account.id, meta.deviceProof) : null;
+    const subject = guard
+      ? account
+        ? device
+          ? guard.subjectOfDevice(account.id, device)
+          : guard.subjectOfAccount(account.id)
+        : guard.subjectOfEmail(email)
+      : null;
+    const attempt = guard && subject ? await guard.begin(subject) : null;
+    try {
+      const hash = account?.password_hash ?? (await DUMMY_HASH_PROMISE);
+      const ok = await argon2.verify(hash, password);
+      if (!account?.password_hash || !ok || account.disabled_at) {
+        if (guard && attempt) {
+          await guard.failed(
+            attempt,
+            account && !account.disabled_at ? account.id : null,
+            'password',
+            meta,
+          );
+        }
+        throw invalidCredentials();
+      }
+      const answer = await this.afterPassword(account.id, account.password_hash, meta, device);
+      // In with the password: this count starts again. A second step to
+      // come is not that: its tries go on the same count.
+      if (guard && attempt && 'access_token' in answer) await guard.succeeded(attempt);
+      return answer;
+    } finally {
+      if (guard && attempt) await guard.release(attempt);
+    }
+  }
 
+  /** A password proved right: the second step asked for, or the session opened. */
+  private async afterPassword(
+    accountId: string,
+    passwordHash: string,
+    meta: RequestMeta,
+    device: string | null,
+  ): Promise<Tokens | MfaChallenge> {
+    const account = { id: accountId };
     // What the password proved goes on to where the session opens (5.29).
-    const proof = passwordProof(account.password_hash);
+    const proof = passwordProof(passwordHash);
     // A code by text that was the only second step and could not be asked
     // for, or sent (SMS3): the password alone lets them in, and the owners
     // are told (the owner's decision of 12 Nov 2026).
@@ -538,7 +604,7 @@ export class AuthService {
           : { asks: false };
       if (!totp && 'cannot' in text) skipped = text.cannot;
       if (totp || passkey || text.asks) {
-        const mfaToken = await this.mfa.mfaToken(account.id, proof);
+        const mfaToken = await this.mfa.mfaToken(account.id, proof, device);
         if (!text.asks) {
           return passkey
             ? {
@@ -625,21 +691,68 @@ export class AuthService {
     method?: 'totp' | 'text',
   ): Promise<Tokens> {
     if (!this.mfa) throw invalidCredentials();
-    const { accountId, proof } = await this.mfa.mfaClaims(mfaToken);
+    const { accountId, proof, device } = await this.mfa.mfaClaims(mfaToken);
+    // Codes tried are counted as the password's tries were (0.9.0), across
+    // every interim token — a new one each five minutes buys no more — and
+    // reserved before they are checked: on the known device's own count, if
+    // the password came from one, else the account's.
+    const guard = this.guard;
+    const subject = guard
+      ? device
+        ? guard.subjectOfDevice(accountId, device)
+        : guard.subjectOfAccount(accountId)
+      : null;
+    const attempt = guard && subject ? await guard.begin(subject) : null;
+    try {
+      const tokens = await this.secondStep(accountId, proof, code, meta, method, async () => {
+        if (guard && attempt) await guard.failed(attempt, accountId, 'code', meta);
+      });
+      if (guard && attempt) await guard.succeeded(attempt);
+      return tokens;
+    } finally {
+      if (guard && attempt) await guard.release(attempt);
+    }
+  }
+
+  /** The second step's code checked, and the session opened. */
+  private async secondStep(
+    accountId: string,
+    proof: string | null,
+    code: string,
+    meta: RequestMeta,
+    method: 'totp' | 'text' | undefined,
+    wrongCode: () => Promise<void>,
+  ): Promise<Tokens> {
+    if (!this.mfa) throw invalidCredentials();
     if (method !== 'totp' && this.textCodes) {
       const text = await this.textCodes.forSignIn(accountId);
       const byText = method === 'text' || (text !== null && !(await this.mfa.isEnabled(accountId)));
       if (byText) {
         if (!text || (await this.textBarred(accountId))) throw smsCodeNotOffered();
-        await this.textCodes.verify(accountId, 'sign_in', code);
+        try {
+          await this.textCodes.verify(accountId, 'sign_in', code);
+        } catch (err) {
+          if (err instanceof ApiError && err.code === 'sms_code_wrong') await wrongCode();
+          throw err;
+        }
         if (proof === null) throw invalidCredentials();
         return this.openSessionForAccount(accountId, meta, 'password+text', {
           password: proof,
         });
       }
     }
-    if (!(await this.mfa.verify(accountId, code))) {
-      throw new ApiError(401, 'totp_invalid', "That code didn't match. Try the current one.");
+    const found: CodeCheck = this.mfa.checkCode
+      ? await this.mfa.checkCode(accountId, code)
+      : (await this.mfa.verify(accountId, code))
+        ? 'ok'
+        : 'wrong';
+    if (found !== 'ok') {
+      await wrongCode();
+      throw new ApiError(
+        401,
+        'totp_invalid',
+        found === 'used' ? CODE_USED_MESSAGE : "That code didn't match. Try the current one.",
+      );
     }
     // A token from before 5.29 carries no proof: it is no longer than five
     // minutes old, and asks for the password again.
@@ -697,7 +810,7 @@ export class AuthService {
       memberId: m.member_id,
       role: m.role,
     };
-    return withPrincipal(this.db, asked, async (trx) => {
+    const opened = await withPrincipal(this.db, asked, async (trx) => {
       // The membership as it is now, held until the session is open (5.28):
       // a lock at the same moment waits for this, and then ends the session
       // it made; or this waits for the lock, and is refused.
@@ -775,6 +888,12 @@ export class AuthService {
       });
       return this.openSession(trx, p, meta, method);
     });
+    // In with a passkey (0.9.0): the account's own count starts again. (A
+    // password or a code settles the count its try was reserved on.)
+    if (this.guard && method === 'passkey') {
+      await this.guard.clear(this.guard.subjectOfAccount(account.id));
+    }
+    return opened;
   }
 
   /**
@@ -817,12 +936,21 @@ export class AuthService {
       .returning('id')
       .executeTakeFirstOrThrow();
     await this.noteDevice(trx, p, meta);
-    return this.tokens(
+    const tokens = await this.tokens(
       { ...p, sessionId: session.id },
       refresh,
       expiresAt,
       await this.twoStepPendingIn(trx, p, factor),
     );
+    // This device is one the account knows now (0.9.0): its proof, for 90
+    // days, the same device's renewed when it gave one.
+    return {
+      ...tokens,
+      device_proof: this.devices.issue(
+        p.accountId,
+        this.devices.deviceOf(p.accountId, meta.deviceProof) ?? undefined,
+      ),
+    };
   }
 
   /**
@@ -1181,6 +1309,7 @@ export class AuthService {
         )
         .select([
           'session.id',
+          'session.account_id',
           'account_household.role',
           'account_household.member_id',
           'account_household.suspended_at',
@@ -1191,16 +1320,24 @@ export class AuthService {
         .where('session.id', '=', claims.sid)
         .where('session.revoked_at', 'is', null)
         .executeTakeFirst();
-      if (row) {
+      // Whose the session is, as the session says (0.9.0): never the
+      // token's word alone.
+      if (row && row.account_id === claims.sub) {
         pending = await this.twoStepPendingIn(
           trx,
-          { accountId: claims.sub, householdId: claims.hid, role: row.role },
+          { accountId: row.account_id, householdId: claims.hid, role: row.role },
           row.factor_verified_at !== null,
         );
       }
       return row;
     });
     if (!open) throw await this.whyEnded(claims.hid, claims.sid);
+    // A token naming a real session but somebody else's account: made with
+    // the signing key by whoever has it, never by the vault. Refused as no
+    // sign-in at all.
+    if (open.account_id !== claims.sub) {
+      throw new ApiError(401, 'unauthenticated', 'Please sign in.');
+    }
     // Locked, or paused after a restore (5.28): its sessions ended with it,
     // and any that did not (opened at that very moment, or written by hand)
     // answers nothing.
@@ -1215,7 +1352,7 @@ export class AuthService {
     }
     if (pending && !opts.enrolling) throw twoStepSetupRequired(open.role, pending);
     const who = {
-      accountId: claims.sub,
+      accountId: open.account_id,
       sessionId: claims.sid,
       householdId: claims.hid,
       memberId: open.member_id,
@@ -1273,6 +1410,21 @@ export class AuthService {
     // Not revoked, yet no membership joins it: the person left the household.
     if (!row.revoked_at) return sessionEnded('membership removed', 'removed');
     return sessionEnded('session revoked', endReasonOf(row.revoked_reason));
+  }
+
+  /**
+   * A password reset done (0.9.0): whoever spent the link has the address,
+   * so the account's failed sign-ins start again, and signing in waits no
+   * longer.
+   */
+  async failuresCleared(email: string): Promise<void> {
+    if (!this.guard) return;
+    const a = await this.db
+      .selectFrom('account')
+      .select(['id'])
+      .where('email', '=', email)
+      .executeTakeFirst();
+    if (a) await this.guard.clear(this.guard.subjectOfAccount(a.id));
   }
 
   async emailOf(accountId: string): Promise<string> {
@@ -1343,7 +1495,80 @@ export class AuthService {
     });
     await this.tellEnded(p.householdId, phones);
   }
+
+  /**
+   * "Sign out my other devices" (0.9.0): every session of this person's but
+   * the one asking ends, and nothing more is pushed to those devices. The
+   * caller has had them confirm it's them. Answers how many ended.
+   */
+  async signOutOthers(p: Principal, meta: RequestMeta): Promise<{ ended: number }> {
+    const done = await withPrincipal(this.db, p, async (trx) => {
+      await stillSignedIn(trx, p);
+      const ended = await trx
+        .updateTable('session')
+        .set({ revoked_at: new Date(), revoked_reason: SIGNED_OUT_OTHERS_REASON })
+        .where('account_id', '=', p.accountId)
+        .where('id', '!=', p.sessionId)
+        .where('revoked_at', 'is', null)
+        .executeTakeFirst();
+      const count = Number(ended.numUpdatedRows);
+      const phones = await endDevices(trx, {
+        accountId: p.accountId,
+        exceptSessionId: p.sessionId,
+      });
+      await appendAudit(trx, {
+        householdId: p.householdId,
+        actorAccountId: p.accountId,
+        action: 'auth.signed_out_others',
+        detail: { sessions: count },
+        ip: meta.ip,
+      });
+      return { count, phones };
+    });
+    await this.tellEnded(p.householdId, done.phones);
+    return { ended: done.count };
+  }
+
+  /**
+   * Signing out a browser that has no access token to hand (0.9.0): the
+   * refresh token in its cookie names the session, which ends as signing
+   * out ends it. Only the token the session holds now: a spent one is
+   * nothing here (a refresh is where a spent one is answered). Nothing to
+   * end answers the same.
+   */
+  async signOutByRefresh(refreshToken: string, meta: RequestMeta): Promise<void> {
+    const parsed = parseRefreshToken(refreshToken);
+    if (!parsed) return;
+    const presented = hashRefreshToken(refreshToken);
+    const scope = { householdId: parsed.householdId, actor: ANONYMOUS };
+    const ended = await withScope(this.db, scope, async (trx) => {
+      const s = await trx
+        .updateTable('session')
+        .set({ revoked_at: new Date(), revoked_reason: 'logout' })
+        .where('refresh_hash', '=', presented)
+        .where('revoked_at', 'is', null)
+        .returning(['id', 'account_id', 'household_id'])
+        .executeTakeFirst();
+      if (!s) return null;
+      await appendAudit(trx, {
+        householdId: s.household_id,
+        actorAccountId: s.account_id,
+        action: 'auth.signed_out',
+        objectType: 'session',
+        objectId: s.id,
+        ip: meta.ip,
+      });
+      return {
+        householdId: s.household_id,
+        phones: await endDevices(trx, { accountId: s.account_id, sessionIds: [s.id] }),
+      };
+    });
+    if (ended) await this.tellEnded(ended.householdId, ended.phones);
+  }
 }
+
+/** Why sessions ended when their person signed out their other devices (0.9.0). */
+export const SIGNED_OUT_OTHERS_REASON = 'signed out from another device';
 
 /**
  * Whether the one-time replay of a refresh token is allowed (0.4.11): the

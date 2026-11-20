@@ -346,6 +346,8 @@ describe.skipIf(!testAdminUrl())('demo-seed.mjs --corpus', () => {
         .sort();
       expect(written).toEqual(manifest.files.map((f) => f.path).sort());
       // Everybody the papers name is in the family, as the papers name them.
+      // Each code is taken once (0.9.0): the script's last is not used again.
+      await new Promise((r) => setTimeout(r, 30_000 - (Date.now() % 30_000) + 250));
       const asked = (
         await h.app.inject({ method: 'POST', url: '/api/v1/auth/password', payload: owner })
       ).json<{ mfa_token: string }>();

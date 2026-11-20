@@ -37,6 +37,53 @@ async function signedInVault() {
   return { vault, api, tokens: t };
 }
 
+describe('the device proof (0.9.0)', () => {
+  it('is kept where the store can keep it, survives signing out, and is sent back with a sign-in', async () => {
+    const { tokens } = await signedInVault();
+    let kept: string | null = null;
+    const { store } = memoryStore();
+    const keeping: TokenStore = {
+      ...store,
+      loadDeviceProof: async () => kept,
+      saveDeviceProof: async (p) => {
+        kept = p;
+      },
+    };
+    const session = new SessionCore({ refresh: async () => tokens }, keeping);
+    await session.accept({ ...tokens, device_proof: 'kd1.proof' });
+    await session.clear();
+    expect(await session.deviceProof()).toBe('kd1.proof');
+    // A store that keeps none: none, and nothing breaks.
+    const plain = new SessionCore({ refresh: async () => tokens }, memoryStore().store);
+    await plain.accept({ ...tokens, device_proof: 'kd1.proof' });
+    expect(await plain.deviceProof()).toBeNull();
+
+    const sent: unknown[] = [];
+    const api = createApi(
+      createHttp({
+        baseUrl: 'https://vault.example',
+        fetch: async (_url, init) => {
+          sent.push(JSON.parse(String(init.body)));
+          return {
+            ok: true,
+            status: 200,
+            headers: { get: () => null },
+            json: async () => tokens,
+            text: async () => '',
+            arrayBuffer: async () => new ArrayBuffer(0),
+          };
+        },
+      }),
+    );
+    await api.signIn('owner@example.test', 'pw', await session.deviceProof());
+    await api.signIn('owner@example.test', 'pw');
+    expect(sent).toEqual([
+      { email: 'owner@example.test', password: 'pw', device_proof: 'kd1.proof' },
+      { email: 'owner@example.test', password: 'pw' },
+    ]);
+  });
+});
+
 describe('the session core', () => {
   it('five calls that find the access token expired make exactly one refresh', async () => {
     const { vault, api, tokens } = await signedInVault();

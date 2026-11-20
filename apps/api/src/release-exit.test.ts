@@ -383,6 +383,13 @@ const SIGN_IN_AGAIN: ReadonlySet<string> = new Set(['unauthenticated', 'session_
 const PHOTO_BYTES = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46]);
 const IS_DAY = '2031-01-01';
 const NOBODY = 'nobody-541@example.test';
+/**
+ * An address with no account, a new one each try (0.9.0): the same one
+ * tried by every attacker would wait after five, as an account's does, and
+ * the routes after would not be tried.
+ */
+let nobodyTries = 0;
+const nobodyNew = () => `nobody-541-${++nobodyTries}@example.test`;
 
 /**
  * An owner's power from before Phase 5 over somebody else, asked with any
@@ -440,7 +447,7 @@ const RULES: Record<string, Rule> = {
   },
   'POST /api/v1/auth/password': {
     who: 'public',
-    body: () => ({ email: NOBODY, password: 'not anybody’s password' }),
+    body: () => ({ email: nobodyNew(), password: 'not anybody’s password' }),
   },
   'POST /api/v1/auth/mfa': { who: 'public', body: () => ({ mfa_token: 'x', code: '000000' }) },
   // A sign-in's code by text (0.9.0, SMS3): only after the password, by its
@@ -517,6 +524,9 @@ const RULES: Record<string, Rule> = {
   'DELETE /api/v1/me/reset-notice': { who: 'signedIn' },
   'GET /api/v1/auth/sessions': { who: 'signedIn' },
   'DELETE /api/v1/auth/sessions/:id': { who: 'signedIn' },
+  // Every other device of one's own signed out (0.9.0): one's own alone,
+  // and late, as it ends the attacker's other sessions.
+  'POST /api/v1/auth/sessions/sign-out-others': { who: 'signedIn', body: () => ({}), last: true },
   'GET /api/v1/auth/step-up': { who: 'signedIn' },
   'POST /api/v1/auth/step-up': {
     who: 'signedIn',
@@ -1692,7 +1702,10 @@ describe.skipIf(!testAdminUrl())('the release exit (Phase 5, and Phase 6 for 0.7
   };
 
   beforeAll(async () => {
-    h = await createHarness({ rateLimitPerMinute: 100_000 });
+    // Failed sign-ins counted per account, and a code taken once (0.9.0),
+    // held to as production holds to them: every attacker's try at every
+    // route, with them in force.
+    h = await createHarness({ rateLimitPerMinute: 100_000, signInGuard: true, totpReplay: true });
     admin = createPool(h.adminUrl, 2);
     h.dns.set('ntfy.example.test', ['93.184.216.34']);
     olivia = await h.setup({

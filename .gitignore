@@ -49,5 +49,7 @@ Thumbs.db
 !.vscode/extensions.json
 *.log
 
-# The e2e owner's authenticator key (e2e/vault.ts), kept between specs
+# The e2e owner's authenticator key (e2e/vault.ts), kept between specs, and
+# the time step of the last code given (each is taken once since 0.9.0)
 .e2e-owner-totp
+.e2e-owner-totp-step

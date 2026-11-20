@@ -1,5 +1,5 @@
 import { createHmac } from 'node:crypto';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync, rmSync, writeFileSync } from 'node:fs';
 import type { APIRequestContext, Page, Response } from '@playwright/test';
 
 /**
@@ -26,9 +26,36 @@ export function setupCode(): string {
  * sign in without one.
  */
 const OWNER_KEY_FILE = new URL('../.e2e-owner-totp', import.meta.url);
+/**
+ * The time step (30 s) of the last code given, beside the key: the vault
+ * takes each code once (0.9.0), so the next sign-in — another spec's, or
+ * scripts/ci-restore.sh's — gives a later one.
+ */
+const OWNER_STEP_FILE = new URL('../.e2e-owner-totp-step', import.meta.url);
 
 export function keepOwnerKey(secret: string): void {
   writeFileSync(OWNER_KEY_FILE, `${secret.trim()}\n`);
+  // A new key's codes are counted afresh.
+  rmSync(OWNER_STEP_FILE, { force: true });
+}
+
+/**
+ * A code the vault has not taken yet (0.9.0): of the step after the last
+ * one given, if it is no later than the next step (the vault takes a code a
+ * step either side of now); otherwise waited for, 30 seconds at most.
+ */
+export async function freshTotpCode(secret: string): Promise<string> {
+  const now = () => Math.floor(Date.now() / 30_000);
+  let last: number;
+  try {
+    last = Number(readFileSync(OWNER_STEP_FILE, 'utf8').trim());
+  } catch {
+    last = -1;
+  }
+  const want = Math.max(now(), Number.isFinite(last) ? last + 1 : now());
+  while (want > now() + 1) await new Promise((resolve) => setTimeout(resolve, 1000));
+  writeFileSync(OWNER_STEP_FILE, `${want}\n`);
+  return totpCode(secret, want * 30_000);
 }
 
 export function ownerKey(): string {
@@ -64,7 +91,7 @@ export function totpCode(secret: string, at = Date.now()): string {
 export async function finishSignIn(page: Page, answer: Response): Promise<string> {
   const body = (await answer.json()) as { access_token?: string; mfa_required?: boolean };
   if (body.access_token) return body.access_token;
-  await page.getByLabel('Code', { exact: true }).fill(totpCode(ownerKey()));
+  await page.getByLabel('Code', { exact: true }).fill(await freshTotpCode(ownerKey()));
   const [done] = await Promise.all([
     page.waitForResponse((r) => r.url().endsWith('/api/v1/auth/mfa') && r.ok()),
     page.getByRole('button', { name: 'Continue' }).click(),
@@ -83,7 +110,7 @@ export async function ownerToken(
   const body = (await res.json()) as { access_token?: string; mfa_token?: string };
   if (body.access_token) return body.access_token;
   const second = await request.post('/api/v1/auth/mfa', {
-    data: { mfa_token: body.mfa_token, code: totpCode(ownerKey()) },
+    data: { mfa_token: body.mfa_token, code: await freshTotpCode(ownerKey()) },
   });
   if (!second.ok()) throw new Error(`the second step failed: ${second.status()}`);
   return ((await second.json()) as { access_token: string }).access_token;

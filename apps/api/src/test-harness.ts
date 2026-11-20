@@ -24,6 +24,7 @@ import { Kysely, PostgresDialect, type LogEvent } from 'kysely';
 import { buildApp } from './app.js';
 import { AuthService, type Tokens } from './auth/service.js';
 import { codeFor, TotpService } from './auth/totp.js';
+import { SignInGuard } from './auth/sign-in-guard.js';
 import { deriveSigningKey } from './auth/tokens.js';
 import { loadConfig } from './config.js';
 import type { ChecklistReader, Proposals } from './documents/proposal-pool.js';
@@ -102,6 +103,8 @@ export const TEST_SETUP_TOKEN = 'test-setup-code-of-the-harness-0001';
 export interface Harness {
   app: FastifyInstance;
   db: Db;
+  /** Failed sign-ins counted per account (0.9.0): `settled()` waits for its lines and alerts. */
+  guard: SignInGuard;
   /** The owning role, for fixtures that must go round the application role. */
   adminUrl: string;
   /** The application role, for a test that needs a pool of its own (one connection, say). */
@@ -251,6 +254,18 @@ export interface HarnessOptions {
    * tests that are not about it sign owners in with a password alone.
    */
   twoStep?: boolean;
+  /**
+   * Failed sign-ins counted per account (0.9.0): a wait after five in a
+   * row, the activity line, the alerts. Off unless a test asks, as two-step
+   * sign-in is: the tests not about it fail sign-ins on purpose, often.
+   */
+  signInGuard?: boolean;
+  /**
+   * A code from an authenticator app refused a second time (0.9.0). Off
+   * unless a test asks: the tests not about it give the same code twice in
+   * thirty seconds, as nobody signing in does.
+   */
+  totpReplay?: boolean;
 }
 
 /** The key the harness's `mail.to_address` jobs are sealed under, as the worker's are. */
@@ -440,7 +455,11 @@ export async function createHarness(opts: HarnessOptions = {}): Promise<Harness>
     db,
     deriveKey(TEST_MASTER, 'totp-secrets'),
     deriveSigningKey(TEST_MASTER),
+    { refuseReplay: opts.totpReplay ?? false },
   );
+  const guard = new SignInGuard(db, deriveSigningKey(TEST_MASTER), alert, {
+    enabled: opts.signInGuard ?? false,
+  });
   const auth = new AuthService(
     db,
     deriveSigningKey(TEST_MASTER),
@@ -450,7 +469,7 @@ export async function createHarness(opts: HarnessOptions = {}): Promise<Harness>
     totp,
     push,
     textCodes,
-    { twoStep: opts.twoStep ?? false },
+    { twoStep: opts.twoStep ?? false, guard },
   );
   auth.useSetupToken(new SetupToken(TEST_SETUP_TOKEN));
   const passkeys = new PasskeyService(
@@ -462,7 +481,7 @@ export async function createHarness(opts: HarnessOptions = {}): Promise<Harness>
   let joined = 1;
   /** The owning role, for `join`'s viewers: made when first asked for. */
   let admin: ReturnType<typeof createPool> | null = null;
-  const stepUp = new StepUpService(db, passkeys, totp, textCodes);
+  const stepUp = new StepUpService(db, passkeys, totp, textCodes, guard);
   // As if the operator had set FDV_SMTP_URL, unless the test said not
   // (operatorMail: false); passwords.test.ts also builds one without it.
   const passwords = new PasswordService(
@@ -667,6 +686,7 @@ export async function createHarness(opts: HarnessOptions = {}): Promise<Harness>
   return {
     app,
     db,
+    guard,
     adminUrl: tdb.adminUrl,
     appUrl: tdb.appUrl,
     vaultDir,
@@ -676,6 +696,7 @@ export async function createHarness(opts: HarnessOptions = {}): Promise<Harness>
     apps,
     texts,
     async close() {
+      await guard.settled();
       await app.close();
       await admin?.end();
       await db.destroy();

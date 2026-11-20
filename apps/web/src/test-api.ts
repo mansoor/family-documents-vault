@@ -805,6 +805,22 @@ export interface FakeState {
   spentRefresh: string | null;
   sessionEnded: boolean;
   refreshCalls: number;
+  /**
+   * How each refresh came (0.9.0): with the cookie the vault set, as the
+   * browser holds it (`state.refreshToken`), or with a token in the body —
+   * one an older version kept in localStorage.
+   */
+  refreshesBy?: Array<'cookie' | 'body'>;
+  /** The devices signed in, as GET /auth/sessions lists them; none unless a test says. */
+  sessions?: Array<{
+    id: string;
+    current: boolean;
+    user_agent: string | null;
+    ip: string | null;
+    created_at: string;
+    last_used_at: string;
+    label?: string;
+  }>;
   /** Every request but the capability document fails, as if offline. */
   offline: boolean;
   /** False when the link has expired, been used or been revoked. */
@@ -1751,7 +1767,14 @@ export function installFakeApi(state: FakeState) {
     }
     if (path === '/api/v1/auth/refresh') {
       state.refreshCalls++;
-      const presented = (body as { refresh_token: string }).refresh_token;
+      // A browser's refresh token is the cookie the vault set (0.9.0): the
+      // last it gave, which the browser sends back; or, once, one an older
+      // version kept, in the body.
+      const kept = (body as { refresh_token?: string } | undefined)?.refresh_token;
+      const cookie =
+        (init?.headers as Record<string, string> | undefined)?.['x-fdv-refresh'] === 'cookie';
+      (state.refreshesBy ??= []).push(kept ? 'body' : 'cookie');
+      const presented = kept || (cookie ? state.refreshToken : '');
       if (presented === state.spentRefresh) state.sessionEnded = true;
       if (state.sessionEnded || presented !== state.refreshToken) {
         return json(
@@ -1772,7 +1795,8 @@ export function installFakeApi(state: FakeState) {
       // so refreshing must not hand back a role the test did not sign in as.
       return json({
         ...TOKENS,
-        refresh_token: state.refreshToken,
+        // Asked for as a cookie: set there, and none in the body.
+        refresh_token: cookie ? '' : state.refreshToken,
         role: storedRole(),
         ...(state.accessSeconds !== undefined ? { expires_in: state.accessSeconds } : {}),
         ...(state.refreshMember ? { member_id: state.refreshMember } : {}),
@@ -1798,7 +1822,28 @@ export function installFakeApi(state: FakeState) {
       state.resetNotice = null;
       return Promise.resolve(new Response(null, { status: 204 }));
     }
-    if (path === '/api/v1/auth/sessions') return json({ items: [] });
+    // Signing out (0.9.0: with the access token, or with the cookie alone):
+    // done, whether or not there was anything to end.
+    if (path === '/api/v1/auth/logout' && method === 'POST') {
+      return Promise.resolve(new Response(null, { status: 204 }));
+    }
+    if (path === '/api/v1/auth/sessions') return json({ items: state.sessions ?? [] });
+    // Every other device signed out (0.9.0), once it's confirmed to be them.
+    if (path === '/api/v1/auth/sessions/sign-out-others' && method === 'POST') {
+      if (state.stepUpNeeded) {
+        return refuse(
+          403,
+          'step_up_required',
+          'Please confirm it is you to sign out your other devices.',
+          {
+            action: 'sign_out_others',
+          },
+        );
+      }
+      const all = state.sessions ?? [];
+      state.sessions = all.filter((s) => s.current);
+      return json({ ended: all.length - state.sessions.length });
+    }
     if (path === '/api/v1/auth/passkeys' && method === 'GET')
       return json({ items: state.passkeys });
     if (path.startsWith('/api/v1/auth/passkeys/') && method === 'DELETE') {
@@ -8387,11 +8432,15 @@ function storedRole(): string {
   }
 }
 
+/**
+ * Signed in, as a browser is since 0.9.0: who it is in localStorage, the
+ * refresh token in the vault's cookie (the fake's `refreshToken`), none here.
+ */
 export function signedIn(role: 'owner' | 'adult' | 'teen' | 'viewer' = 'owner') {
   localStorage.setItem(
     'fdv.session',
     JSON.stringify({
-      refresh_token: 'hh.secret',
+      refresh_token: '',
       household_id: 'hh',
       member_id: 'me',
       role,

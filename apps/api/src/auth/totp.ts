@@ -13,16 +13,38 @@ import { stillSignedIn, type Principal, type RequestMeta } from './service.js';
  *
  * The secret is stored encrypted under a master-derived key; a stolen
  * database dump does not yield working authenticators.
+ *
+ * Each code is taken once (0.9.0): the time step of the last one taken is
+ * kept on the account (`totp_last_step`), and a code at or before it is
+ * refused — at signing in, at confirming it's you, at setting one up and at
+ * turning it off. A code seen over a shoulder, or passed on by a copy of
+ * the sign-in page, does not work a second time.
  */
+
+/** What a code was found to be: right and not used before, wrong, or used already. */
+export type CodeCheck = 'ok' | 'wrong' | 'used';
+
+/** Said of a code from an authenticator app that was taken already (0.9.0). */
+export const CODE_USED_MESSAGE =
+  'That code was used already. Wait for the next one from your authenticator app, and type that.';
 
 const ISSUER = 'Family Document Vault';
 const MFA_TTL = '5m';
+const PERIOD = 30;
 
 export class TotpService {
   constructor(
     private readonly db: Db,
     private readonly secretKey: Buffer, // deriveKey(master, 'totp-secrets')
     private readonly signingKey: Uint8Array,
+    private readonly opts: {
+      /**
+       * Whether a code is refused a second time (0.9.0): always, but in the
+       * test harness, whose tests are not about it, unless one asks.
+       */
+      refuseReplay?: boolean;
+      now?: () => number;
+    } = {},
   ) {}
 
   /** Starts enrolment: a fresh secret, stored but not yet confirmed. */
@@ -57,6 +79,8 @@ export class TotpService {
         .set({
           totp_secret: seal(this.secretKey, secret.base32, p.accountId),
           totp_confirmed_at: null,
+          // A new authenticator counts its codes afresh.
+          totp_last_step: null,
         })
         .where('id', '=', p.accountId)
         .execute();
@@ -79,11 +103,18 @@ export class TotpService {
       .executeTakeFirstOrThrow();
     if (!row.totp_secret)
       throw new ApiError(409, 'totp_not_started', 'Start setting up two-step sign-in first.');
-    if (!this.check(open(this.secretKey, row.totp_secret, p.accountId), code)) {
+    const found = await this.take(
+      p.accountId,
+      open(this.secretKey, row.totp_secret, p.accountId),
+      code,
+    );
+    if (found !== 'ok') {
       throw new ApiError(
         422,
         'totp_invalid',
-        "That code didn't match. Codes change every 30 seconds — try the current one.",
+        found === 'used'
+          ? CODE_USED_MESSAGE
+          : "That code didn't match. Codes change every 30 seconds — try the current one.",
       );
     }
     await withPrincipal(this.db, p, async (trx) => {
@@ -120,12 +151,19 @@ export class TotpService {
       .select('totp_secret')
       .where('id', '=', p.accountId)
       .executeTakeFirstOrThrow();
-    if (!row.totp_secret || !this.check(open(this.secretKey, row.totp_secret, p.accountId), code)) {
-      throw new ApiError(422, 'totp_invalid', "That code didn't match.");
+    const found = row.totp_secret
+      ? await this.take(p.accountId, open(this.secretKey, row.totp_secret, p.accountId), code)
+      : 'wrong';
+    if (found !== 'ok') {
+      throw new ApiError(
+        422,
+        'totp_invalid',
+        found === 'used' ? CODE_USED_MESSAGE : "That code didn't match.",
+      );
     }
     await this.db
       .updateTable('account')
-      .set({ totp_secret: null, totp_confirmed_at: null })
+      .set({ totp_secret: null, totp_confirmed_at: null, totp_last_step: null })
       .where('id', '=', p.accountId)
       .execute();
     await withPrincipal(this.db, p, (trx) =>
@@ -148,23 +186,38 @@ export class TotpService {
     return Boolean(row?.totp_confirmed_at);
   }
 
-  /** Verifies a code against the stored, confirmed secret. */
+  /** Verifies a code against the stored, confirmed secret, and takes it: true once. */
   async verify(accountId: string, code: string): Promise<boolean> {
+    return (await this.checkCode(accountId, code)) === 'ok';
+  }
+
+  /**
+   * A code against the stored, confirmed secret (0.9.0): `ok`, and taken, so
+   * it is refused from now on; `wrong`; or `used`, right but at or before the
+   * last one taken.
+   */
+  async checkCode(accountId: string, code: string): Promise<CodeCheck> {
     const row = await this.db
       .selectFrom('account')
       .select(['totp_secret', 'totp_confirmed_at'])
       .where('id', '=', accountId)
       .executeTakeFirst();
-    if (!row?.totp_secret || !row.totp_confirmed_at) return false;
-    return this.check(open(this.secretKey, row.totp_secret, accountId), code);
+    if (!row?.totp_secret || !row.totp_confirmed_at) return 'wrong';
+    return this.take(accountId, open(this.secretKey, row.totp_secret, accountId), code);
   }
 
   /**
    * A short-lived token that says "password was right, now the code" (API
    * spec §2), carrying what the password proved (5.29), never the password.
    */
-  async mfaToken(accountId: string, proof?: string): Promise<string> {
-    return new SignJWT({ purpose: 'mfa', ...(proof ? { pwp: proof } : {}) })
+  async mfaToken(accountId: string, proof?: string, device?: string | null): Promise<string> {
+    // `dev` (0.9.0): the known device the password came from, whose own
+    // count the second step's tries go on.
+    return new SignJWT({
+      purpose: 'mfa',
+      ...(proof ? { pwp: proof } : {}),
+      ...(device ? { dev: device } : {}),
+    })
       .setProtectedHeader({ alg: 'HS256' })
       .setSubject(accountId)
       .setIssuedAt()
@@ -179,7 +232,9 @@ export class TotpService {
   }
 
   /** Whose the token is, and what the password proved (5.29; null in an older token). */
-  async mfaClaims(token: string): Promise<{ accountId: string; proof: string | null }> {
+  async mfaClaims(
+    token: string,
+  ): Promise<{ accountId: string; proof: string | null; device: string | null }> {
     try {
       const { payload } = await jwtVerify(token, this.signingKey, {
         issuer: 'fdv',
@@ -189,20 +244,45 @@ export class TotpService {
       return {
         accountId: payload.sub,
         proof: typeof payload.pwp === 'string' ? payload.pwp : null,
+        device: typeof payload.dev === 'string' ? payload.dev : null,
       };
     } catch {
       throw new ApiError(401, 'mfa_expired', 'That sign-in attempt has expired. Start again.');
     }
   }
 
-  private check(base32: string, code: string): boolean {
+  /**
+   * The time step a code is of, within a step either side of now; null when
+   * it is none of them.
+   */
+  private stepOf(base32: string, code: string): number | null {
     const totp = new OTPAuth.TOTP({
       issuer: ISSUER,
       secret: OTPAuth.Secret.fromBase32(base32),
       digits: 6,
-      period: 30,
+      period: PERIOD,
     });
-    return totp.validate({ token: code.replace(/\s+/g, ''), window: 1 }) !== null;
+    const now = this.opts.now?.() ?? Date.now();
+    const delta = totp.validate({ token: code.replace(/\s+/g, ''), window: 1, timestamp: now });
+    return delta === null ? null : Math.floor(now / 1000 / PERIOD) + delta;
+  }
+
+  /**
+   * A code checked and, when right, taken: its step kept on the account, in
+   * one statement, so that two requests with the same code cannot both
+   * have it.
+   */
+  private async take(accountId: string, base32: string, code: string): Promise<CodeCheck> {
+    const step = this.stepOf(base32, code);
+    if (step === null) return 'wrong';
+    if (this.opts.refuseReplay === false) return 'ok';
+    const r = await this.db
+      .updateTable('account')
+      .set({ totp_last_step: step })
+      .where('id', '=', accountId)
+      .where((eb) => eb.or([eb('totp_last_step', 'is', null), eb('totp_last_step', '<', step)]))
+      .executeTakeFirst();
+    return Number(r.numUpdatedRows) === 1 ? 'ok' : 'used';
   }
 }
 

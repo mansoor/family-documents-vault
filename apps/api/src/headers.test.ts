@@ -104,6 +104,10 @@ describe('the pages a link opens', () => {
     expect(directives.get('script-src')).toBe(`'self' ${theme.hash}`);
     expect(directives.get('object-src')).toBe("'none'");
     expect(directives.get('base-uri')).toBe("'none'");
+    // Its requests, images and forms go to the vault alone (0.9.0).
+    expect(directives.get('connect-src')).toBe("'self'");
+    expect(directives.get('img-src')).toBe("'self' data: blob:");
+    expect(directives.get('form-action')).toBe("'self'");
     expect(csp).not.toMatch(/unsafe-inline|unsafe-eval|\*/);
     // And the page it serves has no other script of its own to allow: the
     // theme's few lines, and one module by address.

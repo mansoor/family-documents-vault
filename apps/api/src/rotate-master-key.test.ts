@@ -41,6 +41,12 @@ import {
 import { createHarness, TEST_MASTER, type Harness } from './test-harness.js';
 
 /**
+ * These try the keys a code is checked with, the same code each time: not
+ * that a code is taken once (0.9.0), which auth/sign-in-guard.test.ts tries.
+ */
+const REUSE_CODES = { refuseReplay: false } as const;
+
+/**
  * Rotating the master key (SEC-02). Until 0.5.0 it rewrapped the scope keys
  * and nothing else: every two-step sign-in secret, an S3 vault's
  * credentials and the household's mail password stayed sealed under the
@@ -444,6 +450,7 @@ describe.skipIf(!testAdminUrl())('rotating the master key', () => {
         h.db,
         deriveKey(TEST_MASTER, 'totp-secrets'),
         deriveSigningKey(TEST_MASTER),
+        REUSE_CODES,
       );
       expect(await totp.verify(accountId, codeFor(totpSecret))).toBe(true);
     } finally {
@@ -595,12 +602,18 @@ describe.skipIf(!testAdminUrl())('rotating the master key', () => {
     });
 
     it("an owner's two-step sign-in code verifies under the new key, and the old opens nothing", async () => {
-      const totp = new TotpService(h.db, deriveKey(NEW, 'totp-secrets'), deriveSigningKey(NEW));
+      const totp = new TotpService(
+        h.db,
+        deriveKey(NEW, 'totp-secrets'),
+        deriveSigningKey(NEW),
+        REUSE_CODES,
+      );
       expect(await totp.verify(accountId, codeFor(totpSecret))).toBe(true);
       const stale = new TotpService(
         h.db,
         deriveKey(TEST_MASTER, 'totp-secrets'),
         deriveSigningKey(TEST_MASTER),
+        REUSE_CODES,
       );
       await expect(stale.verify(accountId, codeFor(totpSecret))).rejects.toThrow();
     });
@@ -787,7 +800,12 @@ describe.skipIf(!testAdminUrl())('rotating the master key', () => {
       expect(done.out).toContain('1 session ended');
       expect(await liveSessions()).toBe(0);
 
-      const totp = new TotpService(h.db, deriveKey(NEWER, 'totp-secrets'), deriveSigningKey(NEWER));
+      const totp = new TotpService(
+        h.db,
+        deriveKey(NEWER, 'totp-secrets'),
+        deriveSigningKey(NEWER),
+        REUSE_CODES,
+      );
       expect(await totp.verify(accountId, codeFor(totpSecret))).toBe(true);
       const vault = await admin.query<{ c: Buffer }>(
         'select credentials_encrypted as c from vault where id = $1',
