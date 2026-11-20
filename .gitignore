@@ -35,6 +35,8 @@ GoogleService-Info.plist
 !.env.example
 *.pem
 *.key
+# The master key as a Docker secret (docker-compose.secrets.yml).
+/secrets/
 # The worker's fake push distributor (tests only, on 127.0.0.1): a throwaway pair.
 !apps/worker/src/jobs/testdata/push-tls.key
 data/

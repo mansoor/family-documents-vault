@@ -771,7 +771,7 @@ npm or pnpm and no token (from CI too):
 ```json
 {
   "dependencies": {
-    "@fdv/client": "https://github.com/mansoor/family-documents-vault/releases/download/v0.9.0-dev.73/fdv-client-0.9.0-dev.73.tgz"
+    "@fdv/client": "https://github.com/mansoor/family-documents-vault/releases/download/v0.9.0-dev.74/fdv-client-0.9.0-dev.74.tgz"
   }
 }
 ```
@@ -792,7 +792,7 @@ All configuration is through environment variables in `.env` (see [`.env.example
 | Variable                                        | Default                                   | What it is                                                                                                                                                                                                                                                                                              |
 | ----------------------------------------------- | ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `FDV_MASTER_KEY`                                | generated                                 | The key that wraps every other key. **Back it up outside the server.** If it is lost, the documents are lost. The example file's placeholder, or a key too easy to guess, is refused at start (as are the example's `replace-me` database passwords).                                                   |
-| `FDV_DB_PASSWORD`                               | generated                                 | Password for the database owner role (`fdv`). Used for migrations and the job queue.                                                                                                                                                                                                                    |
+| `FDV_DB_PASSWORD`                               | generated                                 | Password for the database owner role (`fdv`). Given to [the migrate service](#the-migrate-service) and the worker (backups and restores), never to the API.                                                                                                                                             |
 | `FDV_DB_APP_PASSWORD`                           | generated                                 | Password for the application role (`fdv_app`). The API queries as this role, which owns nothing, so row-level security is enforced on every query. The api and the worker check this as they start, and refuse to start if the role they connect as is a superuser, has `BYPASSRLS` or owns the tables. |
 | `FDV_SETUP_TOKEN`                               | generated                                 | The setup code first-run setup asks for, so that only somebody who can read this file becomes the owner. Unset (a `.env` from before 0.9.0), the API makes one each time it starts until the vault is set up, and writes it to its log. Not needed once set up.                                         |
 | `FDV_MAX_UPLOAD_BYTES`                          | `104857600`                               | Largest single file the vault accepts (100 MB), uploaded, from the scanner folder or attached to an email.                                                                                                                                                                                              |
@@ -853,13 +853,15 @@ All configuration is through environment variables in `.env` (see [`.env.example
 | `FDV_VAPID_PUBLIC_KEY`, `FDV_VAPID_PRIVATE_KEY` | generated                                 | The keys notifications are signed with. `gen-env` makes them; changing them silences every device until it turns notifications on again.                                                                                                                                                                |
 | `FDV_VAPID_SUBJECT`                             | `mailto:vault@example.invalid`            | The contact push services are given for those keys.                                                                                                                                                                                                                                                     |
 
-Three more are read by the API and worker images, but `docker-compose.yml` does not pass
+`FDV_MASTER_KEY_FILE` names a file holding the master key, read in place of
+`FDV_MASTER_KEY`: see [Keeping the master key in a file](#keeping-the-master-key-in-a-file).
+
+Two more are read by the API and worker images, but `docker-compose.yml` does not pass
 them from `.env`, so setting them there changes nothing: they are for running the images
-some other way. `FDV_MASTER_KEY_FILE` names a file holding the master key, read in place
-of `FDV_MASTER_KEY` (a Docker secret, say); the compose file requires `FDV_MASTER_KEY`
-itself, so using a key file means a compose file of your own. `FDV_RUN_MIGRATIONS=false`
-leaves the API's start without migrating, for when something else migrates the database
-first; the default is `true`. `FDV_LOCAL_VAULT_DIR` (default `/data/vault`) is where the
+some other way. `FDV_RUN_MIGRATIONS` says whether the API's own start migrates the
+database: unset, it does when it is given `DATABASE_ADMIN_URL` (the owning role) and
+otherwise leaves it to [the migrate service](#the-migrate-service), refusing to start on a
+database with migrations still to run. `FDV_LOCAL_VAULT_DIR` (default `/data/vault`) is where the
 built-in local vault keeps encrypted files inside the containers, which is the
 `fdv_vault-data` volume. To keep the files on another disk, mount a volume or a folder of
 your own at `/data` for both `api` and `worker`, in a compose file of your own (an
@@ -886,6 +888,98 @@ only: the port `docker-compose.dev.yml` opens the database on (see
 [Developing](#developing)).
 
 Health endpoints, for your monitoring: `/healthz` (the API process is up) and `/readyz` (it can reach the database).
+
+### Hardened containers
+
+Every container `docker-compose.yml` and `docker-compose.tls.yml` start is locked down:
+no Linux capabilities (Caddy keeps one, to listen on ports 80 and 443), nothing gained
+through setuid programs (`no-new-privileges`), a read-only root filesystem, and a ceiling
+on processes and memory. What each may write to:
+
+| Container        | Writable                                                                                         |
+| ---------------- | ------------------------------------------------------------------------------------------------ |
+| `api`, `migrate` | `/data` (the `vault-data` volume; `api` only) and a small `/tmp` in memory                       |
+| `worker`         | `/data` (files and backups), and `/tmp`, its own `worker-tmp` volume on disk (exports are large) |
+| `web` (nginx)    | a small `/tmp` in memory. It runs as nginx's own user, listening on 8080 inside the container    |
+| `caddy`          | its two volumes (certificates and the local CA), and a small `/tmp` in memory                    |
+| `postgres`       | its data volume; only `no-new-privileges` is added, as its own start needs the rest              |
+
+The ceilings are generous, and each can be raised in `.env`:
+
+| Variable                                                            | Default                | What it limits                                                                              |
+| ------------------------------------------------------------------- | ---------------------- | ------------------------------------------------------------------------------------------- |
+| `FDV_WORKER_MEM_LIMIT`, `FDV_API_MEM_LIMIT`                         | `3g`, `1g`             | Memory for the worker (which reads and draws every upload) and the API.                     |
+| `FDV_WEB_MEM_LIMIT`, `FDV_CADDY_MEM_LIMIT`, `FDV_MIGRATE_MEM_LIMIT` | `256m`, `256m`, `512m` | Memory for nginx, Caddy and the migrate service.                                            |
+| `FDV_WORKER_PIDS_LIMIT`, `FDV_API_PIDS_LIMIT`                       | `512`, `256`           | Processes and threads, for the worker and the API.                                          |
+| `FDV_WEB_PIDS_LIMIT`, `FDV_CADDY_PIDS_LIMIT`                        | `256`, `256`           | The same, for nginx and Caddy.                                                              |
+| `FDV_WORKER_CPUS`, `FDV_API_CPUS`, `FDV_WEB_CPUS`, `FDV_CADDY_CPUS` | `0` (no cap)           | CPUs each may use, such as `1.5`. Docker refuses more than the machine has, so none is set. |
+
+The worker is the one most likely to need more: it has 3 GB unless you say otherwise, and
+reading a long scan, drawing a very large photo or building an export of everything can
+use much of it at once. If the worker keeps restarting while such jobs run, or a container
+stops with `Exited (137)` or `OOMKilled` in `docker compose ps -a` or `docker inspect`,
+raise its memory, say `FDV_WORKER_MEM_LIMIT=4g` in `.env`, and run `docker compose up -d`. Caddy runs as root inside its container, as its image does, and
+reads the Caddyfile you mount without being able to override file permissions: keep the
+Caddyfile readable by everyone (`chmod 644`), as it is when checked out. nginx listens on
+`8080` inside its container, which the compose files use, and still on `80`, so a compose
+override or Caddyfile of your own from before keeps working.
+
+### The migrate service
+
+`docker compose up -d` first runs `migrate`, a one-shot container from the api image: it
+applies the database migrations and the job queue's schema as the role that owns the
+tables (`FDV_DB_PASSWORD`), checks that the master key opens the vault, and exits. The
+api and the worker start only once it has finished without an error, so neither starts on
+the wrong key or a half-upgraded database. The API itself is never given the owning role's
+password: it runs on the application role alone, which row-level security holds to each
+household. The worker keeps the owning role, because the nightly backup must read every
+household and a restore recreates the tables.
+
+`docker compose ps -a` shows it as `Exited (0)` once it is done; that is how it should
+look. If the api and the worker do not start, `docker compose logs migrate` says why (a
+wrong master key, say, with what to do). Nothing in `.env` changes for it. As it passes,
+it records which key opened the vault (an HMAC of a key derived from it, never the key),
+and the API, which cannot open every household's keys itself, refuses to start on any
+other.
+
+**If you start services one at a time with `--no-deps`** (an upgrade script such as
+`docker compose up -d --no-deps api`, say), nothing runs `migrate` for you: run it first,
+
+```bash
+docker compose run --rm --no-deps migrate
+```
+
+then start the rest. Otherwise the api and the worker refuse to start on a database with
+this release's migrations still to run, and say this same command. `docker compose up -d
+--wait` waits for `migrate` to finish, not to keep running, from Docker Compose 2.7.0 (the
+TLS overlay needs 2.24.4 or later in any case).
+
+### Keeping the master key in a file
+
+By default the master key is in `.env` as `FDV_MASTER_KEY`, and so in the environment of
+the containers that use it, where `docker inspect` can read it. The recommended way is to
+keep it in a file instead, given to the migrate service, the api and the worker as a
+Docker secret (`FDV_MASTER_KEY_FILE=/run/secrets/fdv_master_key`, which
+[`docker-compose.secrets.yml`](docker-compose.secrets.yml) sets). Move the **same** key,
+never a new one (for a new key, see [Rotating the master key](#rotating-the-master-key)):
+
+```bash
+mkdir -p secrets
+grep '^FDV_MASTER_KEY=' .env | cut -d= -f2- | tr -d '\r\n' > secrets/fdv_master_key
+sudo chown 1000:1000 secrets/fdv_master_key && chmod 400 secrets/fdv_master_key
+echo 'COMPOSE_FILE=docker-compose.yml:docker-compose.secrets.yml' >> .env
+docker compose up -d
+```
+
+`COMPOSE_FILE` makes every plain `docker compose` command use both files (add
+`:docker-compose.tls.yml` too if you use HTTPS; on Windows separate them with `;`); a
+command that names its files with `-f` must name `docker-compose.secrets.yml` as well. Once
+the vault has started, remove the `FDV_MASTER_KEY=` line from `.env` and run
+`docker compose up -d` again. While both are set they must hold the same key: two
+different keys are refused at start, never one quietly preferred. Back up the file
+outside the server, as you did `.env`; it, not `.env`, is now what makes the documents
+readable. `secrets/` is ignored by git and never enters an image. Set
+`FDV_MASTER_KEY_SECRET` in `.env` to keep the file somewhere else.
 
 ### The family's time zone
 
@@ -2100,10 +2194,10 @@ docker compose exec worker node apps/worker/dist/cli.mjs backup-now
 docker compose stop api worker
 ```
 
-Rotate, with the new key in place of `<new key>`:
+Rotate, with the new key in place of `<new key>`. It runs in the `migrate` service's container, which has the owning role the rotation needs (the api's does not):
 
 ```bash
-docker compose run --rm --no-deps -e FDV_MASTER_KEY_NEW=<new key> api node apps/api/dist/cli.mjs rotate-master-key
+docker compose run --rm --no-deps -e FDV_MASTER_KEY_NEW=<new key> migrate node apps/api/dist/cli.mjs rotate-master-key
 ```
 
 It says how many keys and secrets it moved and how many sessions it ended. Then put the new key in `.env` as `FDV_MASTER_KEY` (or in your key file, if you use `FDV_MASTER_KEY_FILE`), start the vault, and back `.env` up again:
@@ -2112,7 +2206,7 @@ It says how many keys and secrets it moved and how many sessions it ended. Then 
 docker compose up -d
 ```
 
-Use `up -d`, never `docker compose start` or `restart`: those keep the key the containers were made with, the old one. The vault does not start on a key that does not open it: the api and the worker stop at once, and their logs say `FDV_MASTER_KEY does not open this vault`, and what to do. If it does not come up after a rotation, look there first.
+Use `up -d`, never `docker compose start` or `restart`: those keep the key the containers were made with, the old one. The vault does not start on a key that does not open it: the migrate service stops, the api and the worker do not start, and `docker compose logs migrate` says `FDV_MASTER_KEY does not open this vault`, and what to do (a worker started some other way says the same in its own log). If it does not come up after a rotation, look there first.
 
 If the command refuses before it starts (a new key that is the one in use, or that holds anything `.env` would change, such as a space, a quote or a `$`; the vault still running; no `DATABASE_ADMIN_URL`), or says `Nothing was changed`, the vault is as it was, on the old key: `docker compose up -d` starts it again. If it says `The database is already on the new key`, an earlier run finished: put the new key in `.env` as above.
 
@@ -2131,7 +2225,7 @@ The restore drill takes it the same way: `docker compose exec -e FDV_MASTER_KEY_
 If you put the rotation's new key in `.env`, as that README asked: after it, owners with two-step sign-in could not sign in (the code step failed with "Something went wrong"), and mail or an S3 bucket stopped working, while documents opened. Repair it with the key you had before that rotation, with the vault stopped:
 
 ```bash
-docker compose run --rm --no-deps -e FDV_MASTER_KEY_PREVIOUS=<old key> api node apps/api/dist/cli.mjs repair-master-key
+docker compose run --rm --no-deps -e FDV_MASTER_KEY_PREVIOUS=<old key> migrate node apps/api/dist/cli.mjs repair-master-key
 ```
 
 It moves whatever is still under the old key onto the one in `.env` and signs everybody out; if anything opens with neither key, it changes nothing and says what. Then `docker compose up -d`. A backup made since that rotation is restored the same way, with `FDV_MASTER_KEY_PREVIOUS` set to the key before it.
@@ -2140,7 +2234,49 @@ If you ran that README's command exactly as written, it made the new key inside 
 
 ## Upgrading
 
-Images are version-tagged, and `latest` is the newest release (a milestone or a fix to one — never a development build or a release candidate); set `FDV_VERSION` in your `.env` to stay on one version until you choose to move. Database migrations run automatically on start, and only forward: the way back from an upgrade is the image you had and the backup taken before it, restored with that image. An older release will not start on a database a newer one has upgraded (from 0.5.5; it says so in the API's and the worker's logs), because it would not see the documents in it. So take a backup first — `docker compose exec worker node apps/worker/dist/cli.mjs backup-now` — and if you ever need it, restore it as [above](#restoring). Breaking API changes are announced in [`docs/api-changelog.md`](docs/api-changelog.md) with a deprecation window of four minor releases, so an older mobile app keeps working against a newer server and vice versa.
+Images are version-tagged, and `latest` is the newest release (a milestone or a fix to one — never a development build or a release candidate); set `FDV_VERSION` in your `.env` to stay on one version until you choose to move (see [Pinning a version](#pinning-a-version)). Upgrade with the `docker-compose.yml` (and any other compose file you use) of the new release, your `.env` as it is, and `docker compose pull && docker compose up -d`. Database migrations run automatically on start, by [the migrate service](#the-migrate-service), and only forward: the way back from an upgrade is the image you had and the backup taken before it, restored with that image. An older release will not start on a database a newer one has upgraded (from 0.5.5; it says so in the API's and the worker's logs), because it would not see the documents in it. So take a backup first — `docker compose exec worker node apps/worker/dist/cli.mjs backup-now` — and if you ever need it, restore it as [above](#restoring). Breaking API changes are announced in [`docs/api-changelog.md`](docs/api-changelog.md) with a deprecation window of four minor releases, so an older mobile app keeps working against a newer server and vice versa.
+
+### Pinning a version
+
+`FDV_VERSION` chooses the vault's three images (api, worker, web); unset, it is `latest`,
+which moves whenever a release does, at your next `docker compose pull`. To move only
+when you decide, name the release in `.env`:
+
+```bash
+FDV_VERSION=0.9.0
+```
+
+and change it, then `docker compose pull && docker compose up -d`, after reading what
+changed in [`CHANGELOG.md`](CHANGELOG.md) and taking a backup. For an exact image rather
+than a tag, use its digest, from the release's build summary or
+`docker buildx imagetools inspect ghcr.io/mansoor/family-documents-vault/api:0.9.0`, in a
+compose override of your own (`image: ghcr.io/mansoor/family-documents-vault/api@sha256:…`,
+and the same for `migrate`, `worker` and `web`). The other images the compose files run
+(PostgreSQL, Caddy, Ollama) are pinned by digest in the files themselves. Use the compose
+files of the release you name: an image from before 0.9.0-dev.74 has no `migrate`
+command, so with this release's files its migrate service fails and nothing starts.
+
+### Verifying the images
+
+From 0.9.0 every image the release workflow pushes is signed with
+[cosign](https://docs.sigstore.dev/cosign/system_config/installation/), keyless: the
+signature is issued to this repository's release workflow for that tag, and recorded in
+the public Rekor log. Each image also carries its build provenance and a software bill of
+materials. To check an image before you run it (cosign 2 or later):
+
+```bash
+cosign verify ghcr.io/mansoor/family-documents-vault/api:0.9.0 \
+  --certificate-identity-regexp '^https://github\.com/mansoor/family-documents-vault/\.github/workflows/ci\.yml@refs/tags/v' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+```
+
+and the same for `worker` and `web`. It prints the verified signature, with the digest it
+covers, or fails. To see what an image was built from, and what it contains:
+
+```bash
+docker buildx imagetools inspect ghcr.io/mansoor/family-documents-vault/api:0.9.0 --format '{{ json .Provenance }}'
+docker buildx imagetools inspect ghcr.io/mansoor/family-documents-vault/api:0.9.0 --format '{{ json .SBOM }}'
+```
 
 ### From 0.4.5 to 0.8.0
 
@@ -2247,7 +2383,8 @@ give each the same `-f` files (and `--profile public-only`) you always use.
    docker compose up -d
    ```
 
-   The API migrates the database as it starts, and the worker and the web app wait for it.
+   The database is migrated first — by the API as it started, in 0.8.0; from
+   0.9.0-dev.74 by [the migrate service](#the-migrate-service) — and the rest wait for it.
 
    With the TLS overlay, start Caddy again too. It reads its Caddyfile only when its
    container starts, and `up -d` leaves a container whose own definition has not changed

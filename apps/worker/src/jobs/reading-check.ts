@@ -1,5 +1,5 @@
 import { createHmac } from 'node:crypto';
-import { mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
+import { lstat, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import {
@@ -1213,13 +1213,26 @@ export async function resumeReadingChecks(
 /**
  * On the worker's start: the folders documents were read into by a worker
  * that stopped mid-read (P-5), removed — a document's plain bytes, never
- * left behind. Answers how many.
+ * left behind. Answers how many. Only those older than `minAgeMs`: in the
+ * image, where /tmp is a volume other worker containers share, one younger
+ * may be another's read still under way (temp-sweep.ts).
  */
-export async function sweepReadingTemp(dir: string = tmpdir()): Promise<number> {
+export async function sweepReadingTemp(
+  dir: string = tmpdir(),
+  minAgeMs = 0,
+  now: number = Date.now(),
+): Promise<number> {
   const names = await readdir(dir).catch(() => [] as string[]);
   let n = 0;
   for (const name of names) {
     if (!name.startsWith(READING_TEMP_PREFIX)) continue;
+    if (minAgeMs > 0) {
+      const changed = await lstat(path.join(dir, name)).then(
+        (s) => s.mtimeMs,
+        () => null,
+      );
+      if (changed === null || now - changed < minAgeMs) continue;
+    }
     await rm(path.join(dir, name), { recursive: true, force: true }).then(
       () => (n += 1),
       () => undefined,

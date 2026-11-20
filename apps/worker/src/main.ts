@@ -14,7 +14,7 @@ import {
   databasePasswordProblem,
   masterSecretProblem,
 } from '@fdv/crypto';
-import { assertSchemaKnown, createPool, rowSecurityProblem } from '@fdv/db';
+import { assertSchemaCurrent, createPool, rowSecurityProblem } from '@fdv/db';
 import { WATCH_SYSTEM_DIRS } from '@fdv/shared';
 import { loadConfig, logs, type LogLevel } from './config.js';
 import { backupDatabase } from './jobs/backup.js';
@@ -87,6 +87,7 @@ import { createQueue, JOBS } from './queue.js';
 import { noticeAppKeys, noticeReviewers, sweepApps } from './jobs/apps.js';
 import { masterKeyOpensVault, resolveMasterSecret } from './master-key-check.js';
 import { magickPolicy } from './jobs/tools.js';
+import { sweepWorkerTemp, WORKER_TEMP_MIN_AGE_MS } from './temp-sweep.js';
 
 /** LOG_LEVEL, once the configuration is read: until then, everything is written. */
 let logLevel: LogLevel = 'trace';
@@ -102,7 +103,17 @@ async function main(): Promise<void> {
   takeMailInPassword(process.env);
   logLevel = config.LOG_LEVEL;
   const adminUrl = config.DATABASE_ADMIN_URL ?? config.DATABASE_URL;
-  const masterSecret = await resolveMasterSecret(config);
+  // The variable, or a file (a Docker secret); both only if they agree.
+  let masterSecret: string;
+  try {
+    masterSecret = await resolveMasterSecret(config);
+  } catch (err) {
+    const reason = (err as Error).message;
+    log('error', 'refused to start', { reason });
+    console.error(reason);
+    process.exitCode = 1;
+    return;
+  }
   // Never on the example file's secrets, nor a master key anybody could
   // guess (the API refuses them too).
   const weak =
@@ -123,10 +134,19 @@ async function main(): Promise<void> {
   }
 
   // A database a newer release has upgraded is refused before any job
-  // touches it: this release's jobs would see no documents on it.
+  // touches it: this release's jobs would see no documents on it. So is one
+  // with migrations of this release still to run: the worker never
+  // migrates (the migrate service does), and its jobs would fail on what
+  // they add.
   const probe = createPool(config.DATABASE_ADMIN_URL ?? config.DATABASE_URL, 1);
   try {
-    await assertSchemaKnown(probe);
+    await assertSchemaCurrent(probe);
+  } catch (err) {
+    const reason = (err as Error).message;
+    log('error', 'refused to start', { reason });
+    console.error(reason);
+    process.exitCode = 1;
+    return;
   } finally {
     await probe.end();
   }
@@ -144,6 +164,10 @@ async function main(): Promise<void> {
   } finally {
     await appProbe.end();
   }
+  // What a worker that stopped mid-job left in its own /tmp, removed before
+  // any job runs (in the image only: temp-sweep.ts).
+  const strays = await sweepWorkerTemp();
+  if (strays > 0) log('info', 'temporary folders left by a stopped worker removed', { strays });
   // ImageMagick's security policy (the worker image's policy.xml), proved in
   // force before any of the family's files is drawn: in the image
   // (NODE_ENV=production) the worker does not start without it; elsewhere
@@ -717,7 +741,10 @@ async function main(): Promise<void> {
   });
   await boss.schedule(READING_CHECK_SWEEP_JOB, '55 4 * * *');
   // What a worker that stopped mid-read left of a document's bytes, removed (P-5).
-  const leftOver = await sweepReadingTemp();
+  const leftOver = await sweepReadingTemp(
+    tmpdir(),
+    process.env.NODE_ENV === 'production' ? WORKER_TEMP_MIN_AGE_MS : 0,
+  );
   if (leftOver > 0)
     log('info', 'reading check folders left by a stopped worker removed', { leftOver });
   const checks = await resumeReadingChecks(dbs.admin, async (job) => {

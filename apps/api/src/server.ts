@@ -1,4 +1,3 @@
-import { readFile } from 'node:fs/promises';
 import {
   ALERT_LINK_KEY_PURPOSE,
   deriveKey,
@@ -12,14 +11,21 @@ import {
   UPLOAD_REQUEST_COPY_PURPOSE,
   databasePasswordProblem,
   masterSecretProblem,
+  readMasterSecret,
 } from '@fdv/crypto';
-import { assertSchemaKnown, createDb, createPool, migrateUp, rowSecurityProblem } from '@fdv/db';
+import {
+  assertSchemaCurrent,
+  assertSchemaKnown,
+  createDb,
+  createPool,
+  rowSecurityProblem,
+} from '@fdv/db';
 import { AuthService } from './auth/service.js';
 import { SetupToken } from './auth/setup-token.js';
 import { TotpService } from './auth/totp.js';
 import { deriveSigningKey } from './auth/tokens.js';
 import { buildApp } from './app.js';
-import { loadConfig, type ApiConfig } from './config.js';
+import { loadConfig, runsMigrations } from './config.js';
 import { PgBoss } from 'pg-boss';
 import { proposalPool } from './documents/proposal-pool.js';
 import { DocumentService, type Enqueue } from './documents/service.js';
@@ -84,19 +90,21 @@ import { PHONE_CODE_KEY_PURPOSE, MemberPhoneService } from './sms/phones.js';
 import { SmsService } from './sms/service.js';
 import { SMS_CODE_KEY_PURPOSE, TextCodeService } from './sms/codes.js';
 import { serverVersion } from './version.js';
-import { masterKeyOpensVault } from './master-key-check.js';
-
-/** The one secret behind the installation: from the variable, or a file. */
-async function resolveMasterSecret(config: ApiConfig): Promise<string> {
-  if (config.FDV_MASTER_KEY_FILE)
-    return (await readFile(config.FDV_MASTER_KEY_FILE, 'utf8')).trim();
-  return config.FDV_MASTER_KEY as string;
-}
+import { masterKeyMatchesCanary, masterKeyOpensVault } from './master-key-check.js';
+import { prepareDatabase } from './prepare-database.js';
 
 async function main(): Promise<void> {
   const config = loadConfig();
   const version = await serverVersion();
-  const masterSecret = await resolveMasterSecret(config);
+  // The variable, or a file (a Docker secret); both only if they agree.
+  let masterSecret: string;
+  try {
+    masterSecret = await readMasterSecret(config);
+  } catch (err) {
+    console.error(`[start] ${(err as Error).message}`);
+    process.exitCode = 1;
+    return;
+  }
   // Never on the example file's secrets, nor a master key anybody could
   // guess: before anything is migrated, sealed or signed with them.
   const weak =
@@ -111,40 +119,43 @@ async function main(): Promise<void> {
     return;
   }
 
-  if (config.FDV_RUN_MIGRATIONS === 'true') {
-    const adminUrl = config.DATABASE_ADMIN_URL ?? config.DATABASE_URL;
-    const admin = createPool(adminUrl, 1);
-    try {
-      const applied = await migrateUp(admin, undefined, (m) => console.log(`[migrate] ${m}`));
-      console.log(`[migrate] ${applied.length ? `${applied.length} applied` : 'up to date'}`);
-    } finally {
-      await admin.end();
+  // In the compose setup the one-shot `migrate` service has migrated the
+  // database and checked the master key before this starts, and the API is
+  // not given the owning role's password at all: what stays running holds
+  // only the application role's. Given DATABASE_ADMIN_URL (development, the
+  // tests, a compose file of your own) it does both itself, as before.
+  const migrates = runsMigrations(config);
+  if (migrates) await prepareDatabase(config.DATABASE_ADMIN_URL ?? config.DATABASE_URL);
+  if (config.DATABASE_ADMIN_URL) {
+    if (!(await masterKeyOpensVault(config.DATABASE_ADMIN_URL, masterSecret))) {
+      process.exitCode = 1;
+      return;
     }
-    // The job queue's own schema is installed here too, with the owning
-    // role, so a fresh install does not wait on the worker (which waits on
-    // the API) to create it. The worker upgrades it later if needed.
-    const installer = new PgBoss({
-      connectionString: adminUrl,
-      schema: 'pgboss',
-      migrate: true,
-      supervise: false,
-      schedule: false,
-    });
-    await installer.start();
-    await installer.stop({ graceful: false });
-    console.log('[migrate] job queue schema ready');
-  }
-  if (
-    !(await masterKeyOpensVault(config.DATABASE_ADMIN_URL ?? config.DATABASE_URL, masterSecret))
-  ) {
-    process.exitCode = 1;
-    return;
   }
 
   const pool = createPool(config.DATABASE_URL);
   // A database a newer release has upgraded is refused, not half-served
-  // (migrateUp above refuses it too, when this replica migrates).
-  await assertSchemaKnown(pool);
+  // (migrateUp above refuses it too, when this process migrates); and, when
+  // migrating is left to the migrate service, one with migrations of this
+  // release still to run.
+  try {
+    await (migrates ? assertSchemaKnown(pool) : assertSchemaCurrent(pool));
+  } catch (err) {
+    console.error(`[start] ${(err as Error).message}`);
+    await pool.end();
+    process.exitCode = 1;
+    return;
+  }
+  // Without the owning role the key is compared with the one the migrate
+  // service last opened the vault with (master_key_canary).
+  if (
+    !config.DATABASE_ADMIN_URL &&
+    !(await masterKeyMatchesCanary(config.DATABASE_URL, masterSecret))
+  ) {
+    await pool.end();
+    process.exitCode = 1;
+    return;
+  }
   // Every household boundary is a row-level security policy: the role the
   // family is served with must be held by them, or nothing starts.
   const rls = await rowSecurityProblem(pool);

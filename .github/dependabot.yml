@@ -1,0 +1,78 @@
+# Dependabot: weekly, small grouped pull requests into develop, never main.
+#
+# - github-actions: every action in .github/workflows is pinned by its commit
+#   SHA, with the release in a comment; Dependabot moves both together.
+# - docker: the base images in the Dockerfile, pinned by digest beside their
+#   tag (a new digest for the same tag is proposed too).
+# - docker-compose: the images the compose files run (Postgres, Caddy,
+#   Ollama, and the development extras), pinned the same way.
+# - npm: the pnpm workspace (pnpm-lock.yaml). Minor and patch updates come
+#   grouped, production and development apart; a major comes on its own.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    target-branch: develop
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 3
+    groups:
+      actions:
+        patterns: ['*']
+    commit-message:
+      prefix: ci
+
+  - package-ecosystem: docker
+    directory: /
+    target-branch: develop
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 3
+    groups:
+      base-images:
+        patterns: ['*']
+    # Node.js 22 is what the workspace's engines allow: a new major is a
+    # change of its own, never a weekly bump.
+    ignore:
+      - dependency-name: node
+        update-types: [version-update:semver-major]
+    commit-message:
+      prefix: build
+
+  - package-ecosystem: docker-compose
+    directory: /
+    target-branch: develop
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 3
+    groups:
+      compose-images:
+        patterns: ['*']
+    # A new PostgreSQL major cannot read the old one's data volume: it needs
+    # a dump and restore, so it is never proposed as a bump.
+    ignore:
+      - dependency-name: postgres
+        update-types: [version-update:semver-major]
+    commit-message:
+      prefix: build
+
+  - package-ecosystem: npm
+    directory: /
+    target-branch: develop
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    versioning-strategy: increase-if-necessary
+    groups:
+      production:
+        dependency-type: production
+        update-types: [minor, patch]
+      development:
+        dependency-type: development
+        update-types: [minor, patch]
+    commit-message:
+      prefix: deps

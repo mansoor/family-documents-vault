@@ -5,8 +5,15 @@ import path from 'node:path';
 import { Readable } from 'node:stream';
 import { buffer } from 'node:stream/consumers';
 import { pipeline } from 'node:stream/promises';
-import { describe, expect, it } from 'vitest';
-import { deriveKey, EnvKeyProvider, FileKeyProvider, keyProviderFromEnv } from './master.js';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import {
+  deriveKey,
+  EnvKeyProvider,
+  FileKeyProvider,
+  keyProviderFromEnv,
+  readMasterSecret,
+} from './master.js';
+import { KEY_CANARY_PURPOSE, keyCanary } from './key-canary.js';
 import {
   CHUNK_SIZE,
   ciphertextSize,
@@ -57,6 +64,64 @@ describe('master key providers', () => {
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe('reading the master key: the variable, or a file', () => {
+  const OTHER = 'another-master-secret-of-at-least-thirty-two-bytes';
+  let dir: string;
+  let file: string;
+  beforeEach(async () => {
+    dir = await mkdtemp(path.join(tmpdir(), 'fdv-key-'));
+    file = path.join(dir, 'fdv_master_key');
+    await writeFile(file, `${SECRET}\n`);
+  });
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it('reads the variable alone, as every existing .env has it', async () => {
+    expect(await readMasterSecret({ FDV_MASTER_KEY: SECRET })).toBe(SECRET);
+  });
+
+  it('reads the file alone, without its line ending', async () => {
+    expect(await readMasterSecret({ FDV_MASTER_KEY_FILE: file })).toBe(SECRET);
+    expect(await readMasterSecret({ FDV_MASTER_KEY: '', FDV_MASTER_KEY_FILE: file })).toBe(SECRET);
+  });
+
+  it('takes both when they hold the same key', async () => {
+    expect(await readMasterSecret({ FDV_MASTER_KEY: SECRET, FDV_MASTER_KEY_FILE: file })).toBe(
+      SECRET,
+    );
+  });
+
+  it('refuses both when they hold different keys, naming neither key', async () => {
+    const refused = readMasterSecret({ FDV_MASTER_KEY: OTHER, FDV_MASTER_KEY_FILE: file });
+    await expect(refused).rejects.toThrow(/both set, to different keys/);
+    await refused.catch((err: Error) => {
+      expect(err.message).not.toContain(SECRET);
+      expect(err.message).not.toContain(OTHER);
+    });
+  });
+
+  it('refuses a file that is missing or empty, and neither set', async () => {
+    await expect(readMasterSecret({ FDV_MASTER_KEY_FILE: path.join(dir, 'nope') })).rejects.toThrow(
+      /cannot be read \(ENOENT\)/,
+    );
+    await writeFile(file, '\n');
+    await expect(readMasterSecret({ FDV_MASTER_KEY_FILE: file })).rejects.toThrow(/is empty/);
+    await expect(readMasterSecret({})).rejects.toThrow(/set FDV_MASTER_KEY or FDV_MASTER_KEY_FILE/);
+  });
+});
+
+describe("the master key's canary", () => {
+  it('is 32 bytes, the same for the same key, different for another, and not a key itself', () => {
+    const a = keyCanary(SECRET);
+    expect(a).toHaveLength(32);
+    expect(keyCanary(SECRET).equals(a)).toBe(true);
+    expect(keyCanary(`${SECRET}-other`).equals(a)).toBe(false);
+    expect(a.equals(deriveKey(SECRET, KEY_CANARY_PURPOSE))).toBe(false);
+    expect(a.equals(deriveKey(SECRET, 'key-encryption-key'))).toBe(false);
   });
 });
 

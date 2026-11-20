@@ -11,6 +11,7 @@ node_modules
 **/coverage
 .env
 .env.*
+secrets
 data
 *.md
 !apps/**/package.json

@@ -54,6 +54,11 @@ begin
   if to_regclass('public.local_ai_state') is not null then
     revoke insert, update, delete on public.local_ai_state from fdv_app;
   end if;
+  -- Which master key the vault was last opened with (0121): written by the
+  -- migrate service, as the owning role, and read by the API.
+  if to_regclass('public.master_key_canary') is not null then
+    revoke insert, update, delete on public.master_key_canary from fdv_app;
+  end if;
   if to_regprocedure('public.invitation_household(bytea)') is not null then
     grant execute on function public.invitation_household(bytea) to fdv_app;
   end if;

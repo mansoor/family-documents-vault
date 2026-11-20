@@ -96,8 +96,8 @@ importers:
         specifier: ^1.13.16
         version: 1.13.16
       nodemailer:
-        specifier: ^10.0.10
-        version: 10.0.10
+        specifier: ^10.1.0
+        version: 10.1.0
       otpauth:
         specifier: ^9.5.2
         version: 9.5.2
@@ -114,8 +114,8 @@ importers:
         specifier: ^3.4.0
         version: 3.4.0
       zod:
-        specifier: ^4.6.5
-        version: 4.6.5
+        specifier: ^4.6.6
+        version: 4.6.7
     devDependencies:
       '@fdv/client':
         specifier: workspace:*
@@ -227,8 +227,8 @@ importers:
         specifier: 3.9.38
         version: 3.9.38
       nodemailer:
-        specifier: ^10.0.10
-        version: 10.0.10
+        specifier: ^10.1.0
+        version: 10.1.0
       pg:
         specifier: ^8.23.0
         version: 8.23.0
@@ -242,8 +242,8 @@ importers:
         specifier: ^3.4.0
         version: 3.4.0
       zod:
-        specifier: ^4.6.5
-        version: 4.6.5
+        specifier: ^4.6.6
+        version: 4.6.7
     devDependencies:
       '@types/archiver':
         specifier: ^8.0.0
@@ -2157,10 +2157,6 @@ packages:
     resolution: {integrity: sha512-x0InOIyzgdk+eyaWaRJFH5snEtiImgBgblZ2CyPrLmqqcuMQkEvcDPHbzqbD8eDsSeJbVOjn+crzyzHaM4D+/A==}
     engines: {node: '>=18'}
 
-  nodemailer@10.0.10:
-    resolution: {integrity: sha512-He9XskOFms62SyAKkLu8CcGcYHAo+BSHSsORI8s4PJH8qZgZY4L4lDfvyN0twvmbpyG+eGrxpyBlskj9d9rJ8A==}
-    engines: {node: '>=20.0.0'}
-
   nodemailer@10.1.0:
     resolution: {integrity: sha512-fXW8AulB25aOTuwfRYV6lqHyfz2VM4rr4SGXH03mE7x5znEUpzL5mu6anARUpZN7744Ziwkmr4AxSLPJsBQspg==}
     engines: {node: '>=20.0.0'}
@@ -2874,8 +2870,8 @@ packages:
     peerDependencies:
       zod: ^3.25.0 || ^4.0.0
 
-  zod@4.6.5:
-    resolution: {integrity: sha512-v5l/aFXZQeai4awLbOpSoHecE9UiMrnfx75tEXLjNonXVARxQ5mOeipTjROUchszUNCqnE+hqAMujRsRHsut2Q==}
+  zod@4.6.7:
+    resolution: {integrity: sha512-g8W2D2kU6a8untc053fX1uVBKzM7yqAxW/3zwk83+6RyF2+SKOuV+c0wBDhUwzV1PaGapmZH+rmcUzPf+3CGwg==}
 
 snapshots:
 
@@ -4258,8 +4254,8 @@ snapshots:
       '@babel/parser': 7.29.9
       eslint: 10.11.0
       hermes-parser: 0.25.1
-      zod: 4.6.5
-      zod-validation-error: 4.0.2(zod@4.6.5)
+      zod: 4.6.7
+      zod-validation-error: 4.0.2(zod@4.6.7)
     transitivePeerDependencies:
       - supports-color
 
@@ -4802,8 +4798,6 @@ snapshots:
   node-gyp-build@4.8.4: {}
 
   node-releases@2.0.56: {}
-
-  nodemailer@10.0.10: {}
 
   nodemailer@10.1.0: {}
 
@@ -5463,8 +5457,8 @@ snapshots:
       normalize-path: 3.0.0
       readable-stream: 4.7.0
 
-  zod-validation-error@4.0.2(zod@4.6.5):
+  zod-validation-error@4.0.2(zod@4.6.7):
     dependencies:
-      zod: 4.6.5
+      zod: 4.6.7
 
-  zod@4.6.5: {}
+  zod@4.6.7: {}
