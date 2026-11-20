@@ -11,8 +11,13 @@ concurrency:
   cancel-in-progress: true
 
 # Read-only unless a job says otherwise: `images` alone pushes to GHCR
-# (packages: write), and `release` alone writes the tag's GitHub release
-# (contents: write). Nothing pulls from GHCR: e2e builds its images.
+# (packages: write) and signs what it pushed (id-token: write), and
+# `release` alone writes the tag's GitHub release (contents: write).
+# Nothing pulls from GHCR: e2e builds its images. Every action is pinned
+# by its commit, with the release it is in a comment beside it; Dependabot
+# proposes moves (.github/dependabot.yml). The images jobs run in, and their
+# services, are pinned by digest too; Dependabot does not see these, so move
+# them with the same images in the Dockerfile and docker-compose.yml.
 permissions:
   contents: read
 
@@ -21,7 +26,7 @@ jobs:
     name: Private folders are absent
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Fail if docs-private/ or prototype/ were ever committed
         run: |
           if git ls-files | grep -E '^(docs-private|prototype)/' ; then
@@ -43,7 +48,7 @@ jobs:
     needs: guard
     services:
       postgres:
-        image: postgres:16-alpine
+        image: postgres:16-alpine@sha256:1d5b02d3a9941fbd52437db4107f8c52d6297dac553ca1e5c299ebb3756b4857
         env:
           POSTGRES_USER: fdv
           POSTGRES_PASSWORD: fdv
@@ -60,14 +65,14 @@ jobs:
       S3_TEST_KEY: fdv
       S3_TEST_SECRET: fdv-minio-test
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       # pg_dump and psql of the server's major version, as the worker image
       # pairs them: a newer pg_dump writes dumps PostgreSQL 16 cannot load.
       - name: Install OCR and rendering tools, and PostgreSQL 16's client (for the worker's tests)
         run: sudo apt-get update -q && sudo apt-get install -y -q tesseract-ocr poppler-utils imagemagick postgresql-client-16
       - name: Start Mailpit (SMTP for the notification tests)
         run: |
-          docker run -d --name mailpit -p 1025:1025 -p 8025:8025 axllent/mailpit:latest
+          docker run -d --name mailpit -p 1025:1025 -p 8025:8025 axllent/mailpit:v1.34.0@sha256:23a2ef85bc50853ab3093645d1d64679afd8887e89da5e48a88940c172591a4e
           for i in $(seq 1 30); do
             curl -sf http://localhost:8025/api/v1/messages?limit=1 >/dev/null && break
             sleep 1
@@ -77,18 +82,27 @@ jobs:
       # same S3 API over a plain directory, which is all these tests need.
       - name: Start an S3-compatible server (VersityGW) for the adapter tests
         run: |
-          docker run -d --name s3 -p 9000:7070             -e ROOT_ACCESS_KEY=fdv -e ROOT_SECRET_KEY=fdv-minio-test             versity/versitygw:v1.8.0 posix /tmp
+          docker run -d --name s3 -p 9000:7070             -e ROOT_ACCESS_KEY=fdv -e ROOT_SECRET_KEY=fdv-minio-test             versity/versitygw:v1.8.0@sha256:30292fc2eeacc67a36993b01f7a7a5e3361a19cced0e80c1d71cfa2a4b0a2499 posix /tmp
           for i in $(seq 1 30); do
             # Any answer will do: without credentials it is a 403.
             curl -s -o /dev/null http://localhost:9000/ && break
             sleep 1
           done
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version-file: .nvmrc
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      # Known advisories in what the images ship (production dependencies):
+      # a high or critical one fails a push or a pull request; low and
+      # moderate ones are listed, for the next round of updates, and pass. On
+      # a release tag it only warns: an advisory published after the commit
+      # was reviewed must not stop the release of what was reviewed (fix it
+      # in the next one).
+      - name: No high or critical advisory in the production dependencies
+        continue-on-error: ${{ startsWith(github.ref, 'refs/tags/') }}
+        run: pnpm audit --prod --audit-level high
       - name: A release tag is the version in package.json
         # The server reports package.json's version (stamped in at build),
         # so a tag that disagrees would publish images that lie about
@@ -125,9 +139,9 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version-file: .nvmrc
           cache: pnpm
@@ -135,7 +149,7 @@ jobs:
       - run: pnpm client:pack
       - name: Install it by URL with npm and pnpm, outside the workspace, and use it
         run: pnpm client:smoke npm pnpm
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: client-tarball
           path: packages/client/dist/fdv-client-*.tgz
@@ -158,7 +172,7 @@ jobs:
       GH_REPO: ${{ github.repository }}
       TAG: ${{ github.ref_name }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           # All history: whether the tag's commit is on main decides Latest.
           fetch-depth: 0
@@ -180,7 +194,7 @@ jobs:
           else
             echo "latest=true" >> "$GITHUB_OUTPUT"
           fi
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: client-tarball
           path: ${{ runner.temp }}/client
@@ -234,10 +248,10 @@ jobs:
     name: Image tests on the worker's ImageMagick 7
     runs-on: ubuntu-24.04
     needs: guard
-    container: node:22-alpine
+    container: node:22-alpine@sha256:1314fb30ec37592d5845e5a160d522c0e680972aa534549940b8d73bde88481a
     services:
       postgres:
-        image: postgres:16-alpine
+        image: postgres:16-alpine@sha256:1d5b02d3a9941fbd52437db4107f8c52d6297dac553ca1e5c299ebb3756b4857
         env:
           POSTGRES_USER: fdv
           POSTGRES_PASSWORD: fdv
@@ -273,7 +287,7 @@ jobs:
           fc-cache -f
           magick -version | head -1
           magick -list format | grep PANGO
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Install dependencies
         run: |
           corepack enable
@@ -291,15 +305,18 @@ jobs:
     name: Build images
     runs-on: ubuntu-24.04
     needs: check
-    # The only job that pushes to GHCR.
+    # The only job that pushes to GHCR, and the only one that may ask GitHub
+    # for an OIDC token: cosign signs each pushed image with it (keyless, no
+    # key to keep), and the signature names this workflow and this tag.
     permissions:
       contents: read
       packages: write
+      id-token: write
     strategy:
       matrix:
         target: [api, worker, web]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           # All history: whether a tag's commit is on main decides `latest`.
           fetch-depth: 0
@@ -327,17 +344,17 @@ jobs:
           else
             echo "latest=true" >> "$GITHUB_OUTPUT"
           fi
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
       - name: Log in to GHCR
         if: startsWith(github.ref, 'refs/tags/v')
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Image metadata
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5.10.0
         with:
           images: ghcr.io/${{ github.repository }}/${{ matrix.target }}
           # The action adds `latest` by itself for any stable version tag
@@ -349,24 +366,60 @@ jobs:
             type=semver,pattern={{version}}
             type=raw,value=latest,enable=${{ steps.release.outputs.latest == 'true' }}
       - name: Build (and push on tag)
-        uses: docker/build-push-action@v6
+        id: build
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: .
           target: ${{ matrix.target }}
           push: ${{ startsWith(github.ref, 'refs/tags/v') }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          # What went into each image, attached to what is pushed: the full
+          # build provenance (SLSA) and a software bill of materials (SPDX).
+          # A build that pushes nothing has nowhere to attach them.
+          provenance: ${{ startsWith(github.ref, 'refs/tags/v') && 'mode=max' || 'false' }}
+          sbom: ${{ startsWith(github.ref, 'refs/tags/v') }}
           cache-from: type=gha,scope=${{ matrix.target }}
           cache-to: type=gha,scope=${{ matrix.target }},mode=max
+      - name: Install cosign
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: sigstore/cosign-installer@7e8b541eb2e61bf99390e1afd4be13a184e9ebc5 # v3.10.1
+      # Keyless: the certificate is issued to this workflow, on this tag, by
+      # GitHub's OIDC token, and the signature is logged in Rekor. The README
+      # says how a self-hoster checks it ("Verifying the images").
+      - name: Sign the pushed image by its digest
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          test -n "$DIGEST" || { echo "::error::the build gave no digest to sign"; exit 1; }
+          image="ghcr.io/${GITHUB_REPOSITORY,,}/${TARGET}@${DIGEST}"
+          cosign sign --yes "$image"
+          echo "Signed $image"
+      - name: The image's digest, in the job summary
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          TARGET: ${{ matrix.target }}
+          TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          {
+            echo "### ${TARGET}"
+            echo
+            echo "\`ghcr.io/${GITHUB_REPOSITORY,,}/${TARGET}@${DIGEST}\`"
+            echo
+            echo "Tags: $(echo "$TAGS" | tr '\n' ' ')"
+          } >> "$GITHUB_STEP_SUMMARY"
 
   e2e:
     name: End to end (docker compose)
     runs-on: ubuntu-24.04
     needs: check
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version-file: .nvmrc
           cache: pnpm
@@ -414,7 +467,7 @@ jobs:
       - name: Logs on failure
         if: failure()
         run: docker compose logs --no-color | tail -200
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: failure()
         with:
           name: playwright-results

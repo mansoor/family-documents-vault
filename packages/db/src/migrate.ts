@@ -113,14 +113,51 @@ async function refuseNewer(client: pg.PoolClient, dir: string): Promise<void> {
 }
 
 /**
- * The same refusal, for a process that does not migrate: the API when
- * migrations are left to another replica, and the worker. The application
- * role may read `schema_migration`.
+ * The same refusal alone, for a process that does not migrate but need not
+ * be current (the API, once its own migrateUp has run). The application role
+ * may read `schema_migration`. A process that leaves migrating to another —
+ * the worker, the compose file's API — asks assertSchemaCurrent.
  */
 export async function assertSchemaKnown(pool: pg.Pool, dir = MIGRATIONS_DIR): Promise<void> {
   const client = await pool.connect();
   try {
     await refuseNewer(client, dir);
+  } finally {
+    client.release();
+  }
+}
+
+/**
+ * For the API when it does not migrate (the compose file's, whose migrate
+ * service runs first): refuses a newer database as above, and one with
+ * migrations of this release still to run — started on it, the API would
+ * fail on every table or column they add. Read only, so the application
+ * role may ask.
+ */
+export async function assertSchemaCurrent(pool: pg.Pool, dir = MIGRATIONS_DIR): Promise<void> {
+  const client = await pool.connect();
+  try {
+    await refuseNewer(client, dir);
+    const { rows: table } = await client.query<{ present: boolean }>(
+      "select to_regclass('public.schema_migration') is not null as present",
+    );
+    const done = new Set<number>();
+    if (table[0]?.present) {
+      const { rows } = await client.query<{ version: number }>(
+        'select version from schema_migration',
+      );
+      for (const r of rows) done.add(r.version);
+    }
+    const pending = (await listMigrations(dir)).filter((m) => !done.has(m.version));
+    const first = pending[0];
+    if (first) {
+      throw new Error(
+        `this database has ${pending.length} migration(s) of this release still to run ` +
+          `(from ${String(first.version).padStart(4, '0')}_${first.name}), and this process ` +
+          'does not apply them: run `docker compose run --rm --no-deps migrate` first ' +
+          '(a plain `docker compose up -d` runs it by itself), then start this again',
+      );
+    }
   } finally {
     client.release();
   }

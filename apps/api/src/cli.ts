@@ -1,16 +1,25 @@
-import { readFile } from 'node:fs/promises';
-import { EnvKeyProvider, ScopeKeys } from '@fdv/crypto';
+import { EnvKeyProvider, readMasterSecret, ScopeKeys } from '@fdv/crypto';
 import { createDb, createPool } from '@fdv/db';
 import { PasswordService, RESET_TTL_MINUTES } from './auth/passwords.js';
 import { loadConfig } from './config.js';
+import { migrateCommand } from './prepare-database.js';
 import { repairMasterKeyCommand, rotateMasterKeyCommand } from './rotate-master-key.js';
 
 /**
- * Operator commands, run inside the api container:
+ * Operator commands, run with the api image:
  *
+ *   node apps/api/dist/cli.mjs migrate
  *   node apps/api/dist/cli.mjs rotate-master-key [--even-if-connected]
  *   node apps/api/dist/cli.mjs repair-master-key [--even-if-connected]
  *   node apps/api/dist/cli.mjs reset-password someone@example.com
+ *
+ * `migrate` is the compose file's one-shot `migrate` service: it applies
+ * migrations and the job queue's schema as the owning role, checks that the
+ * master key opens the vault, and exits (prepare-database.ts). The two
+ * master-key commands need the owning role too, so they run in that
+ * service's container (`docker compose run --rm --no-deps migrate …`): the
+ * api container is not given DATABASE_ADMIN_URL. `reset-password` runs in
+ * the api container.
  *
  * `rotate-master-key` reads the current key from the normal configuration
  * and the new one from FDV_MASTER_KEY_NEW. In one transaction it rewraps
@@ -36,9 +45,14 @@ import { repairMasterKeyCommand, rotateMasterKeyCommand } from './rotate-master-
 async function main() {
   const command = process.argv[2];
   if (command === 'reset-password') return resetPassword(process.argv[3]);
+  if (command === 'migrate') {
+    process.exitCode = await migrateCommand(loadConfig());
+    return;
+  }
   if (command !== 'rotate-master-key' && command !== 'repair-master-key') {
     console.error(
-      'usage: cli.mjs rotate-master-key [--even-if-connected]   (with FDV_MASTER_KEY_NEW set)\n' +
+      'usage: cli.mjs migrate\n' +
+        '       cli.mjs rotate-master-key [--even-if-connected]   (with FDV_MASTER_KEY_NEW set)\n' +
         '       cli.mjs repair-master-key [--even-if-connected]   (with FDV_MASTER_KEY_PREVIOUS set)\n' +
         '       cli.mjs reset-password <email>',
     );
@@ -46,9 +60,7 @@ async function main() {
     return;
   }
   const config = loadConfig();
-  const current = config.FDV_MASTER_KEY_FILE
-    ? (await readFile(config.FDV_MASTER_KEY_FILE, 'utf8')).trim()
-    : (config.FDV_MASTER_KEY as string);
+  const current = await readMasterSecret(config);
   const common = {
     current,
     // The owning role and nothing else: the application role sees one
@@ -69,9 +81,7 @@ async function resetPassword(email: string | undefined) {
     return;
   }
   const config = loadConfig();
-  const master = config.FDV_MASTER_KEY_FILE
-    ? (await readFile(config.FDV_MASTER_KEY_FILE, 'utf8')).trim()
-    : (config.FDV_MASTER_KEY as string);
+  const master = await readMasterSecret(config);
   const pool = createPool(config.DATABASE_URL, 1);
   const db = createDb(pool);
   try {

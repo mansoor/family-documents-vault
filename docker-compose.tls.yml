@@ -31,10 +31,10 @@ services:
   # for `!override`, which replaces the port rather than adding a second.
   web:
     ports: !override
-      - '127.0.0.1:${FDV_PORT:-8080}:80'
+      - '127.0.0.1:${FDV_PORT:-8080}:8080'
 
   caddy:
-    image: caddy:2-alpine
+    image: caddy:2-alpine@sha256:003a97808e781aa9f7e75cc2f43d34d461099031faf5e20faefb9f61126836f0
     restart: unless-stopped
     ports:
       - '${FDV_HTTPS_PORT:-443}:443'
@@ -48,6 +48,18 @@ services:
       # it means every device has to trust a new CA.
       - caddy-data:/data
       - caddy-config:/config
+    # Hardened as the others (README, "Hardened containers"): Caddy runs as
+    # root in its image, with no capability but binding ports below 1024,
+    # and writes only to its two volumes and a small /tmp in memory.
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+    security_opt: ['no-new-privileges:true']
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m
+    pids_limit: ${FDV_CADDY_PIDS_LIMIT:-256}
+    mem_limit: ${FDV_CADDY_MEM_LIMIT:-256m}
+    cpus: ${FDV_CADDY_CPUS:-0}
     depends_on:
       web:
         condition: service_healthy
@@ -56,7 +68,7 @@ services:
   # else. Its own ports, so it runs beside the site above: forward the
   # router's 443 and 80 to them. See the README.
   caddy-public:
-    image: caddy:2-alpine
+    image: caddy:2-alpine@sha256:003a97808e781aa9f7e75cc2f43d34d461099031faf5e20faefb9f61126836f0
     profiles: [public-only]
     restart: unless-stopped
     ports:
@@ -72,6 +84,16 @@ services:
       - ./docker/caddy/apps-${FDV_PUBLIC_APPS:-off}.caddy:/etc/caddy/apps.caddy:ro
       - caddy-public-data:/data
       - caddy-public-config:/config
+    # Hardened as caddy above.
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+    security_opt: ['no-new-privileges:true']
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m
+    pids_limit: ${FDV_CADDY_PIDS_LIMIT:-256}
+    mem_limit: ${FDV_CADDY_MEM_LIMIT:-256m}
+    cpus: ${FDV_CADDY_CPUS:-0}
     depends_on:
       web:
         condition: service_healthy

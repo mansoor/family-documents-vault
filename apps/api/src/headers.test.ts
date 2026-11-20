@@ -195,7 +195,7 @@ describe('the public-only site', () => {
     // else anywhere.
     expect(caddy).toMatch(/handle \{\s*respond 404\s*\}/);
     expect(caddy.match(/reverse_proxy /g)).toHaveLength(2);
-    expect(caddy).toMatch(/handle @public \{\s*reverse_proxy web:80/);
+    expect(caddy).toMatch(/handle @public \{\s*reverse_proxy web:8080 /);
     expect(caddy).toMatch(/handle @public_api \{\s*reverse_proxy api:3000/);
     // The pages' matcher names no API route, and the API's nothing else.
     const pages = /^\s*@public path (.+)$/m.exec(caddy)?.[1] ?? '';
@@ -286,7 +286,7 @@ describe('the public-only site', () => {
     // page alone.
     const page = (/^\s*@apps_page path (.+)$/m.exec(on)?.[1] ?? '').trim().split(/\s+/);
     expect(page.sort()).toEqual(['/a', '/a/']);
-    expect(on).toMatch(/handle @apps_page \{\s*reverse_proxy web:80/);
+    expect(on).toMatch(/handle @apps_page \{\s*reverse_proxy web:8080 /);
     expect(on.match(/reverse_proxy /g)).toHaveLength(2);
     expect(off).not.toMatch(/@apps_page/);
     for (const shown of ['/api/v1/app-links/abc', '/api/v1/app-links/session/pages/1']) {
@@ -389,7 +389,7 @@ describe('the address a request came from', () => {
       const caddy = await readFile(root(`docker/caddy/${file}`), 'utf8');
       expect(caddy, file).toMatch(/^\s*@api path \/api\/\* \/healthz \/readyz$/m);
       expect(caddy, file).toMatch(/handle @api \{\s*reverse_proxy api:3000/);
-      expect(caddy, file).toMatch(/handle \{\s*reverse_proxy web:80/);
+      expect(caddy, file).toMatch(/handle \{\s*reverse_proxy web:8080 /);
     }
   });
 
@@ -415,10 +415,10 @@ describe('the address a request came from', () => {
     const service = (compose: string, name: string) =>
       new RegExp(`\\n {2}${name}:\\n([\\s\\S]*?)\\n(?=\\S| {2}\\S)`).exec(compose)?.[1] ?? '';
     const tls = service(await readFile(root('docker-compose.tls.yml'), 'utf8'), 'web');
-    expect(tls).toMatch(/ports: !override\n\s*- '127\.0\.0\.1:\$\{FDV_PORT:-8080\}:80'/);
+    expect(tls).toMatch(/ports: !override\n\s*- '127\.0\.0\.1:\$\{FDV_PORT:-8080\}:8080'/);
     // The phones in the house reach the vault at this machine's address.
     const main = await readFile(root('docker-compose.yml'), 'utf8');
-    expect(service(main, 'web')).toMatch(/ports:\n\s*- '\$\{FDV_PORT:-8080\}:80'/);
+    expect(service(main, 'web')).toMatch(/ports:\n\s*- '\$\{FDV_PORT:-8080\}:8080'/);
     expect(await readFile(root('docker-compose.dev.yml'), 'utf8')).not.toMatch(/127\.0\.0\.1/);
     // And the API believes the compose network, not the LAN, unless told otherwise.
     expect(service(main, 'api')).toMatch(/FDV_TRUST_PROXY: \$\{FDV_TRUST_PROXY:-network\}/);

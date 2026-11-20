@@ -4,16 +4,32 @@
 #   docker compose up -d
 #   open http://localhost:8080
 #
-# Four containers. Data lives in two named volumes: `db-data` (metadata) and
-# `vault-data` (encrypted files, when the local vault is used). Back up both,
-# plus your .env — the master key in it is what makes the files readable.
+# Four containers, and a fifth, `migrate`, that runs once each time the
+# stack starts and exits. Data lives in two named volumes: `db-data`
+# (metadata) and `vault-data` (encrypted files, when the local vault is
+# used). Back up both, plus your .env — the master key in it is what makes
+# the files readable.
+#
+# Every container is hardened (README, "Hardened containers"): no Linux
+# capabilities it does not need, nothing gained through setuid programs, a
+# read-only root filesystem with only the folders it writes to writable, and
+# a ceiling on processes and memory. The ceilings are generous; raise one in
+# .env (FDV_WORKER_MEM_LIMIT=4g, say) if a container is ever stopped for
+# memory. CPU is not capped unless you set FDV_<SERVICE>_CPUS.
+#
+# Images are pinned by digest as well as tag, so a tag moved upstream changes
+# nothing here until this file does (Dependabot proposes the moves).
 
 name: fdv
 
 services:
   postgres:
-    image: postgres:16-alpine
+    image: postgres:16-alpine@sha256:1d5b02d3a9941fbd52437db4107f8c52d6297dac553ca1e5c299ebb3756b4857
     restart: unless-stopped
+    # Its entrypoint starts as root, sets the data folder's owner and drops
+    # to the postgres user: capabilities stay as Docker gives them, but no
+    # program it runs may gain more.
+    security_opt: ['no-new-privileges:true']
     environment:
       POSTGRES_USER: fdv
       POSTGRES_PASSWORD: ${FDV_DB_PASSWORD:?run scripts/gen-env.mjs first}
@@ -30,6 +46,40 @@ services:
       timeout: 3s
       retries: 12
 
+  # Runs once, each time the stack starts, and exits: applies the database
+  # migrations and the job queue's schema as the role that owns the tables,
+  # and checks the master key opens the vault. The api and the worker start
+  # only once it has finished without error (`docker compose logs migrate`
+  # says why if not). It alone holds the owning role's password for that
+  # moment; the API that stays up never does. The api image, so it is
+  # pulled and built with it. The master-key commands run here too (README,
+  # "Rotating the master key").
+  migrate:
+    image: ghcr.io/mansoor/family-documents-vault/api:${FDV_VERSION:-latest}
+    build:
+      context: .
+      target: api
+    command: ['node', 'apps/api/dist/cli.mjs', 'migrate']
+    restart: 'no'
+    environment:
+      DATABASE_URL: postgres://fdv_app:${FDV_DB_APP_PASSWORD}@postgres:5432/fdv
+      DATABASE_ADMIN_URL: postgres://fdv:${FDV_DB_PASSWORD}@postgres:5432/fdv
+      FDV_MASTER_KEY: ${FDV_MASTER_KEY:-}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    # The image's health check is the API's, which a one-shot never answers.
+    healthcheck:
+      disable: true
+    cap_drop: [ALL]
+    security_opt: ['no-new-privileges:true']
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m
+    pids_limit: 128
+    mem_limit: ${FDV_MIGRATE_MEM_LIMIT:-512m}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   api:
     image: ghcr.io/mansoor/family-documents-vault/api:${FDV_VERSION:-latest}
     build:
@@ -37,9 +87,12 @@ services:
       target: api
     restart: unless-stopped
     environment:
+      # The application role alone, which row-level security holds to each
+      # household: the migrate service above has done what needs the owning
+      # role, so DATABASE_ADMIN_URL is not given here.
       DATABASE_URL: postgres://fdv_app:${FDV_DB_APP_PASSWORD}@postgres:5432/fdv
-      DATABASE_ADMIN_URL: postgres://fdv:${FDV_DB_PASSWORD}@postgres:5432/fdv
-      FDV_MASTER_KEY: ${FDV_MASTER_KEY:?run scripts/gen-env.mjs first}
+      # Or FDV_MASTER_KEY_FILE, a Docker secret (docker-compose.secrets.yml).
+      FDV_MASTER_KEY: ${FDV_MASTER_KEY:-}
       FDV_DISPLAY_NAME: ${FDV_DISPLAY_NAME:-Our family vault}
       # The family's time zone until an owner chooses one in Settings (an
       # IANA name; UTC unless set). The worker has the same.
@@ -88,9 +141,22 @@ services:
       LOG_LEVEL: ${LOG_LEVEL:-info}
     volumes:
       - vault-data:/data
+    # It writes only to /data (the vault's files) and a small /tmp in memory.
+    cap_drop: [ALL]
+    security_opt: ['no-new-privileges:true']
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m
+    pids_limit: ${FDV_API_PIDS_LIMIT:-256}
+    mem_limit: ${FDV_API_MEM_LIMIT:-1g}
+    # 0: not capped. A number of CPUs (1.5, say) caps it; more than the
+    # machine has is refused by Docker.
+    cpus: ${FDV_API_CPUS:-0}
     depends_on:
       postgres:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
 
   worker:
     image: ghcr.io/mansoor/family-documents-vault/worker:${FDV_VERSION:-latest}
@@ -100,8 +166,12 @@ services:
     restart: unless-stopped
     environment:
       DATABASE_URL: postgres://fdv_app:${FDV_DB_APP_PASSWORD}@postgres:5432/fdv
+      # The worker keeps the owning role, unlike the API: the nightly backup
+      # (pg_dump) must read every household's rows, which row-level security
+      # hides from the application role, and a restore recreates the tables.
       DATABASE_ADMIN_URL: postgres://fdv:${FDV_DB_PASSWORD}@postgres:5432/fdv
-      FDV_MASTER_KEY: ${FDV_MASTER_KEY}
+      # Or FDV_MASTER_KEY_FILE, a Docker secret (docker-compose.secrets.yml).
+      FDV_MASTER_KEY: ${FDV_MASTER_KEY:-}
       FDV_BASE_URL: ${FDV_BASE_URL:-http://localhost:8080}
       FDV_SMTP_URL: ${FDV_SMTP_URL:-}
       FDV_SMTP_FROM: ${FDV_SMTP_FROM:-Family Document Vault <vault@localhost>}
@@ -156,18 +226,37 @@ services:
       FDV_AI_READER_ALLOWED_PORTS: ${FDV_AI_READER_ALLOWED_PORTS:-}
       FDV_EDITION: ${FDV_EDITION:-}
       LOG_LEVEL: ${LOG_LEVEL:-info}
+      # Where ImageMagick keeps a large picture's pixels while it works, when
+      # a call does not name a folder of its own: /tmp below, where the
+      # worker's start sweeps what a stopped run left (temp-sweep.ts).
+      MAGICK_TEMPORARY_PATH: /tmp
     volumes:
       - vault-data:/data
+      # Its scratch folder: the plain pages and text of a document being
+      # read, drawn or OCRed, and an export being built, which can be as
+      # large as the whole vault — on disk, as before, not in memory. Its
+      # own volume, as the root filesystem is read-only; the worker empties
+      # it of anything a stopped job left as it starts.
+      - worker-tmp:/tmp
       # - ./scanner:/watch
+    # Tesseract, poppler and ImageMagick read what families upload here: no
+    # capabilities, no setuid, nothing writable but /data and /tmp, and
+    # ceilings on processes and memory (each tool run is capped as well).
+    cap_drop: [ALL]
+    security_opt: ['no-new-privileges:true']
+    read_only: true
+    pids_limit: ${FDV_WORKER_PIDS_LIMIT:-512}
+    mem_limit: ${FDV_WORKER_MEM_LIMIT:-3g}
+    cpus: ${FDV_WORKER_CPUS:-0}
     # Its own network as everything's, and the local AI's (R4): only the
     # worker reaches the `ollama` service below.
     networks:
       - default
       - local-ai
     depends_on:
-      # The API runs migrations; the worker's queue schema depends on them.
-      api:
-        condition: service_healthy
+      # Its queue's schema and every table it reads are the migrate service's.
+      migrate:
+        condition: service_completed_successfully
 
   web:
     image: ghcr.io/mansoor/family-documents-vault/web:${FDV_VERSION:-latest}
@@ -177,9 +266,19 @@ services:
     restart: unless-stopped
     # Open to the network, as phones and laptops in the house reach the vault
     # at this machine's address on it; the TLS overlay keeps it to this
-    # machine (docker-compose.tls.yml).
+    # machine (docker-compose.tls.yml). nginx runs as its own unprivileged
+    # user, so it listens on 8080 inside the container.
     ports:
-      - '${FDV_PORT:-8080}:80'
+      - '${FDV_PORT:-8080}:8080'
+    # nginx writes its pid and its buffers to /tmp alone.
+    cap_drop: [ALL]
+    security_opt: ['no-new-privileges:true']
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m
+    pids_limit: ${FDV_WEB_PIDS_LIMIT:-256}
+    mem_limit: ${FDV_WEB_MEM_LIMIT:-256m}
+    cpus: ${FDV_WEB_CPUS:-0}
     depends_on:
       api:
         condition: service_healthy
@@ -194,9 +293,10 @@ services:
   # it, nor it them. Its models are kept in a volume of their own, never in
   # the vault's images.
   ollama:
-    image: ollama/ollama:0.40.2
+    image: ollama/ollama:0.40.2@sha256:b86366bb528bbf7f1424435d165028497a5b69bf6ddb4fa5a87102e2b79f44fb
     profiles: [local-ai]
     restart: unless-stopped
+    security_opt: ['no-new-privileges:true']
     networks:
       - local-ai
     volumes:
@@ -210,4 +310,6 @@ networks:
 volumes:
   db-data:
   vault-data:
+  # The worker's scratch folder: nothing to back up.
+  worker-tmp:
   ollama-models:

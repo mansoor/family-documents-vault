@@ -60,6 +60,49 @@ export class FileKeyProvider implements KeyProvider {
   }
 }
 
+/**
+ * The one secret behind the installation, as the API, the worker and their
+ * commands read it: FDV_MASTER_KEY, or the contents of FDV_MASTER_KEY_FILE
+ * (a Docker secret, say: the key is then in no container's environment).
+ *
+ * Both may be set while moving from one to the other, but only to the same
+ * key: two different keys are refused, never one silently preferred, since
+ * running on the wrong one writes new secrets under it. An empty file is
+ * refused too. Throws an Error whose message says what to do.
+ */
+export async function readMasterSecret(config: {
+  FDV_MASTER_KEY?: string | undefined;
+  FDV_MASTER_KEY_FILE?: string | undefined;
+}): Promise<string> {
+  const fromEnv = config.FDV_MASTER_KEY || undefined;
+  if (!config.FDV_MASTER_KEY_FILE) {
+    if (fromEnv === undefined) throw new Error('set FDV_MASTER_KEY or FDV_MASTER_KEY_FILE');
+    return fromEnv;
+  }
+  let fromFile: string;
+  try {
+    fromFile = (await readFile(config.FDV_MASTER_KEY_FILE, 'utf8')).trim();
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code ?? String(err);
+    throw new Error(
+      `FDV_MASTER_KEY_FILE is ${config.FDV_MASTER_KEY_FILE}, which cannot be read (${code}): ` +
+        'is the file mounted into this container, and readable by its user (uid 1000)?',
+      { cause: err },
+    );
+  }
+  if (!fromFile) {
+    throw new Error(`FDV_MASTER_KEY_FILE is ${config.FDV_MASTER_KEY_FILE}, which is empty`);
+  }
+  if (fromEnv !== undefined && fromEnv.trim() !== fromFile) {
+    throw new Error(
+      'FDV_MASTER_KEY and FDV_MASTER_KEY_FILE are both set, to different keys. Keep one: ' +
+        'remove FDV_MASTER_KEY from .env once the same key is in the file (README, ' +
+        '"Keeping the master key in a file").',
+    );
+  }
+  return fromFile;
+}
+
 /** Picks the provider from configuration: a file path wins over the variable. */
 export function keyProviderFromEnv(env: NodeJS.ProcessEnv = process.env): KeyProvider {
   if (env.FDV_MASTER_KEY_FILE) return new FileKeyProvider(env.FDV_MASTER_KEY_FILE);

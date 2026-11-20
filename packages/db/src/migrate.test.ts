@@ -6,6 +6,7 @@ import pg from 'pg';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createDb, createPool, withSystem, type Db } from './client.js';
 import {
+  assertSchemaCurrent,
   assertSchemaKnown,
   listMigrations,
   migrateUp,
@@ -131,11 +132,41 @@ describe.skipIf(!testAdminUrl())('migrateUp against PostgreSQL', () => {
     }
   });
 
+  it('a process that does not migrate refuses migrations still to run, as the application role', async () => {
+    const app = new pg.Pool({ connectionString: db.appUrl, max: 1 });
+    const dir = await mkdtemp(path.join(tmpdir(), 'fdv-mig-'));
+    try {
+      await expect(assertSchemaCurrent(app)).resolves.toBeUndefined();
+      // This release's migrations, and one more the migrate service has not run.
+      for (const m of await listMigrations(MIGRATIONS_DIR)) {
+        await copyFile(m.file, path.join(dir, path.basename(m.file)));
+      }
+      await writeFile(path.join(dir, '9998_not_run_yet.sql'), 'select 1;');
+      await expect(assertSchemaCurrent(app, dir)).rejects.toThrow(
+        /1 migration\(s\) of this release still to run \(from 9998_not_run_yet\).*run `docker compose run --rm --no-deps migrate` first/,
+      );
+      // And a newer database, as assertSchemaKnown.
+      await pool.query(
+        "insert into schema_migration (version, name) values (9999, 'from_a_newer_release')",
+      );
+      try {
+        await expect(assertSchemaCurrent(app)).rejects.toThrow(/only knows schema/);
+      } finally {
+        await pool.query('delete from schema_migration where version = 9999');
+      }
+    } finally {
+      await app.end();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it('does not refuse a new, empty database', async () => {
     const empty = await createEmptyDatabase();
     const p = new pg.Pool({ connectionString: empty.adminUrl, max: 1 });
     try {
       await expect(assertSchemaKnown(p)).resolves.toBeUndefined();
+      // Unless nothing migrates it: then everything is still to run.
+      await expect(assertSchemaCurrent(p)).rejects.toThrow(/still to run \(from 0001_/);
     } finally {
       await p.end();
       await empty.drop();

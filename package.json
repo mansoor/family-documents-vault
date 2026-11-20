@@ -1,6 +1,6 @@
 {
   "name": "family-document-vault",
-  "version": "0.9.0-dev.73",
+  "version": "0.9.0-dev.74",
   "private": true,
   "type": "module",
   "description": "A household document vault: every important paper in one place, telling you its own status and warning you before it expires.",
@@ -14,6 +14,12 @@
     "pnpm": ">=9"
   },
   "packageManager": "pnpm@9.15.9",
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "argon2",
+      "esbuild"
+    ]
+  },
   "scripts": {
     "build": "pnpm -r --if-present build",
     "typecheck": "pnpm -r --if-present typecheck",

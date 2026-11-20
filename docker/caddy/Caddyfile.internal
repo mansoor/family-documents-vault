@@ -16,6 +16,9 @@
 	# No public CA is contacted in this mode. Plain http:// is answered
 	# with a redirect to https://, so nobody has to remember the scheme.
 	admin off
+	# Each device trusts the local CA itself (README); Caddy does not try to
+	# add it to its own container's trust store, which is read-only.
+	skip_install_trust
 	# What nginx bounded on :8080 is bounded here (the 5.30 review, X530-3),
 	# as the API's requests now come to it straight from Caddy: a request's
 	# headers within 10 seconds; the whole of it, an upload as large as
@@ -50,7 +53,7 @@
 
 	# Everything else: the web container serves the app.
 	handle {
-		reverse_proxy web:80 {
+		reverse_proxy web:8080 {
 			flush_interval -1
 		}
 	}

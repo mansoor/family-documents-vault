@@ -218,7 +218,9 @@ async function guarded(
   if (!o.adminUrl) {
     io.err(
       `DATABASE_ADMIN_URL is needed to ${verb} the master key: it is the owning role, which ` +
-        'sees every household. docker-compose.yml sets it. Nothing was changed.',
+        'sees every household. docker-compose.yml gives it to the migrate service, not the ' +
+        `api: run this as \`docker compose run --rm --no-deps … migrate node apps/api/dist/cli.mjs ${verb}-master-key\`. ` +
+        'Nothing was changed.',
     );
     return 2;
   }

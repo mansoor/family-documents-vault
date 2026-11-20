@@ -46,11 +46,17 @@ const schema = z.object({
     .string()
     .min(1)
     .optional()
-    .describe('Connection string for the migration (table-owning) role. Defaults to DATABASE_URL.'),
+    .describe(
+      'Connection string for the migration (table-owning) role. The compose file gives it ' +
+        'only to the one-shot migrate service and the worker, never to the API that stays up.',
+    ),
   FDV_RUN_MIGRATIONS: z
     .enum(['true', 'false'])
-    .default('true')
-    .describe('Apply pending database migrations on start.'),
+    .optional()
+    .describe(
+      'Apply pending database migrations on start. Unset, the API migrates only when it has ' +
+        'DATABASE_ADMIN_URL; without it, it refuses a database with migrations still to run.',
+    ),
 
   FDV_MASTER_KEY: z
     .string()
@@ -330,6 +336,19 @@ const schema = z.object({
 });
 
 export type ApiConfig = z.infer<typeof schema>;
+
+/**
+ * Whether the API's start applies migrations: as FDV_RUN_MIGRATIONS says,
+ * or, unset, when it has the owning role to apply them with. The compose
+ * file's API has not (the migrate service has migrated before it starts);
+ * a development API, the tests and a compose file of one's own have.
+ */
+export function runsMigrations(
+  config: Pick<ApiConfig, 'FDV_RUN_MIGRATIONS' | 'DATABASE_ADMIN_URL'>,
+): boolean {
+  if (config.FDV_RUN_MIGRATIONS !== undefined) return config.FDV_RUN_MIGRATIONS === 'true';
+  return Boolean(config.DATABASE_ADMIN_URL);
+}
 
 const withMasterKey = schema.refine((c) => c.FDV_MASTER_KEY || c.FDV_MASTER_KEY_FILE, {
   message: 'set FDV_MASTER_KEY (or FDV_MASTER_KEY_FILE); generate it with scripts/gen-env.mjs',

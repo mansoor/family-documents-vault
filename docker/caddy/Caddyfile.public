@@ -41,7 +41,7 @@
 	}
 
 	handle {
-		reverse_proxy web:80 {
+		reverse_proxy web:8080 {
 			flush_interval -1
 		}
 	}

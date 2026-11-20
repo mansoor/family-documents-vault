@@ -1,4 +1,3 @@
-import { readFile } from 'node:fs/promises';
 import { createReadStream, createWriteStream } from 'node:fs';
 import { pipeline } from 'node:stream/promises';
 import {
@@ -6,6 +5,7 @@ import {
   deriveKey,
   EnvKeyProvider,
   READING_RULES_KEY_PURPOSE,
+  readMasterSecret,
   ScopeKeys,
 } from '@fdv/crypto';
 import { createDb, createPool } from '@fdv/db';
@@ -45,9 +45,7 @@ import { restoreSummary } from './restore-summary.js';
 async function main() {
   const [command, a, b] = process.argv.slice(2);
   const config = loadConfig();
-  const masterSecret = config.FDV_MASTER_KEY_FILE
-    ? (await readFile(config.FDV_MASTER_KEY_FILE, 'utf8')).trim()
-    : (config.FDV_MASTER_KEY as string);
+  const masterSecret = await readMasterSecret(config);
   const backupKey = deriveKey(masterSecret, 'database-backup');
   // What a restore seals a backup's Only me notes and details with (0.5.8).
   const keys = new ScopeKeys(new EnvKeyProvider(masterSecret));

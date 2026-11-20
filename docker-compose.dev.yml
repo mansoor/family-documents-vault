@@ -2,39 +2,36 @@
 #
 #   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
 #
-# Adds MinIO (an S3-compatible bucket for exercising the S3 vault adapter)
-# and Mailpit (catches every email the vault sends), and exposes Postgres on
-# the host so `pnpm test` and `pnpm --filter @fdv/api dev` can reach it.
+# Adds an S3-compatible bucket server for exercising the S3 vault adapter
+# (VersityGW, as CI uses: MinIO no longer publishes its images) and Mailpit
+# (catches every email the vault sends), and exposes Postgres on the host so
+# `pnpm test` and `pnpm --filter @fdv/api dev` can reach it. Images are
+# pinned by digest, as in the main file.
 
 services:
   postgres:
     ports:
       - '${FDV_DB_PORT:-5432}:5432'
 
-  minio:
-    image: quay.io/minio/minio:latest
+  # S3 at http://localhost:9000 (S3_TEST_ENDPOINT), with the key the tests use.
+  s3:
+    image: versity/versitygw:v1.8.0@sha256:30292fc2eeacc67a36993b01f7a7a5e3361a19cced0e80c1d71cfa2a4b0a2499
     restart: unless-stopped
-    command: server /data --console-address ':9001'
+    command: ['posix', '/data']
     environment:
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-fdv}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-fdv-minio-dev}
+      ROOT_ACCESS_KEY: ${S3_TEST_KEY:-fdv}
+      ROOT_SECRET_KEY: ${S3_TEST_SECRET:-fdv-minio-test}
     ports:
-      - '9000:9000'
-      - '9001:9001'
+      - '9000:7070'
     volumes:
-      - minio-data:/data
-    healthcheck:
-      test: ['CMD', 'mc', 'ready', 'local']
-      interval: 5s
-      timeout: 3s
-      retries: 12
+      - s3-data:/data
 
   mailpit:
-    image: axllent/mailpit:latest
+    image: axllent/mailpit:v1.34.0@sha256:23a2ef85bc50853ab3093645d1d64679afd8887e89da5e48a88940c172591a4e
     restart: unless-stopped
     ports:
       - '8025:8025' # web UI
       - '1025:1025' # SMTP
 
 volumes:
-  minio-data:
+  s3-data:

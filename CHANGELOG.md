@@ -6,6 +6,35 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.9.0-dev.74] - 2026-11-19 — containers locked down, and a supply chain you can check
+
+### Security
+
+- **Every container is locked down.** The api, the worker, nginx and Caddy now run with no Linux capabilities (Caddy keeps only the one that lets it listen on ports 80 and 443), can never gain more through a setuid program, and have a read-only root filesystem: each writes only to its own volumes and a small `/tmp`. Each has a ceiling on processes and on memory — generous ones, raised in `.env` (`FDV_WORKER_MEM_LIMIT=4g`, say); CPU is not capped unless you set `FDV_<SERVICE>_CPUS`. PostgreSQL gains `no-new-privileges`. The worker, which reads every upload with Tesseract, poppler and ImageMagick, keeps its scratch space in a volume of its own, `worker-tmp`, and, as it starts, removes what a stopped job left there over 6 hours ago (ImageMagick's pixel cache included). See the README, "Hardened containers".
+- **nginx no longer runs as root.** The web container is now `nginx-unprivileged` (nginx 1.28), as its own user, listening on 8080 inside the container (and on 80 still, for older compose files and Caddyfiles). `FDV_PORT` and everything you reach are unchanged.
+- **The API no longer holds the database owner's password.** Migrations run in a new one-shot `migrate` service, from the api image, which also checks the master key opens the vault and then exits; the api and the worker start only once it has succeeded. The API runs on the application role alone, which row-level security holds to each household. The worker keeps the owner role, which backups and restores need. As it passes, the migrate service records which master key opened the vault (an HMAC under a key derived for that alone), and the API, which cannot open every household's keys itself, refuses to start on any other key.
+- **The master key can be kept in a file**, as a Docker secret, so it is in no container's environment: `docker-compose.secrets.yml` reads it from `./secrets/fdv_master_key`. `FDV_MASTER_KEY` in `.env` keeps working as before. With both set, the vault starts only if they hold the same key. See the README, "Keeping the master key in a file".
+- **Every image is pinned by digest.** The Dockerfile's base images (including the Dockerfile syntax image) and every image the compose files run (PostgreSQL, Caddy, Ollama, the development extras) are pinned by `@sha256:` beside their tag, so nothing changes under you when a tag moves upstream. Every GitHub Action is pinned by commit. Dependabot proposes updates to all of them, and to the npm dependencies, weekly, into `develop`.
+- **The images are signed.** Each image a release pushes is signed with cosign (keyless, through GitHub's OIDC, logged in Rekor) and carries its build provenance and a software bill of materials; the release's build summary lists each image's digest. The README, "Verifying the images", shows how to check one, and "Pinning a version" how to stay on one.
+- **Only argon2 and esbuild may run install scripts** (`pnpm.onlyBuiltDependencies`); no other dependency runs code as it is installed, in CI or in the image build. CI now fails a pull request on a high or critical advisory in a production dependency (`pnpm audit --prod`; a release tag only warns). The images CI's own jobs run in are pinned by digest too.
+- **zod 4.6.7**, past a high-severity advisory (memory exhaustion validating oversized collections), and one copy of nodemailer (10.1.0) instead of two.
+
+### Changed
+
+- **Rotating or repairing the master key runs in the migrate service's container**, which has the owner role they need: `docker compose run --rm --no-deps … migrate node apps/api/dist/cli.mjs rotate-master-key` (the README has the full commands). `reset-password` still runs in the api container.
+- A wrong master key now stops the **migrate** service, and the api and the worker do not start: `docker compose logs migrate` says what to do.
+- `docker compose ps -a` shows `migrate` as `Exited (0)` once it is done: that is how it should look.
+- The API's own start migrates only when it is given `DATABASE_ADMIN_URL` (or `FDV_RUN_MIGRATIONS=true`); without it, it refuses to start on a database with migrations still to run. The worker, which never migrates, refuses such a database too: run `docker compose run --rm --no-deps migrate` first.
+- `docker-compose.dev.yml` runs VersityGW for its S3 bucket, as CI does, in place of MinIO, which no longer publishes its images.
+
+### Database
+
+- Migration 0121: `master_key_canary`, one row, the installation's: an HMAC saying which master key last opened the vault, written by the owning role (the migrate service, or a worker or API given it) and read by the API. Never the key, nor anything that opens anything.
+
+### Upgrading
+
+Take this release's compose files and `docker compose pull && docker compose up -d`, with your `.env` as it is: nothing new is required in it. **If you start services one by one with `--no-deps`** (an upgrade script, say), run `docker compose run --rm --no-deps migrate` first: nothing else migrates the database now, and the api and the worker refuse to start on one with migrations still to run (saying that command). nginx now listens on `8080` inside its container, and on `80` as before, so an older compose file or Caddyfile still reaches it; a compose override of your own may move to `8080`. To go back to an image from before this one, use that release's compose files too: an older api image has no `migrate` command.
+
 ## [0.9.0-dev.73] - 2026-11-19 — security before launch
 
 ### Security

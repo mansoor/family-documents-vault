@@ -1,16 +1,23 @@
-# syntax=docker/dockerfile:1.7
+# syntax=docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e
 #
 # One Dockerfile, three images. Build a target with:
 #   docker build --target api    -t fdv/api    .
 #   docker build --target worker -t fdv/worker .
 #   docker build --target web    -t fdv/web    .
 # docker-compose.yml does this for you.
+#
+# Every base image is pinned by its digest as well as its tag, so a tag moved
+# upstream changes nothing here until this file changes: Dependabot proposes
+# each move as a pull request (.github/dependabot.yml).
 
-ARG NODE_IMAGE=node:22-alpine
 ARG PNPM_VERSION=9.15.9
 
+# ---------------------------------------------------------------- node-base
+# The one Node.js image the build and both Node services start from.
+FROM node:22-alpine@sha256:1314fb30ec37592d5845e5a160d522c0e680972aa534549940b8d73bde88481a AS node-base
+
 # ---------------------------------------------------------------- base
-FROM ${NODE_IMAGE} AS base
+FROM node-base AS base
 ARG PNPM_VERSION
 RUN npm install -g pnpm@${PNPM_VERSION} && npm cache clean --force
 WORKDIR /app
@@ -43,7 +50,7 @@ RUN --mount=type=cache,id=pnpm,target=/root/.local/share/pnpm/store \
     pnpm install --frozen-lockfile --prod --filter @fdv/api --filter @fdv/worker
 
 # ---------------------------------------------------------------- api
-FROM ${NODE_IMAGE} AS api
+FROM node-base AS api
 ENV NODE_ENV=production \
     FDV_MIGRATIONS_DIR=/app/migrations \
     PORT=3000
@@ -65,7 +72,7 @@ HEALTHCHECK --interval=10s --timeout=3s --start-period=20s --retries=6 \
 CMD ["node", "apps/api/dist/server.mjs"]
 
 # ---------------------------------------------------------------- worker
-FROM ${NODE_IMAGE} AS worker
+FROM node-base AS worker
 ENV NODE_ENV=production \
     FDV_MIGRATIONS_DIR=/app/migrations
 # OCR and rendering tools: Tesseract 5 (English, and its orientation model,
@@ -110,16 +117,19 @@ COPY --from=prod-deps /app/apps/worker/node_modules ./apps/worker/node_modules
 COPY --from=build /app/apps/worker/dist ./apps/worker/dist
 COPY apps/worker/package.json ./apps/worker/package.json
 COPY scripts/restore-drill.sh ./scripts/restore-drill.sh
-# A restore brings an older backup up to date, as the API's start would.
+# A restore brings an older backup up to date, as the migrate service would.
 COPY packages/db/migrations ./migrations
 RUN mkdir -p /data/vault /data/backups && chown -R node:node /data
 USER node
 CMD ["node", "apps/worker/dist/main.mjs"]
 
 # ---------------------------------------------------------------- web
-FROM nginx:1.27-alpine AS web
+# nginx as its own unprivileged user (uid 101), never root: it listens on
+# 8080, and keeps its pid and buffers in /tmp, the one folder the compose
+# file leaves writable.
+FROM nginxinc/nginx-unprivileged:1.28-alpine@sha256:7377697a821c131a924a7105fafbe7414db4e9fcc77a6f08f776f33f141ec3f8 AS web
 COPY docker/nginx.conf /etc/nginx/conf.d/default.conf
 COPY --from=build /app/apps/web/dist /usr/share/nginx/html
-EXPOSE 80
+EXPOSE 8080
 HEALTHCHECK --interval=10s --timeout=3s --retries=3 \
-  CMD wget -qO- http://127.0.0.1/ >/dev/null || exit 1
+  CMD wget -qO- http://127.0.0.1:8080/ >/dev/null || exit 1

@@ -1184,7 +1184,10 @@ describe.skipIf(!testAdminUrl())('the Reading check, in the worker (R0)', () => 
       await mkdtemp(path.join(dir, 'fdv-check-'));
       await mkdtemp(path.join(dir, 'fdv-check-'));
       await mkdtemp(path.join(dir, 'fdv-other-'));
-      expect(await sweepReadingTemp(dir)).toBe(2);
+      // In the image, only once older than a read may take: another worker
+      // container shares the folder.
+      expect(await sweepReadingTemp(dir, 6 * 3_600_000)).toBe(0);
+      expect(await sweepReadingTemp(dir, 6 * 3_600_000, Date.now() + 7 * 3_600_000)).toBe(2);
       const left = await readdir(dir);
       expect(left.map((n) => n.slice(0, 10))).toEqual(['fdv-other-']);
     } finally {
