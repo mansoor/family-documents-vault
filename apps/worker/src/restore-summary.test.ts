@@ -25,6 +25,7 @@ function report(over: Partial<RestoreReport> = {}): RestoreReport {
     appsPaused: 0,
     appKeysRevoked: 0,
     readingChecksStopped: 0,
+    offsiteCopiesOff: 0,
     signInsPaused: 0,
     locksKept: 0,
     openInvitations: 0,
@@ -78,6 +79,17 @@ describe('what restore-backup says when it is done', () => {
       '1 Reading check that had not finished was stopped. An owner starts another in Settings → Server and reading → Reading and the check.',
     );
     expect(words).not.toContain('For owners');
+  });
+
+  it('says the off-site copy of the backups was turned off, and where to turn it on', () => {
+    const words = restoreSummary(
+      'fdv-2026-11-20T02-30-00-123Z.sql.enc',
+      report({ offsiteCopiesOff: 1 }),
+    ).replace(/\s+/g, ' ');
+    expect(words).toContain(
+      'The off-site copy of the backups was turned off: the backup may name a bucket or a key given up since. An owner sends a test and turns it on again in Settings → Server and reading → Backups.',
+    );
+    expect(restoreSummary('f.sql.enc', report())).not.toContain('off-site');
   });
 
   it('says each person’s emergency information went back to them and the owners (0.9.0, H4)', () => {

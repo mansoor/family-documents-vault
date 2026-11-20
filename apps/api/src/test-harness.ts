@@ -13,11 +13,13 @@ import {
   ScopeKeys,
   SMS_PASSWORD_PURPOSE,
   AI_READER_KEY_PURPOSE,
+  BACKUP_OFFSITE_KEY_PURPOSE,
   SHARE_LINK_COPY_PURPOSE,
   UPLOAD_REQUEST_COPY_PURPOSE,
 } from '@fdv/crypto';
 import { createDb, createPool, type Db, type Schema } from '@fdv/db';
 import type { Role } from '@fdv/shared';
+import type { OffsiteBucket, OffsiteTestFound } from '@fdv/storage';
 import { createTestDatabase, type TestDatabase } from '@fdv/db/testing';
 import type { FastifyInstance } from 'fastify';
 import { Kysely, PostgresDialect, type LogEvent } from 'kysely';
@@ -85,6 +87,7 @@ import { MAIL_IN_CODE_KEY_PURPOSE, MailInService } from './mail-in/service.js';
 import { SettingsCheckService } from './settings-checks.js';
 import { LocalAiService } from './household/local-ai.js';
 import { AiReaderService } from './household/ai-reader.js';
+import { BackupOffsiteService } from './backups/offsite.js';
 import { PHONE_CODE_KEY_PURPOSE, MemberPhoneService } from './sms/phones.js';
 import type { SmsProvider, SmsProviderFactory } from '@fdv/db';
 import { SmsService } from './sms/service.js';
@@ -238,6 +241,12 @@ export interface HarnessOptions {
   smsTestWaitMs?: number;
   /** FDV_EDITION: self_hosted unless a test says (AIR1's hosted guards). */
   edition?: 'self_hosted' | 'hosted';
+  /**
+   * Settings → Backups' test (0.9.0-dev.76): a small file written to the
+   * bucket and deleted. Unless a test stands in, the real one, which reaches
+   * only the S3 test server's address.
+   */
+  offsiteTest?: (b: OffsiteBucket) => Promise<OffsiteTestFound>;
   /** FDV_AI_READER_SETTINGS (AIR1): on unless a test says off. */
   aiReaderSettings?: 'on' | 'off';
   /** DNS for the AI reader's address (AIR1): the harness's own, a name → its addresses. */
@@ -597,6 +606,12 @@ export async function createHarness(opts: HarnessOptions = {}): Promise<Harness>
     textCodes,
     localAi: new LocalAiService(db, settingsChecks, aiReader),
     aiReader,
+    backupOffsite: new BackupOffsiteService(db, {
+      key: deriveKey(TEST_MASTER, BACKUP_OFFSITE_KEY_PURPOSE),
+      edition: config.FDV_EDITION,
+      ...(opts.offsiteTest ? { test: opts.offsiteTest } : {}),
+      alert,
+    }),
     pingDatabase: async () => undefined,
     auth,
     totp,

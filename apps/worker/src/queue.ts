@@ -67,6 +67,16 @@ export const JOBS = {
   regenerateTypes: 'types.regenerate',
   /** Nightly encrypted pg_dump with 30-day retention. */
   backupDatabase: 'backup.database',
+  /**
+   * Hourly (0.9.0-dev.76): the owners told, once an incident, when the
+   * off-site copy of the backups failed or has not gone for two days.
+   */
+  backupOffsiteCheck: 'backup.offsite_check',
+  /**
+   * (0.9.0-dev.76) One backup copied off-site, sent by the backup job with
+   * the backup's name: a queue of its own, three hours, never retried.
+   */
+  backupOffsiteCopy: 'backup.offsite_copy',
   /** Every 15 minutes: scheduled/snoozed reminders become due on the local date. */
   remindersTick: 'reminders.tick',
   /** Hourly: one digest per household at its local 9am, with catch-up. */

@@ -78,7 +78,10 @@ describe('the compose files', () => {
     expect(nginx).toMatch(/^\s*listen 8080;$/m);
     expect(nginx).toMatch(/^\s*listen 80;$/m);
     const main = await file('docker-compose.yml');
-    expect(block(main, 'web')).toMatch(/- '\$\{FDV_PORT:-8080\}:8080'/);
+    // Unset, FDV_BIND leaves the port on every interface, IPv4 and IPv6, as before.
+    expect(block(main, 'web')).toMatch(
+      /- '\$\{FDV_BIND:\+\$\{FDV_BIND\}:\}\$\{FDV_PORT:-8080\}:8080'/,
+    );
     for (const caddy of [
       'Caddyfile.internal',
       'Caddyfile.public',

@@ -783,6 +783,14 @@ export interface CapabilityFeatures {
    * take Basic alone.
    */
   connected_app_tokens?: boolean;
+  /**
+   * An off-site copy of the nightly backups (0.9.0-dev.76): Settings →
+   * Backups, an owner's — `GET`, `PUT` and `DELETE /backups/offsite`, `PUT
+   * /backups/offsite/enabled` and `POST /backups/offsite/test`. Absent from
+   * older vaults, and from the hosted edition, whose operator keeps the
+   * backups.
+   */
+  backup_offsite?: boolean;
 }
 
 export interface CapabilityLimits {

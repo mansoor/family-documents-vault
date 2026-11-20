@@ -18,8 +18,9 @@ import { Splitter, useKeptWidth, type WidthBounds } from './splitter.js';
  *    H2), Time zone, Kinds of document, Tags — an owner
  *    changes them; everybody else reads what is theirs, as before.
  *  - Server and reading, an owner's: Storage, Email in and out, Scanner
- *    folder, Reading and the check. What was the For owners page's list,
- *    each now in the menu itself; /settings/owners opens Storage.
+ *    folder, Reading and the check (and Text messages, and Backups, where
+ *    the vault offers them). What was the For owners page's list, each now
+ *    in the menu itself; /settings/owners opens Storage.
  *
  * From 768 px a menu, "Settings sections", down the left of the Settings
  * area, as wide as its person dragged it, and the chosen page across the
@@ -52,6 +53,7 @@ export type SectionKey =
   | 'scanner'
   | 'reading'
   | 'texts'
+  | 'backups'
   | 'caregivers';
 
 export type GroupKey = 'you' | 'household' | 'server';
@@ -311,6 +313,13 @@ export function settingsGroups(
       ),
     );
   }
+  // Backups, and a copy of each somewhere else (0.9.0-dev.76): an owner's,
+  // where the vault offers it (never on the hosted edition).
+  if (owner && caps?.features.backup_offsite === true) {
+    server.push(
+      section('backups', '/settings/backups', 'Backups', 'Nightly backups, and a copy elsewhere'),
+    );
+  }
 
   return (
     [
@@ -558,6 +567,13 @@ const DRAWN: Record<SectionKey, ReactNode> = {
     <>
       <path d="M4.5 6a1.5 1.5 0 0 1 1.5-1.5h12A1.5 1.5 0 0 1 19.5 6v8.5A1.5 1.5 0 0 1 18 16h-7.5l-4 3.5V16h-.5a1.5 1.5 0 0 1-1.5-1.5z" />
       <path d="M8.5 9.5h7M8.5 12.5h4.5" />
+    </>
+  ),
+  // A box with an arrow out of it: a copy kept somewhere else.
+  backups: (
+    <>
+      <rect x="3.5" y="10" width="17" height="10" rx="1.5" />
+      <path d="M12 3.5v9M8.5 7 12 3.5 15.5 7" />
     </>
   ),
   // A heart in a hand's keeping: someone who may see your medical papers.

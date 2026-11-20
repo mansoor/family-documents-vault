@@ -6,6 +6,7 @@ import {
   deriveKey,
   EnvKeyProvider,
   AI_READER_KEY_PURPOSE,
+  BACKUP_OFFSITE_KEY_PURPOSE,
   MAILBOX_PASSWORD_PURPOSE,
   OPERATOR_MAIL_KEY_PURPOSE,
   READING_RULES_KEY_PURPOSE,
@@ -18,6 +19,15 @@ import { assertSchemaCurrent, createPool, rowSecurityProblem } from '@fdv/db';
 import { WATCH_SYSTEM_DIRS } from '@fdv/shared';
 import { loadConfig, logs, type LogLevel } from './config.js';
 import { backupDatabase } from './jobs/backup.js';
+import {
+  copyOffsite,
+  noticeOffsite,
+  OFFSITE_COPY_QUEUE,
+  OFFSITE_COPY_QUEUE_OPTIONS,
+  OFFSITE_COPY_SINGLETON,
+  offsiteCopyFile,
+  type OffsiteCopyJob,
+} from './jobs/backup-offsite.js';
 import { buildExport, type ExportJob } from './jobs/export.js';
 import { processQueue, processVersion, type ProcessVersionJob } from './jobs/process-version.js';
 import {
@@ -417,11 +427,72 @@ async function main(): Promise<void> {
     log,
     masterSecret,
   };
+  // The off-site copy set in Settings → Backups (0.9.0-dev.76): the file
+  // just written, as it is, to the household's bucket, in a job of its own;
+  // and the owners told, once an incident, when a copy fails or has not gone
+  // for FDV_BACKUP_OFFSITE_LATE_DAYS (two: nightly backups).
+  const offsiteDeps = {
+    admin: dbs.admin,
+    db: dbs.app,
+    key: deriveKey(masterSecret, BACKUP_OFFSITE_KEY_PURPOSE),
+    log,
+  };
+  const noticeOffsiteCopies = async () => {
+    const told = await noticeOffsite({
+      admin: dbs.admin,
+      db: dbs.app,
+      tell: async (a, db) => {
+        await boss.send(JOBS.alertSend, { ...a }, { db });
+      },
+      lateDays: config.FDV_BACKUP_OFFSITE_LATE_DAYS,
+    });
+    if (told > 0) log('info', 'owners told the off-site backup copy is failing or late', { told });
+  };
+  // Three hours, never tried again, one queued and one running: a backup
+  // job past its time is never made again because its upload was slow.
+  await boss.createQueue(OFFSITE_COPY_QUEUE, OFFSITE_COPY_QUEUE_OPTIONS);
+  await boss.updateQueue(OFFSITE_COPY_QUEUE, {
+    retryLimit: OFFSITE_COPY_QUEUE_OPTIONS.retryLimit,
+    expireInSeconds: OFFSITE_COPY_QUEUE_OPTIONS.expireInSeconds,
+  });
+  await boss.work<OffsiteCopyJob>(OFFSITE_COPY_QUEUE, { batchSize: 1 }, async (jobs) => {
+    for (const job of jobs) {
+      const file = offsiteCopyFile(config.FDV_BACKUP_DIR, job.data);
+      if (!file) {
+        log('warn', 'off-site copy job had the wrong shape', { id: job.id });
+        continue;
+      }
+      try {
+        const copied = await copyOffsite(offsiteDeps, file, job.signal);
+        if (copied.copied + copied.failed > 0) log('info', 'off-site backup copy', { ...copied });
+      } finally {
+        await noticeOffsiteCopies();
+      }
+    }
+  });
   await boss.createQueue(JOBS.backupDatabase, { retryLimit: 3, retryDelay: 300 });
   await boss.work(JOBS.backupDatabase, async () => {
-    await backupDatabase(backupDeps);
+    const made = await backupDatabase(backupDeps);
+    // The backup is made: its copy is a job of its own, and never makes it again.
+    try {
+      await boss.send(
+        OFFSITE_COPY_QUEUE,
+        { file: path.basename(made.file) } satisfies OffsiteCopyJob,
+        { singletonKey: OFFSITE_COPY_SINGLETON },
+      );
+    } catch (err) {
+      log('error', 'the off-site backup copy could not be asked for', {
+        error: (err as Error).message,
+      });
+    }
   });
   await boss.schedule(JOBS.backupDatabase, config.FDV_BACKUP_CRON);
+  // Hourly, too: a copy that is late because no backup ran at all.
+  await boss.createQueue(JOBS.backupOffsiteCheck, { retryLimit: 1, retryDelay: 300 });
+  await boss.work(JOBS.backupOffsiteCheck, async () => {
+    await noticeOffsiteCopies();
+  });
+  await boss.schedule(JOBS.backupOffsiteCheck, '50 * * * *');
 
   const vapid =
     config.FDV_VAPID_PUBLIC_KEY && config.FDV_VAPID_PRIVATE_KEY

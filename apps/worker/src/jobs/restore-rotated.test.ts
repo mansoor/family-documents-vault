@@ -26,6 +26,9 @@ import {
   AI_READER_KEY_PURPOSE,
   openAiReaderKey,
   sealAiReaderKey,
+  BACKUP_OFFSITE_KEY_PURPOSE,
+  openBackupOffsiteSecret,
+  sealBackupOffsiteSecret,
   unwrapKey,
   wrapKey,
   type ScopeRef,
@@ -73,6 +76,13 @@ const TWILIO = { accountSid: `AC${randomUUID().replace(/-/g, '')}` };
 /** The household's AI reader's API key, and the reader it was typed for (0.9.0, AIR1). */
 const AI_KEY = 'the household AI reader key';
 const READER = { kind: 'ollama', baseUrl: 'http://192.168.1.30:11434' };
+/** The bucket the nightly backups are copied to (0.9.0-dev.76), and its secret key. */
+const OFFSITE_SECRET = 'the off-site bucket secret key';
+const OFFSITE = {
+  endpoint: 'https://s3.example.test',
+  bucket: 'family-backups',
+  accessKeyId: 'AKID',
+};
 /** A share link and its PIN, kept sealed to show its maker again (0.9.0). */
 const LINK = { token: 'the-link-secret-handed-over-as-it-was-made', pin: '4821' };
 const quiet = () => undefined;
@@ -258,6 +268,24 @@ describe.skipIf(!testAdminUrl() || (PG_BIN === null && !MUST_RESTORE))(
           sealAiReaderKey(deriveKey(secret, AI_READER_KEY_PURPOSE), AI_KEY, household, READER),
         ],
       );
+      // The bucket the nightly backups are copied to (0.9.0-dev.76): its secret the same.
+      await query(
+        t.adminUrl,
+        `insert into backup_offsite (household_id, endpoint, bucket, access_key_id, secret_encrypted)
+         values ($1, $2, $3, $4, $5)`,
+        [
+          household,
+          OFFSITE.endpoint,
+          OFFSITE.bucket,
+          OFFSITE.accessKeyId,
+          sealBackupOffsiteSecret(
+            deriveKey(secret, BACKUP_OFFSITE_KEY_PURPOSE),
+            OFFSITE_SECRET,
+            household,
+            OFFSITE,
+          ),
+        ],
+      );
       // A link to a document, and the copy kept to show its maker again
       // (0.9.0, 0084): moved with the rest, and opens after.
       const [doc] = await query<{ id: string }>(
@@ -400,6 +428,18 @@ describe.skipIf(!testAdminUrl() || (PG_BIN === null && !MUST_RESTORE))(
           v.household,
           READER,
         ),
+        offsite: openBackupOffsiteSecret(
+          deriveKey(secret, BACKUP_OFFSITE_KEY_PURPOSE),
+          (
+            await query<{ s: Buffer }>(
+              t.adminUrl,
+              'select secret_encrypted as s from backup_offsite where household_id = $1',
+              [v.household],
+            )
+          )[0]?.s as Buffer,
+          v.household,
+          OFFSITE,
+        ),
       };
     }
     const everything = {
@@ -412,6 +452,7 @@ describe.skipIf(!testAdminUrl() || (PG_BIN === null && !MUST_RESTORE))(
       twilio: TWILIO_TOKEN,
       link: LINK,
       ai: AI_KEY,
+      offsite: OFFSITE_SECRET,
     };
 
     /** A restore as the command line runs it, in a vault whose master key is NEW. */
@@ -457,6 +498,7 @@ describe.skipIf(!testAdminUrl() || (PG_BIN === null && !MUST_RESTORE))(
             shareLinkCopies: 1,
             uploadRequestCopies: 0,
             aiReaderKeys: 1,
+            backupOffsiteSecrets: 1,
           },
         },
       });
@@ -505,6 +547,7 @@ describe.skipIf(!testAdminUrl() || (PG_BIN === null && !MUST_RESTORE))(
           shareLinkCopies: 1,
           uploadRequestCopies: 0,
           aiReaderKeys: 1,
+          backupOffsiteSecrets: 1,
         },
         unchanged: 3,
       });

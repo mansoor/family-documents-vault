@@ -6,6 +6,27 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.9.0-dev.76] - 2026-11-20 — backups off the machine, and a checklist for the server
+
+### Added
+
+- **An off-site copy of the backups.** Settings → Server and reading → **Backups**, an owner's: name a bucket on any S3-compatible service (Amazon S3, Backblaze B2, Wasabi, MinIO…) — address, region, bucket, an optional folder, an access key and its secret — save it, **Send a test** (a small file is written there, read back, listed and deleted), then turn the copy on. After each nightly backup (in a job of its own, given three hours and never retried, so a slow upload never makes the backup again), and each `backup-now`, the worker copies the backup file as it is — the database, already encrypted under the master key, never decrypted to send — and keeps the newest 30 (or as many as you choose) of its own copies there, removing only its own older ones in that folder. A key that may not delete is welcome, and safer: the test says so, the page shows it, and the vault then removes nothing, leaving that to the bucket's lifecycle rule (the README says how to set up such a key, versioning or Object Lock, and the rules). The secret key is sealed under the master key, like the vault's other saved passwords, moved by a key rotation and by a restore of an older backup, and never shown again. Changing anything takes a passkey or a code; a new bucket, key or secret waits for a test of its own. The page says when the last copy went and why the last one did not, and the owners are emailed once when a copy fails or none has gone for two days (`FDV_BACKUP_OFFSITE_LATE_DAYS`, for backups less often than nightly), then not again until one goes or the copy is turned on again; when an owner lowers how many copies are kept while it is on, the other owners are emailed. A restore turns the copy off and untested, as it may name a bucket given up since. Only where the database holds one household (the self-hosted vault), and not on the hosted edition.
+- **The page says what a backup holds:** the database — every document's details and notes, the people, the activity log, the settings — and not the document files, which you keep a copy of yourself (the `fdv_vault-data` volume, or your storage bucket).
+
+### Security
+
+- **`FDV_BIND`**: the address `:8080` is published on. Unset, nothing changes: every interface, IPv4 and IPv6, as before. `FDV_BIND=127.0.0.1` keeps it to the machine itself — on a VPS, or behind a reverse proxy of your own — since Docker's published ports go round `ufw` and `firewalld`.
+- **The API warns as it starts when `FDV_BASE_URL` is plain `http://` to another machine**: passwords and sign-in tokens would cross the network unencrypted. Not for a Tailscale address (100.64.0.0/10) or name (`*.ts.net`), which Tailscale encrypts. It suggests Tailscale or the bundled Caddy, and starts all the same.
+- **README: a Security checklist** for whoever runs the vault — HTTPS rather than port-forwarding, never forwarding `:8080`, Docker and the firewall (`FDV_BIND`, or `DOCKER-USER` rules for IPv4 and IPv6), pinning `FDV_VERSION` and updating monthly, the monthly restore drill, backups and the master key off the machine, two-step sign-in for everyone, and what the vault tells you. "Backups and recovery" says what goes off-site and how to restore from a copy.
+
+### Database
+
+- Migration 0123: `backup_offsite`, a household's bucket for the copy, an owner's alone (row-level security, and a rule that whether a test passed and what became of each copy are the vault's to say). Its secret is one of the master-key-sealed values a rotation and a restore move; the restore check holds the table to owners as it does the other owner settings.
+
+### Upgrading
+
+Nothing to do: `FDV_BIND` and `FDV_BACKUP_OFFSITE_LATE_DAYS` are optional, and the copy stays off until an owner sets it up. If the API now warns about plain http, see the README's Security checklist.
+
 ## [0.9.0-dev.75] - 2026-11-19 — sessions you can trust, and failed sign-ins that are noticed
 
 ### Security

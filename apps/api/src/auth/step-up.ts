@@ -56,7 +56,8 @@ export type StepUpAction =
   | 'share_emergency'
   | 'download_sensitive'
   | 'connect_app'
-  | 'sign_out_others';
+  | 'sign_out_others'
+  | 'change_backups';
 
 const WHY: Record<StepUpAction, string> = {
   open_private_document: 'to open a document only you can see',
@@ -170,6 +171,10 @@ const WHY: Record<StepUpAction, string> = {
   // credential. A session picked up from an unlocked device could otherwise
   // sign the person out everywhere else, and keep the vault to itself.
   sign_out_others: 'to sign out your other devices',
+  // Where the nightly backups are copied, and whether they are (0.9.0-dev.76):
+  // a session picked up from an unlocked device could otherwise send every
+  // backup to a bucket of its own, or quietly stop the copies.
+  change_backups: 'to change where backups are copied',
 };
 
 /**

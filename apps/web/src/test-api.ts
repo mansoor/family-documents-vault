@@ -94,6 +94,8 @@ import {
   type SmsMode,
   type Preferences,
   type SmsSettingsView,
+  type OffsiteView,
+  type OffsiteTestResult,
   type AiReaderView,
   type SmsState,
   type MfaChallenge,
@@ -693,6 +695,19 @@ export interface FakeState {
     phones?: Record<string, { masked: string; confirmed: boolean; code: string }>;
     saves?: Array<Record<string, unknown>>;
     tested?: string[];
+  };
+  /**
+   * Settings → Backups (0.9.0-dev.76): said when a test gives it. `view` is
+   * what GET /backups/offsite answers; `test` what the next test answers;
+   * `saves` the bodies PUT was sent, `turned` each PUT …/enabled.
+   */
+  offsite?: {
+    view: OffsiteView;
+    test?: Omit<OffsiteTestResult, 'view'>;
+    /** Whether the key a test finds may delete (true unless said). */
+    canDelete?: boolean;
+    saves?: Array<Record<string, unknown>>;
+    turned?: boolean[];
   };
   /** An older vault, with text messages but not notifications by them (SMS2): false. */
   smsNotifications?: boolean;
@@ -1589,6 +1604,8 @@ export function installFakeApi(state: FakeState) {
           ...(state.mailIn?.available ? { email_ingest: true } : {}),
           // Text messages (0.9.0, SMS1): said when a test gives them.
           ...(state.sms ? { sms_texts: true } : {}),
+          // Settings → Backups (0.9.0-dev.76): said when a test gives it.
+          ...(state.offsite ? { backup_offsite: true } : {}),
           // Notifications by text (0.9.0, SMS2): with them, unless a test is an older vault.
           ...(state.sms && state.smsNotifications !== false ? { sms_notifications: true } : {}),
           // Codes by text (0.9.0, SMS3): said when a test gives them.
@@ -2650,6 +2667,74 @@ export function installFakeApi(state: FakeState) {
         };
       }
       return json({ ...base, state: 'done', [c.kind]: answer });
+    }
+    // Settings → Backups (0.9.0-dev.76), as the vault answers it.
+    if (state.offsite && path.startsWith('/api/v1/backups/offsite')) {
+      const o = state.offsite;
+      if (storedRole() !== 'owner') {
+        return refuse(403, 'forbidden', 'Only an owner can set up where backups are copied.');
+      }
+      const s = o.view.settings;
+      if (path === '/api/v1/backups/offsite/test' && method === 'POST') {
+        const t = o.test ?? { ok: true, problem: null, words: 'The test went.' };
+        if (s && (t.ok || !s.enabled)) {
+          s.status = t.ok ? 'ok' : 'failed';
+          s.test_problem = t.problem;
+          s.can_delete = t.ok ? o.canDelete !== false : null;
+          s.last_tested_at = new Date().toISOString();
+        }
+        return json({ ...t, view: o.view });
+      }
+      if (path === '/api/v1/backups/offsite/enabled' && method === 'PUT') {
+        const on = (body as { enabled: boolean }).enabled;
+        (o.turned ??= []).push(on);
+        if (!s) return refuse(409, 'offsite_not_set_up', 'Save the bucket’s details first.');
+        if (on && s.status !== 'ok') {
+          return refuse(
+            409,
+            'offsite_untested',
+            'Send a test first. Backups are only copied somewhere that has passed a test.',
+          );
+        }
+        s.enabled = on;
+        return json(o.view);
+      }
+      if (method === 'DELETE') {
+        o.view = { ...o.view, settings: null };
+        return json(o.view);
+      }
+      if (method === 'PUT') {
+        const b = body as Record<string, unknown> & { secret_access_key?: string };
+        (o.saves ??= []).push(b);
+        const { secret_access_key: secret, ...rest } = b;
+        o.view = {
+          ...o.view,
+          settings: {
+            endpoint: (rest.endpoint as string | null | undefined) ?? null,
+            region: (rest.region as string | null | undefined) ?? null,
+            bucket: String(rest.bucket),
+            prefix: (rest.prefix as string | null | undefined) ?? null,
+            path_style: (rest.path_style as boolean | undefined) ?? true,
+            access_key_id: String(rest.access_key_id),
+            secret_access_key: secret || s?.secret_access_key === 'set' ? 'set' : 'not_set',
+            retain_count: (rest.retain_count as number | undefined) ?? 30,
+            enabled: false,
+            status: 'untested',
+            last_tested_at: null,
+            test_problem: null,
+            can_delete: null,
+            last_attempt_at: null,
+            last_copy_at: null,
+            last_copy_object: null,
+            last_copy_bytes: null,
+            last_result: null,
+            last_problem: null,
+            late: false,
+          },
+        };
+        return json(o.view);
+      }
+      return json(o.view);
     }
     // Text messages (0.9.0, SMS1), as the vault answers them.
     if (

@@ -7,6 +7,7 @@ import {
   ScopeKeys,
   SMS_PASSWORD_PURPOSE,
   AI_READER_KEY_PURPOSE,
+  BACKUP_OFFSITE_KEY_PURPOSE,
   SHARE_LINK_COPY_PURPOSE,
   UPLOAD_REQUEST_COPY_PURPOSE,
   databasePasswordProblem,
@@ -87,12 +88,14 @@ import { MAIL_IN_CODE_KEY_PURPOSE, MailInService } from './mail-in/service.js';
 import { SettingsCheckService } from './settings-checks.js';
 import { LocalAiService } from './household/local-ai.js';
 import { AiReaderService } from './household/ai-reader.js';
+import { BackupOffsiteService } from './backups/offsite.js';
 import { PHONE_CODE_KEY_PURPOSE, MemberPhoneService } from './sms/phones.js';
 import { SmsService } from './sms/service.js';
 import { SMS_CODE_KEY_PURPOSE, TextCodeService } from './sms/codes.js';
 import { serverVersion } from './version.js';
 import { masterKeyMatchesCanary, masterKeyOpensVault } from './master-key-check.js';
 import { prepareDatabase } from './prepare-database.js';
+import { plainHttpWarning } from './plain-http.js';
 
 async function main(): Promise<void> {
   const config = loadConfig();
@@ -125,6 +128,11 @@ async function main(): Promise<void> {
   // not given the owning role's password at all: what stays running holds
   // only the application role's. Given DATABASE_ADMIN_URL (development, the
   // tests, a compose file of your own) it does both itself, as before.
+  // Plain http to another machine: said once, plainly, and the vault starts
+  // all the same (a LAN :8080 is how many houses reach it today).
+  const clear = plainHttpWarning(config.FDV_BASE_URL);
+  if (clear) console.warn(`[start] WARNING: ${clear}`);
+
   const migrates = runsMigrations(config);
   if (migrates) await prepareDatabase(config.DATABASE_ADMIN_URL ?? config.DATABASE_URL);
   if (config.DATABASE_ADMIN_URL) {
@@ -353,6 +361,14 @@ async function main(): Promise<void> {
     // The local AI reader's switch (0.9.0, R4): the endpoint is the worker's alone.
     localAi: new LocalAiService(db, settingsChecks, aiReader),
     aiReader,
+    // Settings → Backups (0.9.0-dev.76): the bucket the nightly backups are
+    // copied to, its secret key sealed here; the worker copies to it.
+    backupOffsite: new BackupOffsiteService(db, {
+      key: deriveKey(masterSecret, BACKUP_OFFSITE_KEY_PURPOSE),
+      edition: config.FDV_EDITION,
+      lateDays: config.FDV_BACKUP_OFFSITE_LATE_DAYS,
+      alert,
+    }),
     pingDatabase: async () => {
       await pool.query('select 1');
     },

@@ -176,6 +176,9 @@ import type {
   SettingsCheckView,
   SmsSettingsInput,
   SmsSettingsView,
+  OffsiteInput,
+  OffsiteTestResult,
+  OffsiteView,
   SmsStatusView,
   SmsTestResult,
   TextCodeSent,
@@ -2427,6 +2430,34 @@ export function createApi(http: Http) {
         body: { number },
         token,
       }),
+    /**
+     * Settings → Backups (0.9.0-dev.76, `features.backup_offsite`): where the
+     * nightly backups are copied off-site, and what became of the last copy.
+     * An owner's (`403` for anybody else). Never the secret key, only
+     * whether one is set.
+     */
+    offsiteBackup: (token: string) => request<OffsiteView>('/api/v1/backups/offsite', { token }),
+    /**
+     * The bucket saved (a passkey or a code first, `change_backups`): untested
+     * and off when anything that reaches it changed. `secret_access_key` left
+     * out keeps the one set (`422 offsite_secret_needed` for a new address,
+     * bucket or access key).
+     */
+    setOffsiteBackup: (token: string, body: OffsiteInput) =>
+      request<OffsiteView>('/api/v1/backups/offsite', { method: 'PUT', body, token }),
+    /** Turned on (`409 offsite_untested` until a test passed) or off (`change_backups`). */
+    setOffsiteBackupEnabled: (token: string, enabled: boolean) =>
+      request<OffsiteView>('/api/v1/backups/offsite/enabled', {
+        method: 'PUT',
+        body: { enabled },
+        token,
+      }),
+    /** A small file written under the prefix, listed and deleted: it must pass before turning on. */
+    testOffsiteBackup: (token: string) =>
+      request<OffsiteTestResult>('/api/v1/backups/offsite/test', { method: 'POST', token }),
+    /** The bucket forgotten, secret and all (`change_backups`). Copies already there stay. */
+    removeOffsiteBackup: (token: string) =>
+      request<OffsiteView>('/api/v1/backups/offsite', { method: 'DELETE', token }),
     /** Somebody's mobile number, masked: their own, or an owner's for anybody (`403` otherwise). */
     memberPhone: (token: string, memberId: string) =>
       request<MemberPhoneView>(`/api/v1/members/${encodeURIComponent(memberId)}/phone`, { token }),

@@ -132,6 +132,10 @@ const ALLOWED = [
   // says a test passed). Who may ask is checked first, as themselves.
   'sms/service.ts SmsService.vault',
   'sms/service.ts SmsService.test',
+  // The off-site backup copy's test (0.9.0-dev.76): only the vault says a
+  // test passed (backup_offsite_account_writes), so its result is written as
+  // the vault, once an owner asked, as themselves.
+  'backups/offsite.ts BackupOffsiteService.test',
   // A code that confirms a number: made, counted and ended, and tried, by
   // the vault alone (phone_code is nobody's to read, 0084), once the person
   // asking has been found to be its person or an owner, as themselves. A

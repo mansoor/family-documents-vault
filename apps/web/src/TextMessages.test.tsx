@@ -206,9 +206,12 @@ describe('Settings → Text messages through Twilio (0.9.0-dev.71)', () => {
   it('chooses Twilio, asks for its Auth Token, says who pays, then a test turns texts on', async () => {
     const state = at('/settings/texts', { sms: { view: { ...NOT_SET_UP } } });
     expect(await screen.findByRole('radio', { name: 'SMS Gate for Android' })).toBeChecked();
+    // The form as loaded first (SMS Gate's fields there), so a choice made
+    // now is never reset by the load finishing after it (seen under load).
+    expect(await screen.findByLabelText('Address')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('radio', { name: 'Twilio' }));
     // SMS Gate's own fields go; Twilio's come, with who pays for the texts.
-    expect(screen.queryByLabelText('Address')).toBeNull();
+    await waitFor(() => expect(screen.queryByLabelText('Address')).toBeNull());
     expect(screen.queryByLabelText('Username')).toBeNull();
     expect(screen.getByTestId('sms-twilio-costs')).toHaveTextContent(
       /Twilio charges your own Twilio account for every text/,

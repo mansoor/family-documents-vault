@@ -146,6 +146,13 @@ export function restoreSummary(file: string, r: RestoreReport): string {
       '    in Settings → Server and reading → Reading and the check.',
     );
   }
+  if (r.offsiteCopiesOff > 0) {
+    lines.push(
+      '  - The off-site copy of the backups was turned off: the backup may name a',
+      '    bucket or a key given up since. An owner sends a test and turns it on',
+      '    again in Settings → Server and reading → Backups.',
+    );
+  }
   if (r.filesRemoved.length > 0) {
     const documents = [...new Set(r.filesRemoved.map((f) => f.document_id))];
     lines.push(

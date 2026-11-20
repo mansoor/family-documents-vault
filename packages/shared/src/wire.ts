@@ -1620,6 +1620,10 @@ export const FACTOR_STEP_UPS: readonly string[] = [
   // or an adult's — everything they can see, Only me included, in one file.
   // One phished password must not carry the whole vault off.
   'export_everything',
+  // Since 0.9.0-dev.76: where the nightly backups are copied, turning the
+  // copy on or off, or forgetting the bucket — every backup could go to a
+  // bucket of somebody else's, or quietly stop going anywhere.
+  'change_backups',
 ];
 
 /**

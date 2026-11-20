@@ -496,6 +496,12 @@ const RULES: ReadonlyMap<string, Audience | typeof BY_TYPE> = new Map<
   ['ai_reader.tested', ownersAndThePerson],
   // "Also send sensitive papers" on or off (0.9.0, AIR3): the owners'.
   ['ai_reader.send_sensitive_changed', ownersAndThePerson],
+  // Where the nightly backups are copied (0.9.0-dev.76): saved, tested,
+  // turned on or off, forgotten — about the household, so for the owners alone.
+  ['backup.offsite_saved', ownersAndThePerson],
+  ['backup.offsite_tested', ownersAndThePerson],
+  ['backup.offsite_changed', ownersAndThePerson],
+  ['backup.offsite_removed', ownersAndThePerson],
   ['export.requested', BY_TYPE],
   ['export.downloaded', BY_TYPE],
   // signing in

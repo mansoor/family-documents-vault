@@ -2542,6 +2542,39 @@ export interface Schema {
     warned_at: GeneratedTimestamp;
   };
 
+  /**
+   * The bucket the nightly backups are copied to (0123): an owner's alone.
+   * Its secret sealed (MASTER_SEALED); whether a test passed, and what
+   * became of each copy, the vault's to say.
+   */
+  backup_offsite: {
+    household_id: string;
+    endpoint: string | null;
+    region: string | null;
+    bucket: string;
+    prefix: string | null;
+    path_style: Generated<boolean>;
+    access_key_id: string;
+    secret_encrypted: Buffer | null;
+    retain_count: Generated<number>;
+    enabled: Generated<boolean>;
+    enabled_at: Timestamp | null;
+    status: Generated<'untested' | 'ok' | 'failed'>;
+    last_tested_at: Timestamp | null;
+    test_problem: string | null;
+    /** Whether the key may delete there, as the last test found; null until one passed. */
+    can_delete: boolean | null;
+    last_attempt_at: Timestamp | null;
+    last_copy_at: Timestamp | null;
+    last_copy_object: string | null;
+    last_copy_bytes: ColumnType<string | null, number | string | null, number | string | null>;
+    last_result: 'ok' | 'failed' | null;
+    last_problem: string | null;
+    alerted_at: Timestamp | null;
+    updated_by: string | null;
+    updated_at: GeneratedTimestamp;
+  };
+
   /** Somebody's mobile number, as E.164, and when its code confirmed it (0084): theirs and the owners'. */
   member_phone: {
     member_id: string;

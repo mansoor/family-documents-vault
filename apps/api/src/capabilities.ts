@@ -284,6 +284,10 @@ export function buildCapabilities(config: CapabilityConfig): Capabilities {
       // 0.9.0-dev.72: an app trades its key for a short-lived access token
       // (POST /api/v1/apps/token) and calls with Bearer; Basic deprecated.
       connected_app_tokens: true,
+      // 0.9.0-dev.76: an off-site copy of the nightly backups, set in
+      // Settings → Backups; never on the hosted edition, whose operator
+      // keeps the backups.
+      ...(config.edition === 'hosted' ? {} : { backup_offsite: true }),
       // 0.9.0 (AIR1): the AI reader set in Settings → Reading, unless the
       // operator keeps it out (FDV_AI_READER_SETTINGS=off); and the kinds
       // of reader this vault reads with — Ollama, Anthropic and an
