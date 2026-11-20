@@ -3,6 +3,7 @@ export * from './master-rotation.js';
 export * from './mailbox-password.js';
 export * from './sms-password.js';
 export * from './ai-reader-key.js';
+export * from './backup-offsite-secret.js';
 export * from './share-link-copy.js';
 export * from './upload-request-copy.js';
 export * from './wrap.js';

@@ -1,6 +1,7 @@
 import { createReadStream, createWriteStream } from 'node:fs';
 import { pipeline } from 'node:stream/promises';
 import {
+  BACKUP_OFFSITE_KEY_PURPOSE,
   DecryptStream,
   deriveKey,
   EnvKeyProvider,
@@ -14,6 +15,7 @@ import { ProposalThread } from './jobs/proposal-thread.js';
 import { readingCheckNow } from './jobs/reading-check.js';
 import { readingCheckCommand } from './reading-check-cli.js';
 import { backupDatabase } from './jobs/backup.js';
+import { copyOffsite } from './jobs/backup-offsite.js';
 import { recheckRemovedFiles } from './jobs/removed-files.js';
 import {
   backupBefore,
@@ -69,7 +71,30 @@ async function main() {
     ).file;
 
   if (command === 'backup-now') {
-    console.log(await backupNow());
+    const file = await backupNow();
+    console.log(file);
+    // And copied off-site, as the nightly one is, when an owner turned the
+    // copy on in Settings → Backups (0.9.0-dev.76). The owners are told of a
+    // failure by the worker's own hourly look.
+    const admin = createPool(adminUrl, 1);
+    const appPool = createPool(config.DATABASE_URL, 1);
+    try {
+      const copied = await copyOffsite(
+        {
+          admin,
+          db: createDb(appPool),
+          key: deriveKey(masterSecret, BACKUP_OFFSITE_KEY_PURPOSE),
+          log,
+        },
+        file,
+      );
+      if (copied.copied > 0) console.log('copied off-site');
+      // The backup is made, so this says so and exits 0: only its copy is missing.
+      if (copied.failed > 0) console.error('made, but not copied off-site: see Settings → Backups');
+    } finally {
+      await admin.end();
+      await appPool.end();
+    }
     return;
   }
 

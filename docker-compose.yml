@@ -131,6 +131,8 @@ services:
       # The worker's, given to the API too (0.9.0, H5): a sensitive document's
       # delete confirmation says older backups hold it this many days.
       FDV_BACKUP_RETAIN_DAYS: ${FDV_BACKUP_RETAIN_DAYS:-30}
+      # Days without an off-site copy before the owners are told (2: nightly backups).
+      FDV_BACKUP_OFFSITE_LATE_DAYS: ${FDV_BACKUP_OFFSITE_LATE_DAYS:-2}
       FDV_RATE_LIMIT_PER_MINUTE: ${FDV_RATE_LIMIT_PER_MINUTE:-}
       # Whether owners may set the AI reader in Settings → Reading (on unless
       # off), and the ports it may be on. The worker has the same.
@@ -186,6 +188,8 @@ services:
       # The family's time zone until an owner chooses one: the hour above is on it.
       FDV_TIMEZONE: ${FDV_TIMEZONE:-}
       FDV_BACKUP_RETAIN_DAYS: ${FDV_BACKUP_RETAIN_DAYS:-30}
+      # Days without an off-site copy before the owners are told (2: nightly backups).
+      FDV_BACKUP_OFFSITE_LATE_DAYS: ${FDV_BACKUP_OFFSITE_LATE_DAYS:-2}
       # The scanner folder (README, "Scanning straight into the vault"): set
       # FDV_WATCH_DIR=/watch in .env and uncomment the mount below. The
       # largest file it takes is the same as for an upload.
@@ -266,10 +270,14 @@ services:
     restart: unless-stopped
     # Open to the network, as phones and laptops in the house reach the vault
     # at this machine's address on it; the TLS overlay keeps it to this
-    # machine (docker-compose.tls.yml). nginx runs as its own unprivileged
-    # user, so it listens on 8080 inside the container.
+    # machine (docker-compose.tls.yml). Unset, FDV_BIND publishes it on every
+    # interface, IPv4 and IPv6, as before it existed; FDV_BIND=127.0.0.1 keeps it to this
+    # machine without the overlay: a VPS, or a reverse proxy of your own on
+    # it (Docker's published ports go round ufw and firewalld; README,
+    # "Security checklist"). nginx runs as its own unprivileged user, so it
+    # listens on 8080 inside the container.
     ports:
-      - '${FDV_PORT:-8080}:8080'
+      - '${FDV_BIND:+${FDV_BIND}:}${FDV_PORT:-8080}:8080'
     # nginx writes its pid and its buffers to /tmp alone.
     cap_drop: [ALL]
     security_opt: ['no-new-privileges:true']

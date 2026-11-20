@@ -2,6 +2,12 @@ import { createTestDatabase, testAdminUrl, type TestDatabase } from '@fdv/db/tes
 import type { PgBoss } from 'pg-boss';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createQueue, JOBS } from './queue.js';
+import {
+  OFFSITE_COPY_QUEUE,
+  OFFSITE_COPY_QUEUE_OPTIONS,
+  OFFSITE_COPY_SECONDS,
+  OFFSITE_COPY_SINGLETON,
+} from './jobs/backup-offsite.js';
 
 describe.skipIf(!testAdminUrl())('queue', () => {
   let tdb: TestDatabase;
@@ -30,5 +36,26 @@ describe.skipIf(!testAdminUrl())('queue', () => {
       await new Promise((r) => setTimeout(r, 100));
     }
     expect(seen).toEqual(['42']);
+  });
+
+  it('copies a backup off-site in a job of its own: one waiting, three hours, never retried', async () => {
+    expect(OFFSITE_COPY_QUEUE).toBe('backup.offsite_copy');
+    await boss.createQueue(OFFSITE_COPY_QUEUE, OFFSITE_COPY_QUEUE_OPTIONS);
+    const q = await boss.getQueue(OFFSITE_COPY_QUEUE);
+    expect(q).toMatchObject({
+      policy: 'stately',
+      retryLimit: 0,
+      expireInSeconds: OFFSITE_COPY_SECONDS,
+    });
+    expect(OFFSITE_COPY_SECONDS).toBeGreaterThan(15 * 60);
+    const send = () =>
+      boss.send(
+        OFFSITE_COPY_QUEUE,
+        { file: 'fdv-2026-11-20T02-30-00-000Z.sql.enc' },
+        { singletonKey: OFFSITE_COPY_SINGLETON },
+      );
+    expect(await send()).toBeTruthy();
+    // A second backup's copy while one waits: not queued twice.
+    expect(await send()).toBeNull();
   });
 });

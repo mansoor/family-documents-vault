@@ -183,7 +183,13 @@ describe('buildCapabilities', () => {
       connected_app_links: true,
       connected_app_reads: true,
       connected_apps: true,
+      // 0.9.0-dev.76: an off-site copy of the nightly backups.
+      backup_offsite: true,
     });
+    // Never on the hosted edition, whose operator keeps the backups.
+    expect(buildCapabilities({ ...config, edition: 'hosted' }).features).not.toHaveProperty(
+      'backup_offsite',
+    );
     expect(buildCapabilities({ ...config, watchFolder: true }).features.watch_folder).toBe(true);
     expect(buildCapabilities({ ...config, readingModel: true }).features.reading_model).toBe(true);
     expect(buildCapabilities({ ...config, localAi: true }).features.local_ai).toBe(true);

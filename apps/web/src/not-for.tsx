@@ -129,6 +129,12 @@ export const SCREEN_RULES = {
     title: 'Text messages',
     why: 'Only an owner can set up text messages.',
   },
+  // Backups, and their copy off-site (0.9.0-dev.76): an owner's.
+  backups: {
+    may: owner,
+    title: 'Backups',
+    why: 'Only an owner can set up where backups are copied.',
+  },
 } satisfies Record<string, ScreenRule>;
 
 /** "This isn't something you can open": the screen's name, and who it is for. */

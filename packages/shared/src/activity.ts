@@ -144,6 +144,10 @@ export function activityKind(action: string): ActivityKind {
     case 'ai_reader.tested':
     case 'ai_reader.send_sensitive_changed':
     case 'batch.version_undone':
+    case 'backup.offsite_saved':
+    case 'backup.offsite_tested':
+    case 'backup.offsite_changed':
+    case 'backup.offsite_removed':
       return 'changed';
   }
   const area = action.slice(0, action.indexOf('.'));
@@ -1286,6 +1290,20 @@ export function eventWords(e: ActivityEvent): (ActivityLine & { named: boolean }
         : line(`${who} sent a test text, and it did not go`, true);
     case 'sms.settings_removed':
       return line(`${who} turned off text messages`, true);
+    // Where the nightly backups are copied (0.9.0-dev.76): saved, tested,
+    // turned on or off, forgotten — never the address, the bucket or a key.
+    case 'backup.offsite_saved':
+      return line(`${who} changed where backups are copied off-site`, true);
+    case 'backup.offsite_tested':
+      return detail.ok === true
+        ? line(`${who} tested the off-site backup copy, and it went`, true)
+        : line(`${who} tested the off-site backup copy, and it did not go`, true);
+    case 'backup.offsite_changed':
+      return detail.enabled === true
+        ? line(`${who} turned on the off-site backup copy`, true)
+        : line(`${who} turned off the off-site backup copy`, true);
+    case 'backup.offsite_removed':
+      return line(`${who} stopped copying backups off-site`, true);
     case 'export.requested':
       return line(`${who} asked for a copy of everything`, true);
     case 'export.downloaded':

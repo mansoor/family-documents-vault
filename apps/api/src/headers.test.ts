@@ -420,9 +420,12 @@ describe('the address a request came from', () => {
       new RegExp(`\\n {2}${name}:\\n([\\s\\S]*?)\\n(?=\\S| {2}\\S)`).exec(compose)?.[1] ?? '';
     const tls = service(await readFile(root('docker-compose.tls.yml'), 'utf8'), 'web');
     expect(tls).toMatch(/ports: !override\n\s*- '127\.0\.0\.1:\$\{FDV_PORT:-8080\}:8080'/);
-    // The phones in the house reach the vault at this machine's address.
+    // The phones in the house reach the vault at this machine's address,
+    // unless FDV_BIND keeps it to this machine (a VPS, a proxy of one's own).
     const main = await readFile(root('docker-compose.yml'), 'utf8');
-    expect(service(main, 'web')).toMatch(/ports:\n\s*- '\$\{FDV_PORT:-8080\}:8080'/);
+    expect(service(main, 'web')).toMatch(
+      /ports:\n\s*- '\$\{FDV_BIND:\+\$\{FDV_BIND\}:\}\$\{FDV_PORT:-8080\}:8080'/,
+    );
     expect(await readFile(root('docker-compose.dev.yml'), 'utf8')).not.toMatch(/127\.0\.0\.1/);
     // And the API believes the compose network, not the LAN, unless told otherwise.
     expect(service(main, 'api')).toMatch(/FDV_TRUST_PROXY: \$\{FDV_TRUST_PROXY:-network\}/);

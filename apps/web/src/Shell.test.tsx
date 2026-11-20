@@ -1578,6 +1578,8 @@ describe('every address Settings had still works (R1)', () => {
     ['/settings/reading-check', '/settings/reading-check', 'Reading and the check'],
     // Text messages (0.9.0, SMS1).
     ['/settings/texts', '/settings/texts', 'Text messages'],
+    // Backups, and their copy off-site (0.9.0-dev.76).
+    ['/settings/backups', '/settings/backups', 'Backups'],
     // Caregivers (0.9.0, H1b).
     ['/settings/caregivers', '/settings/caregivers', 'Caregivers'],
     ['/settings/activity', '/activity', 'What has been happening'],

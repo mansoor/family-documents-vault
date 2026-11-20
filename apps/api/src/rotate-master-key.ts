@@ -68,6 +68,7 @@ const SEALED_LABEL: Record<SealedName, [one: string, many: string]> = {
   shareLinkCopies: ['share link copy', 'share link copies'],
   uploadRequestCopies: ['request link copy', 'request link copies'],
   aiReaderKeys: ['AI reader API key', 'AI reader API keys'],
+  backupOffsiteSecrets: ['off-site backup secret key', 'off-site backup secret keys'],
 };
 
 export interface CommandOptions {

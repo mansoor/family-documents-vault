@@ -66,6 +66,7 @@ const PAGES: ReadonlyArray<readonly [pattern: string, title: string]> = [
   ['/settings/reading', 'Settings: reading and the check'],
   ['/settings/reading-check', 'Settings: reading and the check'],
   ['/settings/texts', 'Settings: text messages'],
+  ['/settings/backups', 'Settings: backups'],
   ['/settings/caregivers', 'Settings: caregivers'],
   ['/settings/family', 'Family'],
   ['/settings/kinds', 'Settings: kinds of document'],

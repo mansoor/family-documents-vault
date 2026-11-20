@@ -4,6 +4,7 @@ import { deriveKey, KEK_PURPOSE } from './master.js';
 import { mailboxPasswordAad } from './mailbox-password.js';
 import { smsPasswordAad, twilioTokenAad } from './sms-password.js';
 import { aiReaderKeyAad } from './ai-reader-key.js';
+import { backupOffsiteAad } from './backup-offsite-secret.js';
 import { shareLinkCopyAad } from './share-link-copy.js';
 import { uploadRequestCopyAad } from './upload-request-copy.js';
 import { binding, type ScopeKind } from './scope-keys.js';
@@ -155,6 +156,22 @@ export const MASTER_SEALED = [
     bind: ['kind', 'base_url'],
     aad: (id: string, row: Readonly<Record<string, string>>) =>
       aiReaderKeyAad(id, row.kind ?? '', row.base_url ?? ''),
+  },
+  // packages/crypto/src/backup-offsite-secret.ts (sealBackupOffsiteSecret,
+  // used by the API's BackupOffsiteService; opened by the API to send a test
+  // and by the worker to copy a backup): the secret key of the bucket the
+  // nightly backups are copied to, set in Settings → Backups (0123)
+  {
+    name: 'backupOffsiteSecrets',
+    purpose: 'backup-offsite-credentials',
+    table: 'backup_offsite',
+    key: 'household_id',
+    column: 'secret_encrypted',
+    // The address, bucket and access key it was typed for are bound in too:
+    // a secret kept for one bucket never signs in to another.
+    bind: ['endpoint', 'bucket', 'access_key_id'],
+    aad: (id: string, row: Readonly<Record<string, string>>) =>
+      backupOffsiteAad(id, row.endpoint ?? '', row.bucket ?? '', row.access_key_id ?? ''),
   },
 ] as const;
 
@@ -488,6 +505,7 @@ async function rekey(
     shareLinkCopies: 0,
     uploadRequestCopies: 0,
     aiReaderKeys: 0,
+    backupOffsiteSecrets: 0,
   };
   for (const s of MASTER_SEALED) {
     // A backup can be older than the column; a restore brings it up to date

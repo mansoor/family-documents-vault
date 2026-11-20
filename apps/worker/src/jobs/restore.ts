@@ -159,6 +159,13 @@ export interface RestoreReport {
    */
   readingChecksStopped: number;
   /**
+   * Off-site backup copies turned off (0.9.0-dev.76): a backup may name a
+   * bucket given up since, or a key no longer the household's, so the copy
+   * is off and untested, and copies nothing nor tells anybody until an owner
+   * sends a test and turns it on again, in Settings → Backups.
+   */
+  offsiteCopiesOff: number;
+  /**
    * Sign-ins waiting for an owner to turn them back on (5.28, A55): every
    * one but the owners', since a backup cannot know of a lock made after it,
    * nor of a sign-in taken away since. Each is turned back on, one tap
@@ -311,6 +318,7 @@ interface Undone {
   appsPaused: number;
   appKeysRevoked: number;
   readingChecksStopped: number;
+  offsiteCopiesOff: number;
 }
 
 interface StillOpen {
@@ -743,6 +751,7 @@ async function load(file: string, key: Buffer, adminUrl: string, known: number):
     appsPaused: counted('apps_paused'),
     appKeysRevoked: counted('app_keys_revoked'),
     readingChecksStopped: counted('reading_checks_stopped'),
+    offsiteCopiesOff: counted('offsite_copies_off'),
     identityAudiences: [...stdout.matchAll(/fdv-restore-audience:([0-9a-f-]{36})=([a-z_]+)/g)].map(
       (m) => ({ household_id: m[1] as string, was: m[2] as string }),
     ),
@@ -964,6 +973,18 @@ begin
     get diagnostics n = row_count;
     insert into pg_temp.fdv_restore_undone values ('reading_checks_stopped', n);
     delete from public.reading_check_sealed where work_sealed is not null;
+  end if;
+  -- And the off-site copy of the backups (0123) turned off and untested: a
+  -- backup may name a bucket given up since, or a key no longer the
+  -- household's. Nothing is copied there, nor anybody told, until an owner
+  -- sends a test and turns it on again.
+  if to_regclass('public.backup_offsite') is not null then
+    update public.backup_offsite
+       set enabled = false, status = 'untested', last_tested_at = null,
+           test_problem = null, can_delete = null
+     where enabled or status <> 'untested';
+    get diagnostics n = row_count;
+    insert into pg_temp.fdv_restore_undone values ('offsite_copies_off', n);
   end if;
 end $undo$;
 select 'fdv-restore:' || what || '=' || n from pg_temp.fdv_restore_undone;
@@ -1394,6 +1415,14 @@ const GUARDS = [
   // An owner sets up the AI reader as themselves, and never says a Test
   // passed, nor where it runs (0089, AIR1).
   { name: 'ai_reader_account_writes', table: 'ai_reader', fn: 'ai_reader_account_writes' },
+  // An owner sets up the off-site backup copy as themselves; whether a test
+  // passed, and what became of each copy, are the vault's to say; a new
+  // bucket, key or secret waits for a test of its own (0123).
+  {
+    name: 'backup_offsite_account_writes',
+    table: 'backup_offsite',
+    fn: 'backup_offsite_account_writes',
+  },
   // A caregiver grant names its person and caregiver once, is kept by its
   // person alone and revoked once; a caregiver whose role or sign-in goes
   // is one no more; a caregiver changes none of the papers a grant gives
@@ -1471,6 +1500,10 @@ const OWNERS_SETTINGS = [
   // Which paper went to which reader, and the month's 80% email (0092, AIR3).
   { table: 'ai_reader_send', what: 'which papers went to the AI reader' },
   { table: 'ai_reader_cap_warning', what: 'the AI reader’s monthly warnings' },
+  // The bucket the nightly backups are copied to, its secret key sealed
+  // (0123): moved onto the current master key with the rest (MASTER_SEALED,
+  // backupOffsiteSecrets) before anything reads it.
+  { table: 'backup_offsite', what: 'where backups are copied off-site' },
 ];
 
 /**
@@ -1610,6 +1643,12 @@ const REQUIRED_CHECKS = [
     name: 'reading_check_numbers_only',
     table: 'reading_check',
     what: 'a Reading check’s numbers, numbers only',
+  },
+  // The off-site copy of the backups on only once tested, with a secret (0123).
+  {
+    name: 'backup_offsite_on_tested',
+    table: 'backup_offsite',
+    what: 'an off-site backup copy on only once tested',
   },
   // Why an Only me document is no longer needed is sealed, and plain on
   // no other (0082, 0.9.0).
@@ -1927,6 +1966,8 @@ const ACTOR_GUARDED = [
   // Which papers went to it, and the month's warning (0092, AIR3): the owners'.
   'ai_reader_send',
   'ai_reader_cap_warning',
+  // The bucket the nightly backups are copied to (0123): the owners'.
+  'backup_offsite',
   'member_phone',
   'phone_code',
   // And the codes texted to one's own number, the vault's (0088, SMS3).

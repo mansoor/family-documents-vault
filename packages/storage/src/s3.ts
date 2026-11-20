@@ -276,3 +276,9 @@ function wrap(err: unknown): StorageError {
   if (code === 'not_found' && /bucket/i.test(e.message ?? '')) code = 'bucket_missing';
   return new StorageError(code, MESSAGES[code], detail);
 }
+
+/**
+ * An S3 client's error as the vault names it: a StorageError whose code says
+ * why in a word, and whose detail is for the log alone.
+ */
+export const storageErrorOf = wrap;
