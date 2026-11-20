@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { devices, expect, test, type APIRequestContext } from '@playwright/test';
+import { ownerToken, setupCode } from './vault.js';
 
 /**
  * A share link, the way somebody outside the family opens it (5.16):
@@ -78,6 +79,7 @@ async function signIn(request: APIRequestContext): Promise<string> {
   if (caps.setup_required) {
     await request.post('/api/v1/setup', {
       data: {
+        setup_token: setupCode(),
         household_name: 'The E2E family',
         display_name: 'Mansoor',
         email: EMAIL,
@@ -85,11 +87,8 @@ async function signIn(request: APIRequestContext): Promise<string> {
       },
     });
   }
-  const res = await request.post('/api/v1/auth/password', {
-    data: { email: EMAIL, password: PASSWORD },
-  });
-  expect(res.ok()).toBe(true);
-  return ((await res.json()) as { access_token: string }).access_token;
+  // Password and the owner's code (0.9.0).
+  return ownerToken(request, EMAIL, PASSWORD);
 }
 
 /**

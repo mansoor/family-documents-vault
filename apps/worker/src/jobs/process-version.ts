@@ -193,7 +193,7 @@ export async function processVersion(deps: ProcessDeps, job: ProcessVersionJob):
     if ((isPdf || isImage) && tools.magick) {
       try {
         const thumbFile = path.join(dir, 'thumb.jpg');
-        await thumbnail(plainFile, thumbFile);
+        await thumbnail(plainFile, thumbFile, version.mime);
         const bytes = await readIfExists(thumbFile);
         if (bytes) {
           const key = `${version.storage_key}.thumb.enc`;

@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import { finishSignIn, setupCode } from './vault.js';
 
 /**
  * Quick actions on every document (5.4), with the keyboard alone: Tab
@@ -19,6 +20,7 @@ test('the ⋯ on a row works from the keyboard alone', async ({ page, request })
   if (caps.setup_required) {
     await request.post('/api/v1/setup', {
       data: {
+        setup_token: setupCode(),
         household_name: 'The E2E family',
         display_name: 'Mansoor',
         email: EMAIL,
@@ -39,8 +41,9 @@ test('the ⋯ on a row works from the keyboard alone', async ({ page, request })
     page.waitForResponse((r) => r.url().endsWith('/api/v1/auth/password') && r.ok()),
     page.getByLabel('Password').press('Enter'),
   ]);
+  // The owner's code, the second step (0.9.0).
+  const access_token = await finishSignIn(page, signedIn);
   await expect(page).toHaveURL(/\/$/);
-  const { access_token } = (await signedIn.json()) as { access_token: string };
   const title = `Quick actions ${Date.now()}`;
   const made = await request.post('/api/v1/documents', {
     headers: { authorization: `Bearer ${access_token}` },

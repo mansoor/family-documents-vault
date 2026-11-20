@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import { finishSignIn, keepOwnerKey, setupCode, totpCode } from './vault.js';
 
 /**
  * The Phase 1 proof, end to end, on the real stack: set up a household,
@@ -21,11 +22,24 @@ test('first run to first document', async ({ page }) => {
   await expect(wizard.or(welcome)).toBeVisible();
 
   if (await wizard.isVisible()) {
+    // The setup code (0.9.0): only whoever can read the server's .env has it.
+    await page.getByLabel('Setup code').fill(setupCode());
     await page.getByLabel(/call your family/).fill('The E2E family');
     await page.getByLabel('Your name').fill('Mansoor');
     await page.getByLabel('Your email').fill(EMAIL);
     await page.getByLabel('Choose a password').fill(PASSWORD);
     await page.getByRole('button', { name: 'Create my vault' }).click();
+
+    // An owner sets up two-step sign-in before anything else (0.9.0): an
+    // authenticator app here, its key kept for every later spec's sign-in
+    // (and the restore drill's), which then asks for its code.
+    await expect(page.getByRole('heading', { name: 'Set up two-step sign-in' })).toBeVisible();
+    await page.getByRole('button', { name: 'Set up two-step sign-in' }).click();
+    const key = (await page.locator('code').first().textContent())?.trim() ?? '';
+    expect(key).toMatch(/^[A-Z2-7]{16,}$/);
+    keepOwnerKey(key);
+    await page.getByLabel('Code from the app').fill(totpCode(key));
+    await page.getByRole('button', { name: 'Turn on' }).click();
 
     await expect(page.getByRole('heading', { name: 'A few quick questions' })).toBeVisible();
     await page.getByRole('button', { name: 'We own it' }).click();
@@ -44,7 +58,12 @@ test('first run to first document', async ({ page }) => {
     await page.getByRole('button', { name: 'Sign in' }).click();
     await page.getByLabel('Email').fill(EMAIL);
     await page.getByLabel('Password').fill(PASSWORD);
-    await page.getByRole('button', { name: 'Sign in' }).click();
+    const [signedIn] = await Promise.all([
+      page.waitForResponse((r) => r.url().endsWith('/api/v1/auth/password') && r.ok()),
+      page.getByRole('button', { name: 'Sign in' }).click(),
+    ]);
+    // The code from the key the first run kept (0.9.0).
+    await finishSignIn(page, signedIn);
   }
 
   await expect(page.getByRole('heading', { name: 'The E2E family' })).toBeVisible();

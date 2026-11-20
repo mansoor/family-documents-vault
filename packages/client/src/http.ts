@@ -195,6 +195,7 @@ export async function toError(res: ResponseLike, now: number): Promise<ApiReques
       retriable?: boolean;
       request_id?: string;
       detail?: string;
+      factor?: boolean;
     };
   } = {};
   try {
@@ -213,6 +214,7 @@ export async function toError(res: ResponseLike, now: number): Promise<ApiReques
     ...(e.retriable === true ? { retriable: true } : {}),
     ...(e.request_id !== undefined ? { requestId: e.request_id } : {}),
     ...(e.detail !== undefined ? { detail: e.detail } : {}),
+    ...(e.factor === true ? { factor: true } : {}),
     ...(retryAfter !== undefined ? { retryAfterSeconds: retryAfter } : {}),
   });
 }

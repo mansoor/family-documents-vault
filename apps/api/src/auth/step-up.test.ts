@@ -82,21 +82,29 @@ describe.skipIf(!testAdminUrl())('step-up authentication', () => {
     expect(
       (
         await h.app.inject({
-          method: 'POST',
-          url: '/api/v1/exports',
+          url: `/api/v1/versions/${essentialVersion}/content`,
           headers: h.as(owner),
         })
       ).statusCode,
-    ).toBe(202);
+    ).toBe(200);
+  });
+
+  it('exporting everything takes a passkey or a code, never the password (0.9.0)', async () => {
+    // An owner with neither is told to set one up, fresh password or not.
+    const res = await h.app.inject({
+      method: 'POST',
+      url: '/api/v1/exports',
+      headers: h.as(owner),
+    });
+    expect(res.statusCode).toBe(403);
+    const { error } = json<{ error: { code: string; message: string } }>(res);
+    expect(error.code).toBe('totp_required_for_owner');
+    expect(error.message).toBe('Turn on two-step sign-in to export everything.');
   });
 
   it('once it goes stale, each consequential action asks — and says which', async () => {
     await goStale();
     const cases: Array<[string, () => Promise<{ statusCode: number; json: () => unknown }>]> = [
-      [
-        'export_everything',
-        () => h.app.inject({ method: 'POST', url: '/api/v1/exports', headers: h.as(owner) }),
-      ],
       [
         'change_people',
         () =>
@@ -166,9 +174,18 @@ describe.skipIf(!testAdminUrl())('step-up authentication', () => {
     expect(json<{ expires_in: number }>(ok).expires_in).toBe(300);
 
     expect(
+      (
+        await h.app.inject({
+          url: `/api/v1/versions/${essentialVersion}/content`,
+          headers: h.as(owner),
+        })
+      ).statusCode,
+    ).toBe(200);
+    // Not exporting everything: that takes a passkey or a code (0.9.0).
+    expect(
       (await h.app.inject({ method: 'POST', url: '/api/v1/exports', headers: h.as(owner) }))
         .statusCode,
-    ).toBe(202);
+    ).toBe(403);
   });
 
   it('so does a passkey, which is the one that proves the device is here', async () => {

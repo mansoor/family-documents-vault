@@ -10,9 +10,12 @@ import {
   AI_READER_KEY_PURPOSE,
   SHARE_LINK_COPY_PURPOSE,
   UPLOAD_REQUEST_COPY_PURPOSE,
+  databasePasswordProblem,
+  masterSecretProblem,
 } from '@fdv/crypto';
-import { assertSchemaKnown, createDb, createPool, migrateUp } from '@fdv/db';
+import { assertSchemaKnown, createDb, createPool, migrateUp, rowSecurityProblem } from '@fdv/db';
 import { AuthService } from './auth/service.js';
+import { SetupToken } from './auth/setup-token.js';
 import { TotpService } from './auth/totp.js';
 import { deriveSigningKey } from './auth/tokens.js';
 import { buildApp } from './app.js';
@@ -94,6 +97,19 @@ async function main(): Promise<void> {
   const config = loadConfig();
   const version = await serverVersion();
   const masterSecret = await resolveMasterSecret(config);
+  // Never on the example file's secrets, nor a master key anybody could
+  // guess: before anything is migrated, sealed or signed with them.
+  const weak =
+    masterSecretProblem(masterSecret) ??
+    databasePasswordProblem(config.DATABASE_URL, 'DATABASE_URL') ??
+    (config.DATABASE_ADMIN_URL
+      ? databasePasswordProblem(config.DATABASE_ADMIN_URL, 'DATABASE_ADMIN_URL')
+      : null);
+  if (weak) {
+    console.error(`[start] ${weak}`);
+    process.exitCode = 1;
+    return;
+  }
 
   if (config.FDV_RUN_MIGRATIONS === 'true') {
     const adminUrl = config.DATABASE_ADMIN_URL ?? config.DATABASE_URL;
@@ -129,6 +145,15 @@ async function main(): Promise<void> {
   // A database a newer release has upgraded is refused, not half-served
   // (migrateUp above refuses it too, when this replica migrates).
   await assertSchemaKnown(pool);
+  // Every household boundary is a row-level security policy: the role the
+  // family is served with must be held by them, or nothing starts.
+  const rls = await rowSecurityProblem(pool);
+  if (rls) {
+    console.error(`[start] ${rls}`);
+    await pool.end();
+    process.exitCode = 1;
+    return;
+  }
   const db = createDb(pool);
   const vaults = new VaultService(
     db,
@@ -200,6 +225,23 @@ async function main(): Promise<void> {
     auth,
     passkeyConfig(config.FDV_BASE_URL, config.FDV_DISPLAY_NAME, config.FDV_RP_ID),
   );
+  // First-run setup takes a code (0.9.0): FDV_SETUP_TOKEN from .env, or,
+  // with none, one made now and written to the log once — a new one each
+  // time the API starts, until the vault is set up. Only its hash is kept.
+  if (config.FDV_SETUP_TOKEN) {
+    auth.useSetupToken(new SetupToken(config.FDV_SETUP_TOKEN));
+    if (!(await auth.setupComplete())) {
+      console.log(
+        '[setup] This vault is not set up yet. Open it in a browser; the setup code it asks for is FDV_SETUP_TOKEN in your .env.',
+      );
+    }
+  } else if (!(await auth.setupComplete())) {
+    const made = SetupToken.generate();
+    auth.useSetupToken(made.gate);
+    console.log(
+      `[setup] This vault is not set up yet. Open it in a browser and give this setup code: ${made.token} (a new one is made each time the API starts, until the vault is set up).`,
+    );
+  }
 
   const stepUpService = new StepUpService(db, passkeys, totp, textCodes);
   const passwords = new PasswordService(

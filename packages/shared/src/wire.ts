@@ -30,6 +30,14 @@ export interface Tokens {
   member_id: string;
   role: Role;
   scopes_unlocked: string[];
+  /**
+   * 0.9.0: this session may only set up two-step sign-in (a code from an
+   * authenticator app, or a passkey), or sign out: an owner, or an adult
+   * where the household asks it of adults, with neither. Every other route
+   * answers it `403 two_step_setup_required` until one is set up; then the
+   * same session goes on. Absent otherwise, and from older vaults.
+   */
+  two_step_setup_required?: true;
 }
 
 /** What password sign-in answers when two-step sign-in is on. */
@@ -40,8 +48,13 @@ export interface MfaChallenge {
    * What the second step may be (0.9.0, SMS3): a code from an authenticator
    * app (`totp`), a code texted to their own confirmed number (`text`, POST
    * /auth/mfa/text sends one), or both. Absent from older vaults: `totp`.
+   * Since 0.9.0, `passkey` for somebody who must have two-step sign-in and
+   * has a passkey: the second step is that passkey, as a passkey sign-in
+   * (`POST /auth/passkey/challenge` with their email, then `POST
+   * /auth/passkey/verify`), which opens the session itself; the interim
+   * token is not used for it.
    */
-  methods?: ('totp' | 'text')[];
+  methods?: ('totp' | 'text' | 'passkey')[];
   /** Where a texted code goes, masked ("•••• •••123"); null when there is none. */
   text_to?: string | null;
   /**
@@ -60,6 +73,18 @@ export interface Me {
   totp_enabled: boolean;
   totp_required: boolean;
   has_passkey?: boolean;
+  /**
+   * 0.9.0: this session may only set up two-step sign-in, or sign out (as
+   * `Tokens.two_step_setup_required`). Absent from older vaults.
+   */
+  two_step_setup_required?: boolean;
+  /**
+   * Why (0.9.0): `enrol`, no code or passkey set up yet; `confirm`, one is,
+   * and this session has not given it — a passkey or a code at `POST
+   * /auth/step-up` lets it go on. Null when nothing is asked; absent from
+   * older vaults.
+   */
+  two_step_reason?: 'enrol' | 'confirm' | null;
   /**
    * An owner made a one-time link to set a new password for this sign-in, to
    * hand over (5.29, path 2), and the person has not yet said they saw it:
@@ -1566,6 +1591,10 @@ export const FACTOR_STEP_UPS: readonly string[] = [
   // Since 0.9.0 (APP1): connecting an app, turning one on as its person, and
   // changing what it may do or its keys.
   'connect_app',
+  // Since 0.9.0 (security before launch): exporting everything, an owner's
+  // or an adult's — everything they can see, Only me included, in one file.
+  // One phished password must not carry the whole vault off.
+  'export_everything',
 ];
 
 /**

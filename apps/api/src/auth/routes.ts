@@ -28,6 +28,9 @@ const email = z.string().trim().toLowerCase().email().max(254);
 const password = z.string().min(10, 'Use at least 10 characters.').max(1024);
 
 const setupBody = z.object({
+  // The setup code (0.9.0): checked after the rest, so a form's own mistakes
+  // are said first. Required by the service; absent, it is refused there.
+  setup_token: z.string().max(256).optional(),
   household_name: z.string().trim().min(1).max(120),
   display_name: z.string().trim().min(1).max(120),
   email,
@@ -48,6 +51,25 @@ export function parse<T>(schema: z.ZodType<T>, body: unknown): T {
 }
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * What a session that must set up two-step sign-in first (0.9.0: an owner,
+ * or an adult where the household asks it, with neither a code from an
+ * authenticator app nor a passkey) may do: say who it is, confirm it's them,
+ * set up a code or a passkey, and sign out. Every other route answers it
+ * `403 two_step_setup_required`.
+ */
+export const TWO_STEP_SETUP_ROUTES: ReadonlySet<string> = new Set([
+  'GET /api/v1/me',
+  'POST /api/v1/auth/logout',
+  'GET /api/v1/auth/step-up',
+  'POST /api/v1/auth/step-up',
+  'POST /api/v1/auth/totp/enrol',
+  'POST /api/v1/auth/totp/confirm',
+  'GET /api/v1/auth/passkeys',
+  'POST /api/v1/auth/passkeys/challenge',
+  'POST /api/v1/auth/passkeys',
+]);
 
 export function metaOf(req: FastifyRequest): RequestMeta {
   // The app's installation id (0.4.11): kept only if it is a UUID.
@@ -87,7 +109,12 @@ export function registerAuth(
     if (scheme !== 'Bearer' || !token) {
       throw new ApiError(401, 'unauthenticated', 'Please sign in.');
     }
-    req.principal = await auth.authenticate(token);
+    // A session that must set up two-step sign-in first (0.9.0) is let
+    // through to these routes alone.
+    const route = `${req.method} ${req.routeOptions.url ?? ''}`;
+    req.principal = await auth.authenticate(token, {
+      enrolling: TWO_STEP_SETUP_ROUTES.has(route),
+    });
   });
 
   const tight = { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } };
@@ -96,6 +123,7 @@ export function registerAuth(
     const body = parse(setupBody, req.body);
     const tokens = await auth.setup(
       {
+        setupToken: body.setup_token,
         householdName: body.household_name,
         displayName: body.display_name,
         email: body.email,
@@ -177,6 +205,13 @@ export function registerAuth(
       // is that something — it is phishing-resistant and device-bound —
       // so it satisfies the rule as well as an authenticator app does.
       totp_required: p.role === 'owner' && !enabled && !passkey,
+      // 0.9.0: this session may only set up two-step sign-in, or sign out
+      // (an owner, or an adult where the household asks it, with neither).
+      two_step_setup_required: p.twoStepPending !== undefined,
+      // Why (0.9.0): `enrol`, none set up yet; `confirm`, one set up and not
+      // given by this session — a passkey or a code (POST /auth/step-up) lets
+      // it go on. Null when nothing is asked.
+      two_step_reason: p.twoStepPending ?? null,
       // 5.29: an owner made a link to hand over for this sign-in, not yet
       // seen: told at every sign-in until it is.
       reset_notice: passwords ? await passwords.notice(p) : null,

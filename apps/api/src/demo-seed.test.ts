@@ -18,7 +18,8 @@ import {
 } from '@fdv/shared';
 import FormData from 'form-data';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { createHarness, type Harness } from './test-harness.js';
+import { codeFor } from './auth/totp.js';
+import { createHarness, TEST_SETUP_TOKEN, type Harness } from './test-harness.js';
 
 const run = promisify(execFile);
 const SCRIPT = path.resolve(
@@ -71,6 +72,8 @@ describe.skipIf(!testAdminUrl())('demo-seed.mjs', () => {
         owner.email,
         '--password',
         owner.password,
+        '--setup-code',
+        TEST_SETUP_TOKEN,
         '--out',
         out,
       ],
@@ -280,7 +283,8 @@ describe.skipIf(!testAdminUrl())('demo-seed.mjs', () => {
  * demo-seed.mjs --corpus (0.8.0, S5): the Smart exit's two hundred papers
  * (scripts/smart-corpus.mjs) written for the vault it has just filled, with
  * everybody they name in the family. A vault of its own: a second run on
- * one adds a second set.
+ * one adds a second set. Its owner is held to two-step sign-in (0.9.0), as a
+ * new vault's is: the script sets up an authenticator app and prints its key.
  */
 describe.skipIf(!testAdminUrl())('demo-seed.mjs --corpus', () => {
   let h: Harness;
@@ -288,7 +292,7 @@ describe.skipIf(!testAdminUrl())('demo-seed.mjs --corpus', () => {
   const owner = { email: 'olivia-corpus@example.test', password: `${randomUUID()}-seed` };
 
   beforeAll(async () => {
-    h = await createHarness();
+    h = await createHarness({ twoStep: true });
     await h.app.listen({ port: 0, host: '127.0.0.1' });
     port = (h.app.server.address() as AddressInfo).port;
   }, 120_000);
@@ -319,6 +323,8 @@ describe.skipIf(!testAdminUrl())('demo-seed.mjs --corpus', () => {
           owner.email,
           '--password',
           owner.password,
+          '--setup-code',
+          TEST_SETUP_TOKEN,
           '--out',
           corpusOut,
           '--corpus',
@@ -328,6 +334,8 @@ describe.skipIf(!testAdminUrl())('demo-seed.mjs --corpus', () => {
       expect(stdout).toContain('added Maryam, with no sign-in');
       expect(stdout).toContain('added Granny Farida, with no sign-in');
       expect(stdout).toContain("wrote the Smart exit's 200 made-up papers and manifest.json");
+      const key = /add this key to an authenticator app: ([A-Z2-7]+)/.exec(stdout)?.[1];
+      expect(key).toBeTruthy();
       const manifest = JSON.parse(
         await readFile(path.join(corpusOut, 'manifest.json'), 'utf8'),
       ) as { household: { people: Array<{ name: string }> }; files: Array<{ path: string }> };
@@ -338,8 +346,15 @@ describe.skipIf(!testAdminUrl())('demo-seed.mjs --corpus', () => {
         .sort();
       expect(written).toEqual(manifest.files.map((f) => f.path).sort());
       // Everybody the papers name is in the family, as the papers name them.
-      const signedIn = (
+      const asked = (
         await h.app.inject({ method: 'POST', url: '/api/v1/auth/password', payload: owner })
+      ).json<{ mfa_token: string }>();
+      const signedIn = (
+        await h.app.inject({
+          method: 'POST',
+          url: '/api/v1/auth/mfa',
+          payload: { mfa_token: asked.mfa_token, code: codeFor(key ?? '') },
+        })
       ).json<Tokens>();
       const family = (
         await h.app.inject({ url: '/api/v1/members', headers: h.as(signedIn) })

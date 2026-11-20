@@ -314,7 +314,11 @@ describe.skipIf(!testAdminUrl())('the role matrix, endpoint by endpoint', () => 
     {
       capability: 'export.request',
       what: 'export everything',
-      call: (t) => h.app.inject({ method: 'POST', url: '/api/v1/exports', headers: h.as(t) }),
+      call: async (t) => {
+        // It takes a passkey or a code (0.9.0): whoever may, has one.
+        if (can(t.role, 'export.request')) await h.decider(t);
+        return h.app.inject({ method: 'POST', url: '/api/v1/exports', headers: h.as(t) });
+      },
     },
     {
       capability: 'types.manage',

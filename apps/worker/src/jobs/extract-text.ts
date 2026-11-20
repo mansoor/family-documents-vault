@@ -13,6 +13,7 @@ import {
   pdfImageCoverage,
   pdfPageTexts,
   prepareScan,
+  refuseUnlessKind,
   renderPdfPage,
   renderPdfPages,
   skewOf,
@@ -210,6 +211,9 @@ export async function extractText(
   }
   if (IMAGES.has(mime)) {
     if (!tools.tesseract) return null;
+    // Read only as what its own bytes are: a file stored as a picture that
+    // is not one is handed to no tool (tools.ts, refuseUnlessKind).
+    await refuseUnlessKind(file, mime);
     if (!tools.magick) {
       return { text: kept(await ocr(file)), source: 'ocr', textPages: 0, ocrPages: 1 };
     }

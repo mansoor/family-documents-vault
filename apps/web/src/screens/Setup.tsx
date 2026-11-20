@@ -6,6 +6,7 @@ import { describeError, useApp } from '../app-context.js';
 import { forgetLanding } from '../landing.js';
 import { answersBody, answersFrom, HouseholdAnswerFields } from '../household-answers.js';
 import { Avatar, Button, ErrorNote, Field, Logo } from '../ui.js';
+import { TwoStepSetupScreen } from './TwoStepSetup.js';
 import {
   EMAIL_NEEDED,
   HandOver,
@@ -40,7 +41,7 @@ const Steps = ({ current }: { current: Step }) => {
 };
 
 export function SetupScreen() {
-  const { caps, session, reloadCaps, markAuthChanged, withToken, guarded } = useApp();
+  const { caps, session, reloadCaps, markAuthChanged, withToken, guarded, twoStepSetup } = useApp();
   const navigate = useNavigate();
   const [step, setStep] = useState<Step>(
     caps?.setup_required === false && session.signedIn ? 'profile' : 'account',
@@ -49,6 +50,7 @@ export function SetupScreen() {
   const [busy, setBusy] = useState(false);
 
   // --- account
+  const [setupCode, setSetupCode] = useState('');
   const [household, setHousehold] = useState('');
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
@@ -60,7 +62,13 @@ export function SetupScreen() {
     setError(null);
     try {
       session.accept(
-        await api.setup({ household_name: household, display_name: name, email, password }),
+        await api.setup({
+          setup_token: setupCode.trim(),
+          household_name: household,
+          display_name: name,
+          email,
+          password,
+        }),
       );
       markAuthChanged();
       // No folder label lands a new vault anywhere (C3).
@@ -143,6 +151,12 @@ export function SetupScreen() {
     }
   };
 
+  // The first owner sets up two-step sign-in before anything else (0.9.0):
+  // then on to the boards.
+  if (step !== 'account' && twoStepSetup) {
+    return <TwoStepSetupScreen onDone={() => setStep('profile')} />;
+  }
+
   if (step === 'account') {
     return (
       <main className="page">
@@ -155,6 +169,16 @@ export function SetupScreen() {
           </p>
         </div>
         <form onSubmit={(e) => void createAccount(e)} className="card stack">
+          <Field
+            id="setup-code"
+            label="Setup code"
+            value={setupCode}
+            onChange={setSetupCode}
+            autoComplete="off"
+            autoCapitalize="none"
+            autoCorrect="off"
+            hint="So that only whoever installed the vault can set it up: FDV_SETUP_TOKEN in the server's .env file, or the code the vault's API wrote to its log as it started."
+          />
           <Field
             id="household"
             label="What should we call your family?"

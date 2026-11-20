@@ -135,7 +135,8 @@ describe.skipIf(!real)('JPEGs inside PDFs, with the real tools (L2)', () => {
     const paths = {
       'ocr page': (f: string, out: string) => renderPdfPage(f, out, 1),
       'ocr pages': (f: string, out: string) => renderPdfPages(f, out, 5),
-      thumbnail: (f: string, out: string) => thumbnail(f, path.join(out, 'thumb.jpg')),
+      thumbnail: (f: string, out: string) =>
+        thumbnail(f, path.join(out, 'thumb.jpg'), 'application/pdf'),
       previews: (f: string, out: string) => renderPreviews(f, 'application/pdf', out, 5),
     };
     for (const name of Object.keys(bombs)) {
@@ -389,7 +390,7 @@ describe.skipIf(!real)('JPEGs inside PDFs, with the real tools (L2)', () => {
       expect(got?.text, name).toMatch(/Payment due by 29\/04\/2026/);
       expect(got?.ocrPages, name).toBe(1);
       expect(await renderPreviews(f, 'application/pdf', work, 5), name).toHaveLength(1);
-      await thumbnail(f, path.join(work, 'thumb.jpg'));
+      await thumbnail(f, path.join(work, 'thumb.jpg'), 'application/pdf');
     }
     // A progressive CMYK JPEG 4,000 square: 64 million coefficients, the most held whole.
     const most = path.join(dir, 'most.pdf');

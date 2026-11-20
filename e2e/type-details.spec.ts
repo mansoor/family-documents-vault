@@ -1,4 +1,5 @@
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test';
+import { finishSignIn, setupCode } from './vault.js';
 
 /**
  * The card asks for a type's details (5.10), on the real stack: a car added
@@ -28,6 +29,7 @@ async function signIn(page: Page, request: APIRequestContext): Promise<string> {
   if (caps.setup_required) {
     await request.post('/api/v1/setup', {
       data: {
+        setup_token: setupCode(),
         household_name: 'The E2E family',
         display_name: 'Mansoor',
         email: EMAIL,
@@ -43,8 +45,10 @@ async function signIn(page: Page, request: APIRequestContext): Promise<string> {
     page.waitForResponse((r) => r.url().endsWith('/api/v1/auth/password') && r.ok()),
     page.getByRole('button', { name: 'Sign in' }).click(),
   ]);
+  // The owner's code, the second step (0.9.0).
+  const token = await finishSignIn(page, signedIn);
   await expect(page).toHaveURL(/\/$/);
-  return ((await signedIn.json()) as { access_token: string }).access_token;
+  return token;
 }
 
 // One page, signed in once, for both tests: one after the other.

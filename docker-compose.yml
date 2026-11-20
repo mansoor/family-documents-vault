@@ -67,6 +67,9 @@ services:
       FDV_SHARE_MAX_DAYS: ${FDV_SHARE_MAX_DAYS:-}
       FDV_SMTP_URL: ${FDV_SMTP_URL:-}
       FDV_RP_ID: ${FDV_RP_ID:-}
+      # The code first-run setup asks for (0.9.0): gen-env writes it. Unset,
+      # the API makes one as it starts, until set up, and logs it.
+      FDV_SETUP_TOKEN: ${FDV_SETUP_TOKEN:-}
       # Whose X-Forwarded-For to believe (5.30): the networks the API's own
       # container is on — nginx and Caddy — and nothing on your LAN.
       FDV_TRUST_PROXY: ${FDV_TRUST_PROXY:-network}

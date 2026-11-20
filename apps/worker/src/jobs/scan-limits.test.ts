@@ -207,7 +207,8 @@ describe.skipIf(!tools.magick)('the scan steps’ limits (R3)', () => {
       page: (f: string, out: string) => imagePage(f, 'image/jpeg', out, 0),
       photo: (f: string, out: string) =>
         squarePhoto(f, 'image/jpeg', null, path.join(out, 'square.jpg')),
-      thumbnail: (f: string, out: string) => thumbnail(f, path.join(out, 'thumb.jpg')),
+      thumbnail: (f: string, out: string) =>
+        thumbnail(f, path.join(out, 'thumb.jpg'), 'image/jpeg'),
       previews: (f: string, out: string) => renderPreviews(f, 'image/jpeg', out, 5),
     };
     for (const [name, bytes] of Object.entries(bombs)) {

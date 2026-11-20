@@ -52,6 +52,7 @@ import { SettingsLayout } from './settings-sections.js';
 import { ComputersScreen } from './screens/Computers.js';
 import { ConnectedAppsScreen } from './screens/ConnectedApps.js';
 import { SetupScreen } from './screens/Setup.js';
+import { TwoStepSetupScreen } from './screens/TwoStepSetup.js';
 import { FocusOnMove } from './focus-on-move.js';
 import { Only, SCREEN_RULES } from './not-for.js';
 import { PageTitle } from './page-title.js';
@@ -66,7 +67,7 @@ import { Logo } from './ui.js';
  *  - signed in                → everything else, inside the shell
  */
 function Gate({ children, need }: { children: ReactNode; need: 'signed-in' | 'signed-out' }) {
-  const { caps, session, connectionError } = useApp();
+  const { caps, session, connectionError, twoStepSetup } = useApp();
   // authVersion is read by useApp consumers; Gate re-renders through the provider.
   if (connectionError) {
     return (
@@ -91,6 +92,9 @@ function Gate({ children, need }: { children: ReactNode; need: 'signed-in' | 'si
   if (caps.setup_required) return <Navigate to="/setup" replace />;
   if (need === 'signed-in' && !session.signedIn) return <Navigate to="/welcome" replace />;
   if (need === 'signed-out' && session.signedIn) return <Navigate to="/" replace />;
+  // A sign-in that must set up two-step sign-in first (0.9.0): that, and
+  // nothing else, until it is — wherever it was going.
+  if (need === 'signed-in' && twoStepSetup) return <TwoStepSetupScreen />;
   return <>{children}</>;
 }
 

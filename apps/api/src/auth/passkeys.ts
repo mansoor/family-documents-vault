@@ -90,10 +90,13 @@ export class PasskeyService {
       rpID: this.config.rpId,
       userName: account.email,
       userDisplayName: account.email,
-      // A passkey the browser can find without being told who is signing in.
+      // A passkey the browser can find without being told who is signing in,
+      // and one that asks for a PIN, a fingerprint or a face (0.9.0): a
+      // passkey is a whole sign-in, and counts as two-step sign-in, so a
+      // key that only knows it was touched is not enough.
       authenticatorSelection: {
         residentKey: 'preferred',
-        userVerification: 'preferred',
+        userVerification: 'required',
       },
       // Do not let the same authenticator enrol twice.
       excludeCredentials: existing.map((c) => ({
@@ -114,7 +117,7 @@ export class PasskeyService {
     label: string | null,
     meta: RequestMeta,
   ): Promise<PasskeyView> {
-    const challenge = await this.takeChallenge('register', p.accountId);
+    const challenge = await this.takeChallenge('register', p.accountId, response);
 
     let verification;
     try {
@@ -123,7 +126,7 @@ export class PasskeyService {
         expectedChallenge: challenge,
         expectedOrigin: this.config.origin,
         expectedRPID: this.config.rpId,
-        requireUserVerification: false,
+        requireUserVerification: true,
       });
     } catch (err) {
       throw new ApiError(400, 'passkey_rejected', explain(err));
@@ -149,9 +152,19 @@ export class PasskeyService {
           backed_up: credentialBackedUp,
           aaguid: aaguid ?? null,
           label: label?.trim() || null,
+          // Its PIN or fingerprint was asked for (requireUserVerification).
+          user_verified: true,
         })
         .returningAll()
         .executeTakeFirstOrThrow();
+      // Making it was a passkey given, PIN and all: this session has
+      // presented two-step sign-in (0.9.0). Fresh, as
+      // any passkey given is, for five minutes.
+      await trx
+        .updateTable('session')
+        .set({ factor_verified_at: new Date() })
+        .where('id', '=', p.sessionId)
+        .execute();
       await appendAudit(trx, {
         householdId: p.householdId,
         actorAccountId: p.accountId,
@@ -194,9 +207,12 @@ export class PasskeyService {
       // account.
     }
 
+    // A PIN, a fingerprint or a face, every time (0.9.0): a passkey made
+    // before that without one still works where its device can ask for one
+    // (the browser asks), and is refused where it cannot.
     const options = await generateAuthenticationOptions({
       rpID: this.config.rpId,
-      userVerification: 'preferred',
+      userVerification: 'required',
       allowCredentials: allow,
     });
     await this.rememberChallenge(options.challenge, 'authenticate', accountId);
@@ -218,7 +234,7 @@ export class PasskeyService {
       .executeTakeFirst();
     if (!credential || !credential.public_key) throw rejected();
 
-    const challenge = await this.takeChallenge('authenticate', credential.account_id);
+    const challenge = await this.takeChallenge('authenticate', credential.account_id, response);
 
     let verification;
     try {
@@ -227,7 +243,7 @@ export class PasskeyService {
         expectedChallenge: challenge,
         expectedOrigin: this.config.origin,
         expectedRPID: this.config.rpId,
-        requireUserVerification: false,
+        requireUserVerification: true,
         credential: {
           id: response.id,
           publicKey: new Uint8Array(credential.public_key),
@@ -247,6 +263,7 @@ export class PasskeyService {
           'That passkey looks like a copy. Sign in another way and remove it.',
         );
       }
+      if (unverified(err)) throw new ApiError(401, 'passkey_rejected', NOT_VERIFIED);
       throw rejected();
     }
     if (!verification.verified) throw rejected();
@@ -256,6 +273,8 @@ export class PasskeyService {
       .set({
         sign_count: verification.authenticationInfo.newCounter,
         last_used_at: new Date(),
+        // Used with its PIN or fingerprint (required since 0.9.0): a factor.
+        user_verified: true,
       })
       .where('id', '=', credential.id)
       .execute();
@@ -281,7 +300,7 @@ export class PasskeyService {
       .where('account_id', '=', accountId)
       .executeTakeFirst();
     if (!credential?.public_key) throw rejected();
-    const challenge = await this.takeChallenge('authenticate', accountId);
+    const challenge = await this.takeChallenge('authenticate', accountId, response);
     let verification;
     try {
       verification = await verifyAuthenticationResponse({
@@ -289,7 +308,7 @@ export class PasskeyService {
         expectedChallenge: challenge,
         expectedOrigin: this.config.origin,
         expectedRPID: this.config.rpId,
-        requireUserVerification: false,
+        requireUserVerification: true,
         credential: {
           id: response.id,
           publicKey: new Uint8Array(credential.public_key),
@@ -297,7 +316,8 @@ export class PasskeyService {
           transports: credential.transports,
         },
       });
-    } catch {
+    } catch (err) {
+      if (unverified(err)) throw new ApiError(401, 'passkey_rejected', NOT_VERIFIED);
       throw rejected();
     }
     if (!verification.verified) throw rejected();
@@ -306,6 +326,8 @@ export class PasskeyService {
       .set({
         sign_count: verification.authenticationInfo.newCounter,
         last_used_at: new Date(),
+        // Used with its PIN or fingerprint (required since 0.9.0): a factor.
+        user_verified: true,
       })
       .where('id', '=', credential.id)
       .execute();
@@ -381,17 +403,23 @@ export class PasskeyService {
   }
 
   /**
-   * The newest unused challenge for this purpose, marked used in the same
-   * statement so that two requests racing cannot both have it.
+   * The challenge the answer was signed over (its `clientDataJSON`), if the
+   * vault issued it for this purpose and it is unused and unexpired, marked
+   * used in the same statement so that two requests racing cannot both have
+   * it. Found by its value, never as "the newest" (0.9.0): somebody asking
+   * for challenges over and over cannot make another person's sign-in or
+   * step-up fail. One the vault never issued (for this account) is refused
+   * as a passkey not accepted; one used or run out, `challenge_expired`.
    */
   private async takeChallenge(
     purpose: 'register' | 'authenticate',
     accountId: string | null,
+    response: { response?: { clientDataJSON?: unknown } },
   ): Promise<string> {
-    // Claimed in one statement: two requests racing for the same challenge
-    // must not both get it. A sign-in challenge issued without an email
-    // belongs to whoever answers it; one issued for an account belongs to
-    // that account.
+    const signed = signedChallenge(response);
+    if (!signed) throw rejected();
+    // A sign-in challenge issued without an email belongs to whoever
+    // answers it; one issued for an account belongs to that account.
     const mine = accountId
       ? sql`(account_id = ${accountId}::uuid or account_id is null)`
       : sql`account_id is null`;
@@ -399,17 +427,22 @@ export class PasskeyService {
       update webauthn_challenge set used_at = now()
        where id = (
          select id from webauthn_challenge
-          where purpose = ${purpose}
+          where challenge = ${signed}
+            and purpose = ${purpose}
             and used_at is null
             and expires_at > now()
             and ${mine}
-          order by created_at desc
           limit 1
        )
       returning challenge`.execute(this.db);
 
     const row = rows.rows[0];
     if (!row) {
+      const known = await sql<{ id: string }>`
+        select id from webauthn_challenge
+         where challenge = ${signed} and purpose = ${purpose} and ${mine}
+         limit 1`.execute(this.db);
+      if (known.rows.length === 0) throw rejected();
       throw new ApiError(
         400,
         'challenge_expired',
@@ -428,13 +461,39 @@ const rejected = () =>
  * names none: refused as any passkey not accepted, never a server error
  * (the Phase 5 exit found `{ "response": {} }` answered 500 on a public route).
  */
+/**
+ * The challenge a passkey's answer was signed over, from its client data:
+ * null for an answer that carries none readable.
+ */
+function signedChallenge(response: { response?: { clientDataJSON?: unknown } }): Buffer | null {
+  const data = response?.response?.clientDataJSON;
+  if (typeof data !== 'string' || data.length === 0 || data.length > 4096) return null;
+  try {
+    const parsed = JSON.parse(Buffer.from(data, 'base64url').toString('utf8')) as {
+      challenge?: unknown;
+    };
+    return typeof parsed.challenge === 'string' && parsed.challenge.length > 0
+      ? Buffer.from(parsed.challenge, 'base64url')
+      : null;
+  } catch {
+    return null;
+  }
+}
+
 function credentialIdOf(response: AuthenticationResponseJSON): Buffer | null {
   const id = (response as { id?: unknown } | null | undefined)?.id;
   return typeof id === 'string' && id.length > 0 ? Buffer.from(id, 'base64url') : null;
 }
 
+/** A passkey that did not ask for a PIN, a fingerprint or a face (0.9.0). */
+const NOT_VERIFIED =
+  'That passkey did not ask for your PIN, fingerprint or face, which the vault needs. Use one that does: your phone’s or computer’s own, or a security key with a PIN set.';
+const unverified = (err: unknown) =>
+  /user verification|user could not be verified/i.test(err instanceof Error ? err.message : '');
+
 function explain(err: unknown): string {
   const message = err instanceof Error ? err.message : String(err);
+  if (unverified(err)) return NOT_VERIFIED;
   if (/origin/i.test(message)) {
     return 'This passkey was made for a different address for the vault. Open the vault at the address you set it up with.';
   }

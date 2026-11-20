@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  ImageMagick's security policy for the worker image (Dockerfile, worker
+  stage): it replaces /etc/ImageMagick-7/policy.xml.
+
+  Every file of the family's the worker hands ImageMagick is named with its
+  coder (png:, jpeg:, webp:, tiff:, heic:), and only once its own bytes were
+  checked to be that kind (apps/worker/src/jobs/tools.ts). This is the second
+  wall: whatever a file is, or is called, ImageMagick will not run a drawing
+  script, read text into a picture, fetch anything, or read a file named
+  with @.
+
+  - No delegates at all: nothing is handed to Ghostscript, an SVG renderer,
+    curl or any other program.
+  - Refused coders: drawing scripts (MVG, MSL), SVG in every form, text and
+    labels (TEXT, TXT, LABEL, CAPTION), anything that fetches (URL, HTTP,
+    HTTPS, FTP), inline data, EPHEMERAL, PostScript, EPS, PDF and XPS (PDFs
+    are drawn by poppler, never by ImageMagick), and the display coders.
+    pango: stays: a view-only link's watermark is laid out with it.
+  - No @file indirection.
+  - Resource limits: at or above what each run asks for (MAGICK_LIMITS, and
+    a photo's 2 GiB of disk), so a run can lower them but never raise them.
+
+  The worker image's build reads an MVG file to prove this is in force, and
+  the worker does the same as it starts.
+-->
+<policymap>
+  <policy domain="resource" name="memory" value="256MiB"/>
+  <policy domain="resource" name="map" value="512MiB"/>
+  <policy domain="resource" name="width" value="16KP"/>
+  <policy domain="resource" name="height" value="16KP"/>
+  <policy domain="resource" name="area" value="128MP"/>
+  <policy domain="resource" name="disk" value="2GiB"/>
+  <policy domain="resource" name="time" value="120"/>
+  <policy domain="delegate" rights="none" pattern="*"/>
+  <policy domain="coder" rights="none" pattern="{MVG,MSL,MSVG,SVG,SVGZ,RSVG,TEXT,TXT,LABEL,CAPTION,URL,HTTP,HTTPS,FTP,EPHEMERAL,INLINE,PS,PS2,PS3,EPS,EPSF,EPSI,EPI,EPT,PDF,PDFA,AI,XPS,PCL,SHOW,WIN,X}"/>
+  <policy domain="path" rights="none" pattern="@*"/>
+</policymap>

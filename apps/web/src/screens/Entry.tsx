@@ -134,6 +134,35 @@ export function SignInScreen() {
   if (mfaToken) {
     const offersText = mfa?.methods?.includes('text') === true;
     const offersApp = !mfa?.methods || mfa.methods.includes('totp');
+    // Somebody who must have two-step sign-in, whose factor is a passkey
+    // (0.9.0): the passkey is the second step, as a passkey sign-in.
+    const offersPasskey = mfa?.methods?.includes('passkey') === true;
+    const passkeyButton = offersPasskey && (
+      <Button
+        kind={offersApp ? 'quiet' : 'primary'}
+        disabled={busy}
+        onClick={() => void withPasskey()}
+      >
+        {busy ? 'Waiting for your device…' : 'Use your passkey'}
+      </Button>
+    );
+    if (offersPasskey && !offersApp && !offersText) {
+      return (
+        <main className="page">
+          <Logo />
+          <div>
+            <h1 style={{ fontSize: 32 }}>One more step</h1>
+            <p className="lede">
+              Use your passkey: your device asks for your PIN, fingerprint or face.
+            </p>
+          </div>
+          <div className="card stack">
+            <ErrorNote message={error} />
+            {passkeyButton}
+          </div>
+        </main>
+      );
+    }
     return (
       <main className="page">
         <Logo />
@@ -142,7 +171,9 @@ export function SignInScreen() {
           <p className="lede">
             {byText
               ? `Enter the six-digit code we text${texted ? 'ed' : ''} to ${mfa?.text_to ?? 'your phone'}.`
-              : 'Enter the six-digit code from your authenticator app.'}
+              : offersPasskey
+                ? 'Enter the six-digit code from your authenticator app, or use your passkey.'
+                : 'Enter the six-digit code from your authenticator app.'}
           </p>
         </div>
         <form onSubmit={(e) => void submit(e)} className="card stack">
@@ -171,6 +202,7 @@ export function SignInScreen() {
                 Text me a code instead
               </Button>
             ))}
+          {passkeyButton}
           {offersText && offersApp && byText && (
             <Button
               kind="link"

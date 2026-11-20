@@ -1,4 +1,5 @@
 import { expect, test, type Request } from '@playwright/test';
+import { finishSignIn, setupCode } from './vault.js';
 
 /**
  * A reload is not a sign-out.
@@ -19,6 +20,7 @@ test('reloading Settings keeps you signed in, with one refresh', async ({ page, 
   if (caps.setup_required) {
     await request.post('/api/v1/setup', {
       data: {
+        setup_token: setupCode(),
         household_name: 'The E2E family',
         display_name: 'Mansoor',
         email: EMAIL,
@@ -37,10 +39,12 @@ test('reloading Settings keeps you signed in, with one refresh', async ({ page, 
   await page.getByLabel('Password').fill(PASSWORD);
   // The sign-in page's heading is the household's name too, so wait for
   // the sign-in itself, not for a heading.
-  await Promise.all([
+  const [signedIn] = await Promise.all([
     page.waitForResponse((r) => r.url().endsWith('/api/v1/auth/password') && r.ok()),
     page.getByRole('button', { name: 'Sign in' }).click(),
   ]);
+  // The owner's code, the second step (0.9.0).
+  await finishSignIn(page, signedIn);
   await expect(page).toHaveURL(/\/$/);
 
   await page.goto('/settings');

@@ -10,6 +10,8 @@
 export interface StepUpRequest {
   action: string;
   message: string;
+  /** Only a passkey or a code will do, never the password (0.9.0). */
+  factor?: boolean;
 }
 
 export class StepUpCoordinator {

@@ -325,6 +325,22 @@ export interface FakeState {
    * /household/ended-sharing answer it, and PUT is recorded in `saves`.
    */
   endedSharing?: { days: 30 | 90 | 365 | null; saves?: unknown[] };
+  /** Setup answers that the first owner must set up two-step sign-in first (0.9.0). */
+  twoStepSetupAtSetup?: boolean;
+  /**
+   * The sign-in may only set up two-step sign-in (0.9.0): a password sign-in
+   * says so, and everything but /me, step-up, passkeys and an authenticator
+   * app's routes answers `403 two_step_setup_required`, until a code is confirmed.
+   */
+  twoStepSetupPending?: boolean;
+  /** Why (0.9.0): `confirm` when a passkey or a code is set up and this sign-in has not given it. */
+  twoStepReason?: 'enrol' | 'confirm';
+  /** A password sign-in answers that the second step is the owner's passkey (0.9.0). */
+  passkeySecondStep?: boolean;
+  /** Whether every adult must have two-step sign-in (0.9.0): on unless a test says. */
+  twoStepAdults?: boolean;
+  /** Each PUT /household/two-step, as sent. */
+  twoStepAdultSaves?: unknown[];
   /** limits.backup_retain_days (0.9.0, H5): left out, not said. */
   backupDays?: number | null;
   /** Each POST /documents/original-place, as sent. */
@@ -1624,9 +1640,17 @@ export function installFakeApi(state: FakeState) {
       });
     }
     if (path === '/api/v1/setup' && method === 'POST') {
+      // The setup code (0.9.0): any here, but never none.
+      if (!(body as { setup_token?: string }).setup_token) {
+        return refuse(403, 'setup_token_invalid', 'Enter the setup code.');
+      }
       state.setupRequired = false;
       state.displayName = (body as { household_name: string }).household_name;
-      return json(TOKENS, 201);
+      // The first owner sets up two-step sign-in first, when a test says so.
+      return json(
+        state.twoStepSetupAtSetup ? { ...TOKENS, two_step_setup_required: true } : TOKENS,
+        201,
+      );
     }
     // A sign-in whose second step is a texted code (SMS3).
     if (path === '/api/v1/auth/password' && state.signInByText) {
@@ -1685,7 +1709,45 @@ export function installFakeApi(state: FakeState) {
       state.refreshToken = TOKENS.refresh_token;
       state.spentRefresh = null;
       state.sessionEnded = false;
-      return json(TOKENS);
+      // An owner whose factor is a passkey (0.9.0): the passkey is the second step.
+      if (state.passkeySecondStep) {
+        return json({ mfa_required: true, mfa_token: 'mfa', methods: ['passkey'] });
+      }
+      // A sign-in that must set up two-step sign-in first (0.9.0).
+      return json(
+        state.twoStepSetupPending ? { ...TOKENS, two_step_setup_required: true } : TOKENS,
+      );
+    }
+    // Setting up an authenticator app (SEC-03): the code is 123456.
+    if (path === '/api/v1/auth/totp/enrol' && method === 'POST') {
+      return json({
+        secret: 'JBSWY3DPEHPK3PXP',
+        otpauth_url: 'otpauth://totp/Vault:m%40example.test?secret=JBSWY3DPEHPK3PXP',
+      });
+    }
+    if (path === '/api/v1/auth/totp/confirm' && method === 'POST') {
+      if ((body as { code?: string }).code !== '123456') {
+        return refuse(422, 'totp_invalid', "That code didn't match. Try the current one.");
+      }
+      state.twoStep = true;
+      state.twoStepSetupPending = false;
+      return Promise.resolve(new Response(null, { status: 204 }));
+    }
+    // Until it is set up, nothing else answers that sign-in (0.9.0).
+    if (
+      state.twoStepSetupPending &&
+      path !== '/api/v1/me' &&
+      path !== '/api/v1/auth/logout' &&
+      !path.startsWith('/api/v1/auth/step-up') &&
+      !path.startsWith('/api/v1/auth/passkeys') &&
+      path !== '/api/v1/auth/refresh' &&
+      path !== '/api/v1/capabilities'
+    ) {
+      return refuse(
+        403,
+        'two_step_setup_required',
+        'Owners must set up two-step sign-in before going on: a code from an authenticator app, or a passkey.',
+      );
     }
     if (path === '/api/v1/auth/refresh') {
       state.refreshCalls++;
@@ -1724,6 +1786,8 @@ export function installFakeApi(state: FakeState) {
         role: storedRole(),
         totp_enabled: state.twoStep !== false,
         totp_required: state.twoStep === false && storedRole() === 'owner',
+        two_step_setup_required: state.twoStepSetupPending === true,
+        two_step_reason: state.twoStepSetupPending ? (state.twoStepReason ?? 'enrol') : null,
         reset_notice: state.resetNotice ?? null,
         handover_since: state.handoverSince ?? null,
         restriction: state.myRestriction ?? null,
@@ -2160,6 +2224,8 @@ export function installFakeApi(state: FakeState) {
           );
         }
         state.stepUpNeeded = false;
+        // A code given: a sign-in held to confirm it goes on (0.9.0).
+        if (state.twoStepReason === 'confirm') state.twoStepSetupPending = false;
         state.accountStepUp = false;
         return json({ verified_at: new Date().toISOString(), expires_in: 300 });
       }
@@ -4124,6 +4190,22 @@ export function installFakeApi(state: FakeState) {
         e.days = (body as { remove_after_days: 30 | 90 | 365 | null }).remove_after_days;
       }
       return json({ remove_after_days: e.days, can_change: owner });
+    }
+    // Two-step sign-in for adults (0.9.0): read by everybody, an owner's to change.
+    if (path === '/api/v1/household/two-step') {
+      const owner = storedRole() === 'owner';
+      if (method === 'PUT') {
+        if (!owner) {
+          return refuse(
+            403,
+            'forbidden',
+            'Only an owner can choose whether adults must use two-step sign-in.',
+          );
+        }
+        (state.twoStepAdultSaves ??= []).push(body);
+        state.twoStepAdults = (body as { adults: boolean }).adults;
+      }
+      return json({ adults: state.twoStepAdults ?? true, can_change: owner });
     }
     // Neutral wording (0.9.0, H2): the household's an owner's, each person's own.
     if (path === '/api/v1/household/neutral-wording' && state.wording) {

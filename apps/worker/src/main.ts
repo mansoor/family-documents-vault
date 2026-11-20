@@ -11,8 +11,10 @@ import {
   READING_RULES_KEY_PURPOSE,
   ScopeKeys,
   SMS_PASSWORD_PURPOSE,
+  databasePasswordProblem,
+  masterSecretProblem,
 } from '@fdv/crypto';
-import { assertSchemaKnown, createPool } from '@fdv/db';
+import { assertSchemaKnown, createPool, rowSecurityProblem } from '@fdv/db';
 import { WATCH_SYSTEM_DIRS } from '@fdv/shared';
 import { loadConfig, logs, type LogLevel } from './config.js';
 import { backupDatabase } from './jobs/backup.js';
@@ -84,6 +86,7 @@ import type { JobWithMetadata } from 'pg-boss';
 import { createQueue, JOBS } from './queue.js';
 import { noticeAppKeys, noticeReviewers, sweepApps } from './jobs/apps.js';
 import { masterKeyOpensVault, resolveMasterSecret } from './master-key-check.js';
+import { magickPolicy } from './jobs/tools.js';
 
 /** LOG_LEVEL, once the configuration is read: until then, everything is written. */
 let logLevel: LogLevel = 'trace';
@@ -99,7 +102,22 @@ async function main(): Promise<void> {
   takeMailInPassword(process.env);
   logLevel = config.LOG_LEVEL;
   const adminUrl = config.DATABASE_ADMIN_URL ?? config.DATABASE_URL;
-  if (!(await masterKeyOpensVault(adminUrl, await resolveMasterSecret(config), log))) {
+  const masterSecret = await resolveMasterSecret(config);
+  // Never on the example file's secrets, nor a master key anybody could
+  // guess (the API refuses them too).
+  const weak =
+    masterSecretProblem(masterSecret) ??
+    databasePasswordProblem(config.DATABASE_URL, 'DATABASE_URL') ??
+    (config.DATABASE_ADMIN_URL
+      ? databasePasswordProblem(config.DATABASE_ADMIN_URL, 'DATABASE_ADMIN_URL')
+      : null);
+  if (weak) {
+    log('error', 'refused to start', { reason: weak });
+    console.error(weak);
+    process.exitCode = 1;
+    return;
+  }
+  if (!(await masterKeyOpensVault(adminUrl, masterSecret, log))) {
     process.exitCode = 1;
     return;
   }
@@ -111,6 +129,37 @@ async function main(): Promise<void> {
     await assertSchemaKnown(probe);
   } finally {
     await probe.end();
+  }
+  // Every household boundary is a row-level security policy: the role the
+  // family's work is done with must be held by them, or nothing starts.
+  const appProbe = createPool(config.DATABASE_URL, 1);
+  try {
+    const rls = await rowSecurityProblem(appProbe);
+    if (rls) {
+      log('error', 'refused to start', { reason: rls });
+      console.error(rls);
+      process.exitCode = 1;
+      return;
+    }
+  } finally {
+    await appProbe.end();
+  }
+  // ImageMagick's security policy (the worker image's policy.xml), proved in
+  // force before any of the family's files is drawn: in the image
+  // (NODE_ENV=production) the worker does not start without it; elsewhere
+  // — a development machine's own ImageMagick — it says so.
+  const policy = await magickPolicy(tmpdir());
+  if (policy === 'absent') {
+    const reason =
+      "ImageMagick's security policy is not in force: it read an MVG drawing. " +
+      'Install docker/imagemagick/policy.xml as its policy.xml (the worker image does).';
+    if (process.env.NODE_ENV === 'production') {
+      log('error', 'refused to start', { reason });
+      console.error(reason);
+      process.exitCode = 1;
+      return;
+    }
+    log('warn', reason);
   }
 
   // The queue schema is installed with the owning role; job data itself is
@@ -142,9 +191,6 @@ async function main(): Promise<void> {
   });
   await boss.schedule(JOBS.verifyAudit, '15 3 * * *');
 
-  const masterSecret = config.FDV_MASTER_KEY_FILE
-    ? (await readFile(config.FDV_MASTER_KEY_FILE, 'utf8')).trim()
-    : (config.FDV_MASTER_KEY as string);
   await boss.createQueue(JOBS.renderPreviews, {
     policy: 'exclusive',
     retryLimit: 2,

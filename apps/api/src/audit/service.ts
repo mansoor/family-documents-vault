@@ -447,6 +447,9 @@ const RULES: ReadonlyMap<string, Audience | typeof BY_TYPE> = new Map<
   // 0.9.0 (RQ): how long ended links and requests are kept, chosen by an
   // owner: never which, so for whoever reads the log.
   ['household.ended_sharing_changed', everyone],
+  // 0.9.0: whether every adult must have two-step sign-in, chosen by an
+  // owner: how the family signs in, so for whoever reads the log.
+  ['household.two_step_changed', everyone],
   ['invitation.created', BY_TYPE],
   ['invitation.accepted', BY_TYPE],
   ['invitation.revoked', BY_TYPE],

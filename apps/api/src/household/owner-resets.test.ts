@@ -320,13 +320,17 @@ function family(operatorMail: boolean) {
     [
       'an export that has not run out',
       async (who) => {
-        await fresh(who);
-        const r = await t.h.app.inject({
-          method: 'POST',
-          url: '/api/v1/exports',
-          headers: t.h.as(who),
-        });
-        expect(r.statusCode, r.body).toBe(202);
+        // Asking for one takes a passkey or a code since 0.9.0, which would
+        // be a gain of its own: the export is made as the vault makes it.
+        const admin = createPool(t.h.adminUrl, 1);
+        try {
+          await admin.query('insert into export (household_id, requested_by) values ($1, $2)', [
+            who.household_id,
+            await accountOf(who),
+          ]);
+        } finally {
+          await admin.end();
+        }
       },
     ],
     [

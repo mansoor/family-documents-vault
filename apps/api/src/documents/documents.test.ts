@@ -1,4 +1,5 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { crc32, deflateSync } from 'node:zlib';
 import { withSystem } from '@fdv/db';
 import { testAdminUrl } from '@fdv/db/testing';
 import type { DocumentView, VersionView } from '@fdv/shared';
@@ -12,6 +13,32 @@ const PDF = Buffer.from(
   '%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n2 0 obj<</Type/Pages/Kids[]/Count 0>>endobj\ntrailer<</Root 1 0 R>>\n%%EOF\n',
 );
 const PNG_HEAD = Buffer.from('89504e470d0a1a0a0000000d49484452', 'hex');
+/**
+ * A real PNG, 4 pixels square: since 0.9.0 a picture is what its bytes
+ * are, and nothing the browser said, so a PNG's signature and noise is no
+ * longer taken as one.
+ */
+const PNG = (() => {
+  const chunk = (type: string, data: Buffer) => {
+    const len = Buffer.alloc(4);
+    len.writeUInt32BE(data.length);
+    const body = Buffer.concat([Buffer.from(type, 'latin1'), data]);
+    const crc = Buffer.alloc(4);
+    crc.writeUInt32BE(crc32(body));
+    return Buffer.concat([len, body, crc]);
+  };
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(4, 0);
+  ihdr.writeUInt32BE(4, 4);
+  ihdr.set([8, 2, 0, 0, 0], 8);
+  const rows = Array.from({ length: 4 }, () => Buffer.concat([Buffer.from([0]), randomBytes(12)]));
+  return Buffer.concat([
+    PNG_HEAD.subarray(0, 8),
+    chunk('IHDR', ihdr),
+    chunk('IDAT', deflateSync(Buffer.concat(rows))),
+    chunk('IEND', Buffer.alloc(0)),
+  ]);
+})();
 
 describe.skipIf(!testAdminUrl())('documents API', () => {
   let h: Harness;
@@ -259,6 +286,54 @@ describe.skipIf(!testAdminUrl())('documents API', () => {
     expect(exe.statusCode).toBe(415);
     expect(errorCode(exe)).toBe('unsupported_type');
 
+    // What the browser said never makes a file a picture: an ImageMagick
+    // drawing script, an SVG, plain text, or a zip, each sent as a PNG,
+    // is refused, never stored as image/png for the worker to draw.
+    for (const [name, bytes] of [
+      ['script.png', Buffer.from("push graphic-context\nimage over 0,0 0,0 'url:http://x/'\n")],
+      ['drawing.png', Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"><text>x</text></svg>')],
+      ['words.png', Buffer.from('text @/proc/1/environ')],
+      ['archive.png', Buffer.from('504b0304140000000000', 'hex')],
+    ] as const) {
+      const sent = await upload(
+        owner,
+        `/api/v1/documents/${passport.id}/versions`,
+        bytes,
+        name,
+        'image/png',
+      );
+      expect(sent.statusCode, name).toBe(415);
+      expect(errorCode(sent), name).toBe('unsupported_type');
+    }
+
+    // A PDF with a little before its header (a scanner's, a mail client's)
+    // is a PDF when it was sent as one: `%PDF-` within its first 1 KiB, as
+    // the worker checks too. Sent as anything else, or further in, it is not.
+    const junkPdf = Buffer.concat([Buffer.from('\r\n\r\nX-Junk: 1\r\n\r\n'), PDF]);
+    const asPdf = await upload(
+      owner,
+      `/api/v1/documents/${passport.id}/versions`,
+      junkPdf,
+      'scan.pdf',
+      'application/pdf',
+    );
+    expect(asPdf.statusCode, asPdf.body).toBe(201);
+    expect(json<VersionView>(asPdf).mime).toBe('application/pdf');
+    for (const [bytes, type] of [
+      [junkPdf, 'image/png'],
+      [Buffer.concat([Buffer.alloc(1100, 0x20), PDF]), 'application/pdf'],
+      [Buffer.from('text, then %PDF- somewhere'), 'image/jpeg'],
+    ] as const) {
+      const res = await upload(
+        owner,
+        `/api/v1/documents/${passport.id}/versions`,
+        bytes,
+        'scan.pdf',
+        type,
+      );
+      expect(res.statusCode, type).toBe(415);
+    }
+
     const noKey = await h.app.inject({
       method: 'POST',
       url: `/api/v1/documents/${passport.id}/versions`,
@@ -281,13 +356,7 @@ describe.skipIf(!testAdminUrl())('documents API', () => {
   });
 
   it('capture creates a Needs-info document with its first version in one call', async () => {
-    const res = await upload(
-      owner,
-      '/api/v1/capture',
-      Buffer.concat([PNG_HEAD, randomBytes(64)]),
-      'IMG_0001.png',
-      'image/png',
-    );
+    const res = await upload(owner, '/api/v1/capture', PNG, 'IMG_0001.png', 'image/png');
     expect(res.statusCode).toBe(201);
     const cap = json<{ document_id: string; version_id: string; state: string }>(res);
     expect(cap.state).toBe('stored');

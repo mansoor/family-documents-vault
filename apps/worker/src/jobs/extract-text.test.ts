@@ -13,6 +13,9 @@ import { NotWordError, WORD_MIME, wordText, wordXmlText } from './word-text.js';
 
 const run = promisify(execFile);
 
+/** A PNG's signature: what a file stored as a PNG must begin with to be read at all. */
+const PNG_HEAD = Buffer.from('89504e470d0a1a0a', 'hex');
+
 /**
  * Every thread a Word file's XML is turned into text on: when it started,
  * when it answered (if it did), and its end. What the tests of that thread
@@ -721,7 +724,8 @@ describe('extracting text (5.37)', () => {
 
   it('a photo is read by OCR; a workbook is not read', async () => {
     const photo = path.join(dir, 'photo.png');
-    await writeFile(photo, 'not decoded here');
+    // A PNG by its first bytes (never decoded here: OCR is stood in for).
+    await writeFile(photo, Buffer.concat([PNG_HEAD, Buffer.from('not decoded here')]));
     const { asked, ocr } = counting(() => Promise.resolve('  PHOTO WORDS  '));
     const got = await extractText(photo, 'image/png', {
       maxPages: 5,
@@ -744,9 +748,32 @@ describe('extracting text (5.37)', () => {
     expect(await extractText(photo, sheet, { maxPages: 5, workDir: dir, ocr, tools })).toBeNull();
   });
 
+  it('a file stored as a picture whose bytes are not one is handed to no tool', async () => {
+    // A drawing script, an SVG and plain text, each sent as a PNG.
+    for (const [name, bytes] of [
+      ['script.png', 'push graphic-context\nviewbox 0 0 640 480\npop graphic-context\n'],
+      ['drawing.png', '<svg xmlns="http://www.w3.org/2000/svg"><image href="x"/></svg>'],
+      ['words.png', 'hello'],
+    ] as const) {
+      const photo = path.join(dir, name);
+      await writeFile(photo, bytes);
+      const { asked, ocr } = counting(() => Promise.resolve('WORDS'));
+      await expect(
+        extractText(photo, 'image/png', {
+          maxPages: 5,
+          workDir: dir,
+          ocr,
+          tools: { pdftoppm: false, magick: false, tesseract: true },
+        }),
+        name,
+      ).rejects.toThrow(/its bytes are not image\/png/);
+      expect(asked, name).toEqual([]);
+    }
+  });
+
   it('no more than MAX_TEXT_CHARS is kept of one file', async () => {
     const photo = path.join(dir, 'long.png');
-    await writeFile(photo, 'x');
+    await writeFile(photo, Buffer.concat([PNG_HEAD, Buffer.from('x')]));
     const got = await extractText(photo, 'image/png', {
       maxPages: 5,
       workDir: dir,

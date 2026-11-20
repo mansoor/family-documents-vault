@@ -89,6 +89,14 @@ interface AppState {
   wantFamilyZone: () => void;
   /** The family's zone as an owner has just changed it in Settings: every screen moves to it. */
   setFamilyZone: (zone: string) => void;
+  /**
+   * This sign-in must set up two-step sign-in before anything else (0.9.0):
+   * an owner, or an adult where the household asks it, with neither a code
+   * nor a passkey. The app shows only that, until it is set up.
+   */
+  twoStepSetup: boolean;
+  /** Two-step sign-in is set up: the app goes on. */
+  twoStepDone: () => void;
 }
 
 const Ctx = createContext<AppState | null>(null);
@@ -115,6 +123,24 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, [reloadCaps]);
 
   const markAuthChanged = useCallback(() => setAuthVersion((v) => v + 1), []);
+
+  // Two-step sign-in to set up before anything else (0.9.0): as the sign-in
+  // said (session.twoStepSetup), or as any answer since has said.
+  // Heard for whom: a later sign-in, somebody else's, is not held to it.
+  const [twoStepHeardFor, setTwoStepHeardFor] = useState<string | null>(null);
+  const setTwoStepHeard = useCallback(
+    (heard: boolean) => setTwoStepHeardFor(heard ? (session.info?.member_id ?? null) : null),
+    [session],
+  );
+  const twoStepSetup =
+    session.signedIn &&
+    (session.twoStepSetup ||
+      (twoStepHeardFor !== null && twoStepHeardFor === session.info?.member_id));
+  const twoStepDone = useCallback(() => {
+    session.twoStepDone();
+    setTwoStepHeard(false);
+    markAuthChanged();
+  }, [session, setTwoStepHeard, markAuthChanged]);
 
   // The family's clock (0.9.0, TZ): asked once a sign-in, as a screen first
   // needs it, and remembered on this device for the next visit, so a page
@@ -179,10 +205,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
           markAuthChanged();
           return null;
         }
+        // A sign-in that must set up two-step sign-in first (0.9.0): the
+        // app shows that, and nothing else, until it is (App.tsx).
+        if (err instanceof ApiRequestError && err.code === 'two_step_setup_required') {
+          setTwoStepHeard(true);
+        }
         throw err;
       }
     },
-    [session, markAuthChanged],
+    [session, markAuthChanged, setTwoStepHeard],
   );
 
   // The step-up prompt is here rather than in a screen because any screen
@@ -192,6 +223,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [asking, setAsking] = useState<{
     action: string;
     message: string;
+    factor?: boolean;
     settle: (ok: boolean) => void;
   } | null>(null);
 
@@ -224,7 +256,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
         return await withToken(fn);
       } catch (err) {
         if (!(err instanceof ApiRequestError) || err.code !== 'step_up_required') throw err;
-        const confirmed = await stepUp.confirm({ action: err.action ?? '', message: err.message });
+        const confirmed = await stepUp.confirm({
+          action: err.action ?? '',
+          message: err.message,
+          ...(err.factor ? { factor: true } : {}),
+        });
         // Confirmed for something nobody is waiting for any more: not fetched.
         if (!confirmed || opts.cancelled?.()) return null;
         return await withToken(fn);
@@ -286,6 +322,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
       familyZone,
       wantFamilyZone,
       setFamilyZone,
+      twoStepSetup,
+      twoStepDone,
     }),
     [
       caps,
@@ -299,6 +337,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
       familyZone,
       wantFamilyZone,
       setFamilyZone,
+      twoStepSetup,
+      twoStepDone,
     ],
   );
   return (
@@ -306,7 +346,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
       {children}
       <RenewalWait session={session} />
       {asking && (
-        <StepUpPrompt action={asking.action} message={asking.message} onSettled={asking.settle} />
+        <StepUpPrompt
+          action={asking.action}
+          message={asking.message}
+          factor={asking.factor === true}
+          onSettled={asking.settle}
+        />
       )}
     </Ctx.Provider>
   );

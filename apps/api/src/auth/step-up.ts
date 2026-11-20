@@ -181,6 +181,13 @@ export const needsTwoStep = (action: StepUpAction) => `Turn on two-step sign-in 
  */
 const factorOnly = (action: StepUpAction) => FACTOR_STEP_UPS.includes(action);
 
+/**
+ * What takes a passkey or a code once the account has either (0.9.0):
+ * adding or removing one, and a new password set by step-up. Before that,
+ * the password is all somebody has, and is what they set the first up with.
+ */
+const FACTOR_ONCE_SET: ReadonlySet<StepUpAction> = new Set(['change_sign_in', 'change_password']);
+
 export class StepUpService {
   constructor(
     private readonly db: Db,
@@ -227,11 +234,28 @@ export class StepUpService {
    * or a code.
    */
   async require(p: Principal, action: StepUpAction, trx?: Db): Promise<void> {
-    const at = (await this.verifiedAt(p, trx, factorOnly(action)))?.getTime() ?? 0;
+    // Changing how somebody signs in, once they have a passkey or a code
+    // (0.9.0): that, never the password. Otherwise one phished password
+    // could add its own authenticator, then pass every step-up with it.
+    const factor =
+      factorOnly(action) || (FACTOR_ONCE_SET.has(action) && (await this.hasFactor(p.accountId)));
+    const at = (await this.verifiedAt(p, trx, factor))?.getTime() ?? 0;
     if (Date.now() - at <= STEP_UP_WINDOW_MS) return;
     throw new ApiError(403, 'step_up_required', `Please confirm it is you ${WHY[action]}.`, {
       action,
+      // A passkey or a code, and no password, will do (0.9.0).
+      ...(factor ? { factor: true } : {}),
     });
+  }
+
+  /**
+   * Whether the account has a factor of two-step sign-in (0.9.0): a code
+   * from an authenticator app, or any passkey — one made before 0.9.0
+   * included, which is asked for a PIN or a fingerprint as it is used.
+   */
+  async hasFactor(accountId: string): Promise<boolean> {
+    if (this.totp && (await this.totp.isEnabled(accountId))) return true;
+    return this.passkeys ? this.passkeys.has(accountId) : false;
   }
 
   /**

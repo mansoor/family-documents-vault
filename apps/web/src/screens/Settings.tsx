@@ -183,7 +183,7 @@ function KeyShortcuts() {
  * device, checked by the device, with nothing shared that could be
  * phished or stolen from the server.
  */
-function Passkeys() {
+export function Passkeys({ onAdded }: { onAdded?: () => void } = {}) {
   const { guarded, authVersion } = useApp();
   const zone = useFamilyZone();
   const {
@@ -200,9 +200,10 @@ function Passkeys() {
     setBusy(true);
     setError(null);
     try {
-      await guarded((t) => passkeys.enrol(t, label.trim() || 'This device'));
+      const made = await guarded((t) => passkeys.enrol(t, label.trim() || 'This device'));
       setLabel('');
       await reload();
+      if (made !== null) onAdded?.();
     } catch (err) {
       setError(passkeys.describe(err));
     } finally {
@@ -283,8 +284,8 @@ function Passkeys() {
   );
 }
 
-/** SEC-03: two-step sign-in, mandatory for owners. */
-function TwoStep() {
+/** SEC-03: two-step sign-in, mandatory for owners (held to since 0.9.0). */
+export function TwoStep({ onDone }: { onDone?: () => void } = {}) {
   const { guarded, authVersion } = useApp();
   // Linked to from where it is needed (5.25: an owner's Account card).
   const { hash } = useLocation();
@@ -315,10 +316,11 @@ function TwoStep() {
     setBusy(true);
     setError(null);
     try {
-      await guarded((t) => api.totpConfirm(t, code));
+      const done = await guarded((t) => api.totpConfirm(t, code));
       setEnrol(null);
       setCode('');
       await reload();
+      if (done !== null) onDone?.();
     } catch (err) {
       setError(describeError(err));
     } finally {

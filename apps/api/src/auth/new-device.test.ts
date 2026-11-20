@@ -1,6 +1,6 @@
 import { testAdminUrl } from '@fdv/db/testing';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { createHarness, type Harness } from '../test-harness.js';
+import { createHarness, TEST_SETUP_TOKEN, type Harness } from '../test-harness.js';
 import { describeDevice } from './service.js';
 
 const CHROME_MAC =
@@ -39,6 +39,7 @@ describe.skipIf(!testAdminUrl())('new-device alerts', () => {
       url: '/api/v1/setup',
       headers: { 'user-agent': CHROME_MAC },
       payload: {
+        setup_token: TEST_SETUP_TOKEN,
         household_name: 'The Test family',
         display_name: 'Owner',
         email: 'owner@example.test',

@@ -436,6 +436,24 @@ export function registerHousehold(
     return household.setEndedSharing(principal(req), body.remove_after_days, metaOf(req));
   });
 
+  // Two-step sign-in for adults (0.9.0): read by everybody signed in; an
+  // owner's to change (`403 forbidden` to anybody else), with a passkey or a
+  // code — an owner power over other people's sign-ins (A54).
+  app.get('/api/v1/household/two-step', auth, async (req) => household.twoStep(principal(req)));
+  app.put('/api/v1/household/two-step', auth, async (req) => {
+    const p = principal(req);
+    const body = parse(z.object({ adults: z.boolean() }).strict(), req.body ?? {});
+    if (p.role !== 'owner') {
+      throw new ApiError(
+        403,
+        'forbidden',
+        'Only an owner can choose whether adults must use two-step sign-in.',
+      );
+    }
+    await stepUp?.requireOwnerPower(p, 'manage_sign_ins');
+    return household.setTwoStep(p, body.adults, metaOf(req));
+  });
+
   // The family (5.34: a guest never among them, but for themselves); an
   // owner lists the people outside the family with ?kind=guest.
   const membersQuery = z.object({ kind: z.enum(['family', 'guest']).optional() });

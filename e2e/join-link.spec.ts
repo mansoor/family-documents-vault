@@ -1,4 +1,5 @@
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test';
+import { ownerToken, setupCode } from './vault.js';
 
 /**
  * An invitation link, the way the person invited opens it (5.17):
@@ -23,6 +24,7 @@ async function signIn(request: APIRequestContext): Promise<string> {
   if (caps.setup_required) {
     await request.post('/api/v1/setup', {
       data: {
+        setup_token: setupCode(),
         household_name: 'The E2E family',
         display_name: 'Mansoor',
         email: EMAIL,
@@ -30,11 +32,8 @@ async function signIn(request: APIRequestContext): Promise<string> {
       },
     });
   }
-  const res = await request.post('/api/v1/auth/password', {
-    data: { email: EMAIL, password: PASSWORD },
-  });
-  expect(res.ok()).toBe(true);
-  return ((await res.json()) as { access_token: string }).access_token;
+  // Password and the owner's code (0.9.0).
+  return ownerToken(request, EMAIL, PASSWORD);
 }
 
 /** An invitation for somebody new, made through the API: its link's token and its code. */

@@ -1,4 +1,5 @@
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test';
+import { finishSignIn, setupCode } from './vault.js';
 
 /**
  * Reminders from any date (5.16b), on the real stack: an adult shows Due
@@ -29,6 +30,7 @@ async function signIn(page: Page, request: APIRequestContext): Promise<string> {
   if (caps.setup_required) {
     await request.post('/api/v1/setup', {
       data: {
+        setup_token: setupCode(),
         household_name: 'The E2E family',
         display_name: 'Mansoor',
         email: EMAIL,
@@ -44,8 +46,10 @@ async function signIn(page: Page, request: APIRequestContext): Promise<string> {
     page.waitForResponse((r) => r.url().endsWith('/api/v1/auth/password') && r.ok()),
     page.getByRole('button', { name: 'Sign in' }).click(),
   ]);
+  // The owner's code, the second step (0.9.0).
+  const token = await finishSignIn(page, signedIn);
   await expect(page).toHaveURL(/\/$/);
-  return ((await signedIn.json()) as { access_token: string }).access_token;
+  return token;
 }
 
 /** A calendar day `days` from today, on the vault's calendar (UTC, its default). */

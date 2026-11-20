@@ -1,8 +1,8 @@
-import { verifyAuditChain, withSystem, type Db } from '@fdv/db';
+import { createPool, verifyAuditChain, withSystem, type Db } from '@fdv/db';
 import { testAdminUrl } from '@fdv/db/testing';
 import type { FastifyInstance } from 'fastify';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { createHarness, type Harness } from '../test-harness.js';
+import { createHarness, TEST_SETUP_TOKEN, type Harness } from '../test-harness.js';
 import type { Tokens } from './service.js';
 
 describe.skipIf(!testAdminUrl())('setup and password auth', () => {
@@ -12,6 +12,7 @@ describe.skipIf(!testAdminUrl())('setup and password auth', () => {
   let tokens: Tokens;
 
   const setupBody = {
+    setup_token: TEST_SETUP_TOKEN,
     household_name: 'The Test family',
     display_name: 'Mansoor',
     email: 'Owner@Example.test',
@@ -42,6 +43,54 @@ describe.skipIf(!testAdminUrl())('setup and password auth', () => {
     });
     expect(res.statusCode).toBe(422);
     expect(error(res).code).toBe('validation_failed');
+  });
+
+  it('setup takes the setup code, and nobody becomes the owner without it (0.9.0)', async () => {
+    const withoutCode = { ...setupBody, setup_token: undefined };
+    const none = await app.inject({ method: 'POST', url: '/api/v1/setup', payload: withoutCode });
+    expect(none.statusCode).toBe(403);
+    expect(error(none).code).toBe('setup_token_invalid');
+    expect(json<{ error: { message: string } }>(none).error.message).toMatch(/FDV_SETUP_TOKEN/);
+    for (const wrong of ['', 'not-the-code', `${TEST_SETUP_TOKEN}x`, TEST_SETUP_TOKEN.slice(1)]) {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/v1/setup',
+        payload: { ...setupBody, setup_token: wrong },
+      });
+      expect(res.statusCode, wrong).toBe(403);
+      expect(error(res).code, wrong).toBe('setup_token_invalid');
+    }
+    // Nothing was made: the vault still waits to be set up.
+    const caps = json<{ setup_required: boolean }>(await app.inject('/api/v1/capabilities'));
+    expect(caps.setup_required).toBe(true);
+  });
+
+  it('two setups at once make one household: the second finds it done', async () => {
+    const other = await createHarness();
+    try {
+      const results = await Promise.all(
+        ['first@example.test', 'second@example.test', 'third@example.test'].map((email, i) =>
+          other.app.inject({
+            method: 'POST',
+            url: '/api/v1/setup',
+            payload: { ...setupBody, email },
+            remoteAddress: `10.77.0.${i + 1}`,
+          }),
+        ),
+      );
+      expect(results.map((r) => r.statusCode).sort()).toEqual([201, 409, 409]);
+      const admin = createPool(other.adminUrl, 1);
+      try {
+        const { rows } = await admin.query<{ n: number }>(
+          'select count(*)::int as n from household',
+        );
+        expect(rows[0]?.n).toBe(1);
+      } finally {
+        await admin.end();
+      }
+    } finally {
+      await other.close();
+    }
   });
 
   it('creates the household, owner and a session', async () => {

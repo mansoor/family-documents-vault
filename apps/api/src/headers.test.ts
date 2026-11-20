@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
+import { readdir, readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { testAdminUrl } from '@fdv/db/testing';
 import type { DocumentView } from '@fdv/shared';
@@ -118,6 +118,31 @@ describe('the pages a link opens', () => {
     expect(shell).not.toMatch(/\son[a-z]+=/i);
     // Before the stylesheet: a dark page is never drawn light first.
     expect(shell.indexOf('<script>')).toBeLessThan(shell.indexOf('rel="stylesheet"'));
+  });
+
+  it('the signed-in app is never framed, sends no referrer beyond itself, and asks for no powers it never uses', async () => {
+    const conf = await readFile(root('docker/nginx.conf'), 'utf8');
+    const block = nginxBlock(conf, 'location / {');
+    const csp = added(block, 'Content-Security-Policy') as string;
+    expect(csp).toMatch(/(^|; )frame-ancestors 'none'(;|$)/);
+    expect(added(block, 'X-Frame-Options')).toBe('DENY');
+    expect(added(block, 'Referrer-Policy')).toBe('same-origin');
+    expect(added(block, 'X-Content-Type-Options')).toBe('nosniff');
+    const powers = added(block, 'Permissions-Policy') as string;
+    for (const power of ['camera', 'microphone', 'geolocation', 'payment', 'usb']) {
+      expect(powers, power).toContain(`${power}=()`);
+    }
+    // Passkeys, sharing and copying a link stay the app's own.
+    expect(powers).not.toMatch(/publickey-credentials|web-share|clipboard/);
+    // The app frames nothing of its own that these would stop.
+    const sources = await readdir(root('apps/web/src'), { recursive: true });
+    for (const file of sources.filter((f) => /\.tsx?$/.test(f) && !/\.test\./.test(f))) {
+      const text = await readFile(root(`apps/web/src/${file}`), 'utf8');
+      expect(text, file).not.toMatch(/<iframe|<frame\b|<embed\b|<object\b/i);
+    }
+    // The pages outsiders open keep their own, stricter, headers (above),
+    // and the hashed assets need none.
+    expect(nginxBlock(conf, 'location /assets/ {')).not.toMatch(/X-Frame-Options/);
   });
 
   it('the vault behind a TLS site keeps the pages’ own referrer policy', async () => {

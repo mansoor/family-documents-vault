@@ -1,3 +1,4 @@
+import { setupTokenProblem } from '@fdv/crypto';
 import { canonicalZone, isTimeZone } from '@fdv/shared';
 import { z } from 'zod';
 
@@ -61,6 +62,22 @@ const schema = z.object({
     .min(1)
     .optional()
     .describe('Path to a file holding the master key instead of FDV_MASTER_KEY.'),
+
+  FDV_SETUP_TOKEN: z
+    .string()
+    .trim()
+    .min(16, 'must be at least 16 characters; scripts/gen-env.mjs writes one')
+    .max(256)
+    // As hard to guess as a key (0.9.0): not only long.
+    .refine((t) => setupTokenProblem(t) === null, {
+      message: 'is a placeholder, or too easy to guess; scripts/gen-env.mjs writes a good one',
+    })
+    .optional()
+    .describe(
+      'The code first-run setup asks for (0.9.0), so that only somebody who can read this ' +
+        'file can make themselves the owner. Unset, the API makes one each time it starts ' +
+        'until the vault is set up, and writes it to its log.',
+    ),
 
   FDV_LOCAL_VAULT_DIR: z
     .string()

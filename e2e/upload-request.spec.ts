@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { devices, expect, test, type APIRequestContext, type Page } from '@playwright/test';
+import { finishSignIn, setupCode } from './vault.js';
 
 /**
  * Asking for documents (5.22), on the real stack: an owner makes a request
@@ -50,6 +51,7 @@ async function signIn(page: Page, request: APIRequestContext): Promise<void> {
   if (caps.setup_required) {
     await request.post('/api/v1/setup', {
       data: {
+        setup_token: setupCode(),
         household_name: 'The E2E family',
         display_name: 'Mansoor',
         email: EMAIL,
@@ -61,10 +63,12 @@ async function signIn(page: Page, request: APIRequestContext): Promise<void> {
   await page.getByRole('button', { name: 'Sign in' }).click();
   await page.getByLabel('Email').fill(EMAIL);
   await page.getByLabel('Password').fill(PASSWORD);
-  await Promise.all([
+  const [signedIn] = await Promise.all([
     page.waitForResponse((r) => r.url().endsWith('/api/v1/auth/password') && r.ok()),
     page.getByRole('button', { name: 'Sign in' }).click(),
   ]);
+  // The owner's code, the second step (0.9.0).
+  await finishSignIn(page, signedIn);
   await expect(page).toHaveURL(/\/$/);
 }
 

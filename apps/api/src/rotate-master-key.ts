@@ -2,6 +2,7 @@ import {
   CannotSeeVault,
   LOCK_TIMEOUT_SECONDS,
   LOST_ROTATION_KEY,
+  masterSecretProblem,
   MASTER_SEALED,
   MasterKeyMismatch,
   movedCount,
@@ -44,6 +45,13 @@ export function newMasterKeyProblem(current: string, next: string | undefined): 
     );
   }
   if (next.length < 32) return 'FDV_MASTER_KEY_NEW must be at least 32 characters.';
+  // Never onto a key the vault would then refuse to start with (0.9.0).
+  if (masterSecretProblem(next)) {
+    return (
+      'FDV_MASTER_KEY_NEW is a placeholder, or too easy to guess (too few different ' +
+      'characters). Make one with the command in the README.'
+    );
+  }
   if (next === current) {
     return 'FDV_MASTER_KEY_NEW is the key the vault already uses. Make a new one.';
   }

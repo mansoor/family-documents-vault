@@ -139,6 +139,7 @@ export function activityKind(action: string): ActivityKind {
     case 'household.local_ai_changed':
     case 'household.neutral_wording_changed':
     case 'household.ended_sharing_changed':
+    case 'household.two_step_changed':
     case 'ai_reader.changed':
     case 'ai_reader.tested':
     case 'ai_reader.send_sensitive_changed':
@@ -1224,6 +1225,14 @@ export function eventWords(e: ActivityEvent): (ActivityLine & { named: boolean }
         true,
       );
     }
+    // Whether every adult must have two-step sign-in (0.9.0), on or off.
+    case 'household.two_step_changed':
+      return line(
+        detail.adults === true
+          ? `${who} asked every adult to use two-step sign-in`
+          : `${who} stopped asking every adult to use two-step sign-in`,
+        true,
+      );
     // The AI reader set in Settings, changed, removed or tested (0.9.0,
     // AIR1): which kind and where it runs — never its address, its key, or
     // anything it said.
