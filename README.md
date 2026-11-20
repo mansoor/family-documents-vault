@@ -558,30 +558,62 @@ for each address.
 
 **API keys.** An app proves who it is with an **API key the vault generates**: a
 **client ID** (`fdvc_…`, which names the key and is no secret) and a **secret**
-(`fdvs_…`, 32 random bytes). It sends both on every request, as HTTP Basic
-authentication: `Authorization: Basic base64(client_id:secret)`. Only an owner generates
-or revokes a key, in _Settings → Connected apps_, each time with a passkey or a code. A
-key has:
+(`fdvs_…`, 32 random bytes). It sends both, as HTTP Basic authentication
+(`Authorization: Basic base64(client_id:secret)`), to one route alone,
+`POST /api/v1/apps/token`, and is given a **short-lived access token** for them (OAuth 2.0
+client credentials); every other request carries that token, `Authorization: Bearer
+fdvt_…` (see [The API, end to end](#the-api-end-to-end-for-an-integrator)). Only an owner
+generates or revokes a key, in _Settings → Connected apps_, each time with a passkey or a
+code. A key has:
 
 - a name, if you want one ("Acme Money, live");
 - **its own permissions**: some of what the app may do (send, read, download, show its
   user, delete). A request is held to the key's permissions and the app's, both, as they
   are when it arrives — narrowing the app narrows every key;
-- **how long it lasts**: 30, 90 or 365 days, any number of days from 1 to 3650, or never.
+- **how long it lasts**: **90 days unless you choose otherwise** — 30, 90 or 365 days, any
+  number of days from 1 to 3650, or never. _Never expires_ has to be chosen on purpose,
+  and Settings warns that such a key works for years if it is ever copied.
+
+**Access tokens.** A token lasts 15 minutes (`expires_in: 900`); the vault keeps only a
+SHA-256 of it, never the token. It is bound to the key it was given for: it may do what
+that key may do, and it stops working at once when the key is revoked or expires, or the
+app is paused or removed. A key is given 10 tokens a minute at most, and an address may
+try 60 times (an IPv6 address counted with the rest of its /64); the token route reads
+only a form (`application/x-www-form-urlencoded`). An app keeps its token until it
+nearly ends, and asks for another then, or when the vault answers `401
+app_token_expired`. A token the vault never gave is `401 app_token_invalid`, and counts
+as a guess, as a wrong secret does. **Basic on the other app routes still works for now,
+and is deprecated**: each such answer carries a `Deprecation` header, and it will be
+removed in a later 0.9.0 development build. Ask for a token and send it instead.
 
 The vault shows the client ID and the secret **once**, with Copy buttons, and a
 **connection string** to paste into the app (`fdvapp2.…`: the vault's address and the
-client ID, and the secret too if you tick _Include the secret_). It keeps only a SHA-256
+client ID, and the secret too if you tick _Include the secret_). Each key that works
+keeps its own _What to paste into …_ in Settings afterwards — the address and that key's
+client ID, never the secret — with a Copy button. It keeps only a SHA-256
 of the secret, so a lost secret cannot be shown again: generate a new key and revoke the
 old one. An app has **two live keys at most** (not expired, not revoked), so it can move
 to a new key without a gap; it can never add, renew or retire a key of its own. The
 owners are emailed 14 days before a key expires (when it was made to last longer than
 that) and again once it has, and both are in the activity log. Revoking a key takes
 effect at its very next request, and ends what the key opened: a view or download link
-it made, and a page opened from one. Settings lists each key with its client ID, what it may
-do, when it was made, when it expires or "Never", when it was last used, and whether it
-was revoked or has expired. An app can ask the vault which key it is using, and when it
+it made, and a page opened from one. Settings lists the keys that work first, each with
+its client ID, what it may do, when it was made, when it expires or "Never", and when it
+was last used; revoked and expired keys are folded away below them, under _Revoked and
+expired keys_. An app can ask the vault which key it is using, and when it
 expires (`GET /api/v1/apps/me`), so it can warn its own users in time.
+
+**Unusual use.** The owners are emailed, and the activity log says so, the first time a
+key is used from a network it has never been used from (an IPv4 /24, or an IPv6 /64; not
+for a key's very first network), and when an app's requests in a day go past five times
+its usual day (the median of the week before) and past 200. Each at most once a key, or
+an app, a day. If you didn't expect it, revoke the key and generate a new one. The vault
+remembers 500 networks a key at most, and forgets one not seen for 90 days.
+
+**Where it may call from.** An owner can list the addresses, networks or names an app
+calls from (_Addresses it may send from_, on Connect and Change); left empty, any.
+Settings recommends it while the list is empty: if the app always calls from fixed
+addresses or a domain, list them, and a stolen key can't be used from anywhere else.
 
 A request with a wrong secret, or a client ID the vault does not know, is refused alike
 (`401 app_key_invalid`); an expired key is `401 app_key_expired`, a revoked one `401
@@ -591,7 +623,7 @@ rest of its /64 — waits for the minute to end (`429`); a right secret for a ke
 revoked or expired is never counted so. Requests must come over https; plain http is taken
 only when `FDV_BASE_URL` is `http://localhost` and the request comes from that same
 machine (a vault used on one machine). Neither the vault's log nor nginx's access log
-keeps the `Authorization` header or the secret.
+keeps the `Authorization` header, the secret or a token.
 
 **A login of your own in front of the vault.** If your proxy asks for a password of its
 own (Caddy's `basicauth`, nginx's `auth_basic`), the vault leaves that `Authorization:
@@ -640,16 +672,26 @@ forgotten.
 
 ### The API, end to end, for an integrator
 
-Every route an app calls is under `/api/v1/`. Each request carries the app's key as
-`Authorization: Basic base64(client_id:secret)` — below as `$KEY`, made with
-`KEY=$(printf '%s' "$CLIENT_ID:$SECRET" | base64 -w0)` — over https to the address the
-connection string gives (`$VAULT`).
+Every route an app calls is under `/api/v1/`, over https to the address the connection
+string gives (`$VAULT`).
+
+0. **Get an access token** with your key, as OAuth 2.0 client credentials: the client ID
+   and secret as HTTP Basic, the grant as a form. The answer is `{"access_token":
+"fdvt_…", "token_type": "Bearer", "expires_in": 900, "scope": "documents.send …"}`;
+   keep the token in memory, send it as `Authorization: Bearer $TOKEN` on every other
+   request below, and ask for a new one shortly before it ends (or when a request is
+   answered `401 app_token_expired`):
+
+   ```sh
+   TOKEN=$(curl -sS -u "$CLIENT_ID:$SECRET" -d grant_type=client_credentials \
+     "$VAULT/api/v1/apps/token" | jq -r .access_token)
+   ```
 
 1. **Send a file, with your own `external_id`** — your idempotency key forever; sending
    it again with the same bytes is answered as before (`200`):
 
    ```sh
-   curl -sS "$VAULT/api/v1/apps/intake" -H "Authorization: Basic $KEY" \
+   curl -sS "$VAULT/api/v1/apps/intake" -H "Authorization: Bearer $TOKEN" \
      -F 'metadata={"external_id":"acme:doc-01","hints":{"kind":"bank_statement"}};type=application/json' \
      -F 'file=@statement.pdf;type=application/pdf'
    ```
@@ -658,22 +700,22 @@ connection string gives (`$VAULT`).
    has filed it: `waiting`, then `filed` with `document_id` and `version_id`:
 
    ```sh
-   curl -sS "$VAULT/api/v1/apps/intake/acme:doc-01" -H "Authorization: Basic $KEY"
+   curl -sS "$VAULT/api/v1/apps/intake/acme:doc-01" -H "Authorization: Bearer $TOKEN"
    ```
 
 3. **Fetch your exact file again, by your `external_id`** — the bytes you sent, whatever
    versions the family added since (needs _Download_):
 
    ```sh
-   curl -sS -o mine.pdf "$VAULT/api/v1/apps/intake/acme:doc-01/content" -H "Authorization: Basic $KEY"
+   curl -sS -o mine.pdf "$VAULT/api/v1/apps/intake/acme:doc-01/content" -H "Authorization: Bearer $TOKEN"
    ```
 
 4. **Fetch the document as it is now, by its `document_id`** — its details, and its
    current file (needs _Read_, and _Download_ for the file):
 
    ```sh
-   curl -sS "$VAULT/api/v1/apps/documents/$DOCUMENT_ID" -H "Authorization: Basic $KEY"
-   curl -sS -o current.pdf "$VAULT/api/v1/apps/documents/$DOCUMENT_ID/content" -H "Authorization: Basic $KEY"
+   curl -sS "$VAULT/api/v1/apps/documents/$DOCUMENT_ID" -H "Authorization: Bearer $TOKEN"
+   curl -sS -o current.pdf "$VAULT/api/v1/apps/documents/$DOCUMENT_ID/content" -H "Authorization: Bearer $TOKEN"
    ```
 
 5. **Make a view link for your user** (needs _Show its user documents_), and send their
@@ -682,7 +724,7 @@ connection string gives (`$VAULT`).
 
    ```sh
    curl -sS -X POST "$VAULT/api/v1/apps/documents/$DOCUMENT_ID/links" \
-     -H "Authorization: Basic $KEY" -H 'Content-Type: application/json' -d '{"mode":"view"}'
+     -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d '{"mode":"view"}'
    ```
 
 6. **Follow the changes feed**: without a cursor, everything you may read now; then only
@@ -690,11 +732,15 @@ connection string gives (`$VAULT`).
    (never why). Keep the `cursor` it answers for next time:
 
    ```sh
-   curl -sS "$VAULT/api/v1/apps/changes?cursor=$CURSOR" -H "Authorization: Basic $KEY"
+   curl -sS "$VAULT/api/v1/apps/changes?cursor=$CURSOR" -H "Authorization: Bearer $TOKEN"
    ```
 
 `GET /api/v1/apps/me` is the connection test: what the app and this key may do, the key's
 expiry, and the vault's version.
+
+Sending the key itself as `Authorization: Basic` on these routes (as before
+0.9.0-dev.72) still works for now and is **deprecated**: the answer carries a
+`Deprecation` header, and it will be removed in a later 0.9.0 development build.
 
 **API versioning.** Every route is under `/api/v1/`. `GET /api/v1/apps/me` gives the
 vault's version (`vault.server_version`), and `GET /api/v1/capabilities` its capability
@@ -709,8 +755,10 @@ keeps working for a stated deprecation period of at least 6 months.
 The vault's own API client, [`packages/client`](packages/client/README.md) (`@fdv/client`,
 MIT), makes a connected app's requests with its API key (`@fdv/client/apps`:
 `createAppClient({ url, clientId, secret })`, and `parseConnectionString` for what
-Settings gives) and comes with a fake vault to test against (`@fdv/client/testing`) that
-generates, revokes and expires keys and answers as the vault does. It is not on
+Settings gives) — it trades the key for an access token, keeps it in memory, asks for a
+new one before it ends or when the vault says it has, and never logs it — and comes with
+a fake vault to test against (`@fdv/client/testing`) that generates, revokes and expires
+keys and tokens and answers as the vault does. It is not on
 npmjs.com: every release attaches the client of that release to its
 [GitHub release](https://github.com/mansoor/family-documents-vault/releases) as
 `fdv-client-<version>.tgz`, and an app installs it by that URL, pinned to the version, with
@@ -719,7 +767,7 @@ npm or pnpm and no token (from CI too):
 ```json
 {
   "dependencies": {
-    "@fdv/client": "https://github.com/mansoor/family-documents-vault/releases/download/v0.9.0-dev.71/fdv-client-0.9.0-dev.71.tgz"
+    "@fdv/client": "https://github.com/mansoor/family-documents-vault/releases/download/v0.9.0-dev.72/fdv-client-0.9.0-dev.72.tgz"
   }
 }
 ```

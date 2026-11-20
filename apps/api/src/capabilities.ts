@@ -64,6 +64,13 @@ export const DEPRECATIONS: Capabilities['deprecations'] = [
   { field: 'POST /api/v1/password-resets/{token}', removed_in: '0.9.0' },
   { field: 'GET /api/v1/invitations/{token}', removed_in: '0.9.0' },
   { field: 'POST /api/v1/invitations/{token}/accept', removed_in: '0.9.0' },
+  // A connected app's key as Basic on its routes but the token route
+  // (0.9.0-dev.72): an access token replaces it, and Basic there goes in a
+  // later 0.9.0 development build.
+  {
+    field: 'Authorization: Basic on /api/v1/apps/* but POST /api/v1/apps/token',
+    removed_in: '0.9.0',
+  },
 ];
 
 /**
@@ -274,6 +281,9 @@ export function buildCapabilities(config: CapabilityConfig): Capabilities {
       // 0.9.0-dev.63 (APP6): an app authenticates with an API key an owner
       // generated, as HTTP Basic; request signing is gone.
       connected_app_keys: true,
+      // 0.9.0-dev.72: an app trades its key for a short-lived access token
+      // (POST /api/v1/apps/token) and calls with Bearer; Basic deprecated.
+      connected_app_tokens: true,
       // 0.9.0 (AIR1): the AI reader set in Settings → Reading, unless the
       // operator keeps it out (FDV_AI_READER_SETTINGS=off); and the kinds
       // of reader this vault reads with — Ollama, Anthropic and an

@@ -6,6 +6,27 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.9.0-dev.72] - 2026-11-19 — connected apps hardened before going live
+
+### Added
+
+- **Short-lived access tokens for connected apps.** An app now sends its API key once, to `POST /api/v1/apps/token` (OAuth 2.0 client credentials: the client ID and secret as HTTP Basic, `grant_type=client_credentials` as a form), and is given an access token that lasts 15 minutes; every other request carries `Authorization: Bearer` with that token, so the secret crosses the network once every few minutes rather than on every request. The vault keeps only a hash of each token, and a token works only as long as its key: revoking or expiring the key, or pausing or removing the app, ends its tokens at once. Each key may be given 10 tokens a minute, and each address 60. The API client (`@fdv/client`) does all of this itself: it asks for a token when first needed, keeps it in memory only, renews it before it ends or when the vault says it has, and never logs it. Against a vault from before tokens it sends the key as before, and checks again every 10 minutes. Requests past an app's rate of 120 a minute are now refused before anything of them is written.
+- **Alerts on unusual use.** The owners are emailed, and the activity log says so, the first time an app's key is used from a network it has never been used from before (except its very first), and when an app makes far more requests in a day than usual (more than five times its usual day, and more than 200). Each at most once a day.
+- **A nudge towards the allow-list.** While an app's _Addresses it may send from_ is empty, Connect and Change recommend listing them: a stolen key then can't be used from anywhere else.
+
+### Changed
+
+- **A new key lasts 90 days unless you choose otherwise** (it was a year in Settings). _Never expires_ is still there, chosen on purpose, and Settings now warns that such a key works for years if it is ever copied. The API takes a key with no `expires_in_days` as 90 days; `null` still means never.
+- **A tidier list of keys.** In _Settings → Connected apps_ the keys that work come first; revoked and expired keys are folded away below them, under _Revoked and expired keys (N)_. Each key that works has its own _What to paste into …_ (the vault's address and that key's client ID, never the secret) with a Copy button; before, only the newest key's was shown.
+
+### Deprecated
+
+- **A connected app's key sent as Basic on every request.** It still works on every app route for now, and each such answer carries a `Deprecation` header; it will be removed in a later 0.9.0 development build. Ask for an access token at `POST /api/v1/apps/token` and send it as Bearer instead (the README shows how, with curl).
+
+### Database
+
+- Migration 0119: an app's access tokens (only their hash, bound to their key, an hour long at most), the networks each key was used from, and each app's requests a day — all three the vault's alone, never shown to anybody signed in. The worker's hourly sweep removes tokens once they end and those of revoked keys, the networks of keys that no longer work or not seen in 90 days (a key keeps 500 at most), and days older than 35. A restore removes every token.
+
 ## [0.9.0-dev.71] - 2026-11-19 — text messages through Twilio as well as SMS Gate
 
 ### Added

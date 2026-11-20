@@ -178,6 +178,8 @@ describe('buildCapabilities', () => {
       document_activity: true,
       // 0.9.0 (APP1): connected apps; (APP6) with API keys.
       connected_app_keys: true,
+      // 0.9.0-dev.72: short-lived access tokens.
+      connected_app_tokens: true,
       connected_app_links: true,
       connected_app_reads: true,
       connected_apps: true,
@@ -208,6 +210,11 @@ describe('buildCapabilities', () => {
       { field: 'POST /api/v1/password-resets/{token}', removed_in: '0.9.0' },
       { field: 'GET /api/v1/invitations/{token}', removed_in: '0.9.0' },
       { field: 'POST /api/v1/invitations/{token}/accept', removed_in: '0.9.0' },
+      // A connected app's key as Basic off the token route (0.9.0-dev.72).
+      {
+        field: 'Authorization: Basic on /api/v1/apps/* but POST /api/v1/apps/token',
+        removed_in: '0.9.0',
+      },
     ]);
   });
 

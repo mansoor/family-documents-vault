@@ -384,6 +384,10 @@ const RULES: ReadonlyMap<string, Audience | typeof BY_TYPE> = new Map<
   ['app.key_retired', ownersThePersonAndTheActor],
   ['app.key_expiring', ownersThePersonAndTheActor],
   ['app.key_expired', ownersThePersonAndTheActor],
+  // Unusual use (0.9.0-dev.72): a key used from a new network, and a day
+  // far past the app's usual; the owners are emailed of each.
+  ['app.key_new_network', ownersThePersonAndTheActor],
+  ['app.busy_day', ownersThePersonAndTheActor],
   ['app.paused', ownersThePersonAndTheActor],
   ['app.resumed', ownersThePersonAndTheActor],
   ['app.revoked', ownersThePersonAndTheActor],

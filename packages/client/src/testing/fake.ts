@@ -363,6 +363,7 @@ import {
   fakeAppFilesAutomatically,
   fakeAppRoutes,
   fakeExpireAppKey,
+  fakeExpireAppTokens,
   type FakeApp,
 } from './fake-apps.js';
 import type { FetchLike, ResponseLike } from '../http.js';
@@ -1526,6 +1527,12 @@ export function createFakeVault(): {
    * client ID the fake never gave.
    */
   expireAppKey: (clientId: string) => void;
+  /**
+   * Every connected app's access token past its end now (0.9.0-dev.72), as
+   * time would make it: its next request with one is `401
+   * app_token_expired`. Answers how many there were.
+   */
+  expireAppTokens: () => number;
 } {
   const state: FakeVaultState = {
     setupRequired: true,
@@ -3585,8 +3592,12 @@ export function createFakeVault(): {
     // The body as it was sent, in bytes (CL3): a stream, a Blob or an
     // ArrayBuffer read now; a platform FormData's files too.
     const init = { ...sent, body: await readBody(sent.body) };
+    // A form (an app's token grant, 0.9.0-dev.72) is read by its route alone.
+    const form = /x-www-form-urlencoded/i.test(init.headers['content-type'] ?? '');
     const body =
-      typeof init.body === 'string' ? (JSON.parse(init.body) as Record<string, unknown>) : {};
+      typeof init.body === 'string' && !form
+        ? (JSON.parse(init.body) as Record<string, unknown>)
+        : {};
     const auth = init.headers.authorization?.replace(/^Bearer /, '');
     const session = () => {
       const id = auth ? state.access.get(auth) : undefined;
@@ -3903,6 +3914,8 @@ export function createFakeVault(): {
           connected_app_reads: true,
           connected_app_links: true,
           connected_app_keys: true,
+          // 0.9.0-dev.72: short-lived access tokens.
+          connected_app_tokens: true,
         },
         limits: {
           max_upload_bytes: 104_857_600,
@@ -10422,7 +10435,9 @@ export function createFakeVault(): {
     }
   };
 
-  return { fetch, state, pauseSignIns, fileAppIntake, readAppFile, expireAppKey };
+  const expireAppTokens = () => fakeExpireAppTokens(state.connectedApps ?? []);
+
+  return { fetch, state, pauseSignIns, fileAppIntake, readAppFile, expireAppKey, expireAppTokens };
 }
 
 /**

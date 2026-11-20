@@ -221,12 +221,17 @@ describe('Settings → Connected apps (0.9.0, APP1)', () => {
           },
           ip_allow: ['203.0.113.0/24'],
           keys: [
-            key({ name: 'Live', expires_at: '2027-11-01T09:00:00.000Z' }),
+            key({
+              name: 'Live',
+              expires_at: '2027-11-01T09:00:00.000Z',
+              connection_string: 'fdvapp2.TElWRQ',
+            }),
             key({
               id: 'k-2',
               client_id: 'fdvc_BBBBBBBBBBBBBBBBBBBBBB',
               permissions: ['documents.send', 'documents.read'],
               last_used_at: null,
+              connection_string: 'fdvapp2.VU5OQU1FRA',
             }),
           ],
         }),
@@ -266,6 +271,23 @@ describe('Settings → Connected apps (0.9.0, APP1)', () => {
     expect(within(keys).getByText('Never')).toBeInTheDocument();
     expect(within(keys).getByText('Never used')).toBeInTheDocument();
     expect(within(keys).getByRole('button', { name: 'Revoke the key Live' })).toBeInTheDocument();
+    // Each key that works with what to paste into the app for it: its own
+    // client ID, never a secret (the owner, 19 Nov 2026).
+    expect(within(keys).getAllByText('What to paste into Acme Money')).toHaveLength(2);
+    expect(within(keys).getByText('fdvapp2.TElWRQ')).toBeInTheDocument();
+    expect(within(keys).getByText('fdvapp2.VU5OQU1FRA')).toBeInTheDocument();
+    expect(
+      within(keys).getByRole('button', {
+        name: 'Copy what to paste into Acme Money for the key Live',
+        hidden: true,
+      }),
+    ).toBeInTheDocument();
+    expect(
+      within(keys).getByRole('button', {
+        name: 'Copy what to paste into Acme Money for the key fdvc_BBBBBBBBBBBBBBBBBBBBBB',
+        hidden: true,
+      }),
+    ).toBeInTheDocument();
     // Two work: no third.
     expect(
       within(card).getByRole('button', { name: 'Generate an API key for Acme Money' }),
@@ -542,7 +564,7 @@ describe('Settings → Connected apps (0.9.0, APP1)', () => {
     const form = await screen.findByRole('region', { name: 'Connect an app' });
     const field = within(form).getByLabelText('Addresses it may send from');
     expect(field).toHaveAccessibleDescription(
-      /a name \(feeds\.example\.com, up to 5\)\. Left empty, any address\. A name is checked against the addresses it points to now\. Apps on large cloud platforms may call from addresses their name doesn’t list; use their published address ranges instead\.$/,
+      /a name \(feeds\.example\.com, up to 5\)\. Left empty, any address\. A name is checked against the addresses it points to now\. Apps on large cloud platforms may call from addresses their name doesn’t list; use their published address ranges instead\. If the app always calls from fixed addresses or a domain, list them here; a stolen key then can’t be used from anywhere else\.$/,
     );
     fireEvent.change(within(form).getByLabelText(/^Name/), { target: { value: 'Acme Money' } });
     fireEvent.change(field, {
@@ -551,6 +573,31 @@ describe('Settings → Connected apps (0.9.0, APP1)', () => {
     fireEvent.click(within(form).getByRole('button', { name: 'Connect' }));
     expect(await screen.findByText('5 names at most.')).toBeInTheDocument();
     expect(calls(state, 'POST', '/api/v1/connected-apps')).toHaveLength(0);
+  });
+
+  it('steers an owner to the allow-list while it is empty, on Connect and on Change (0.9.0-dev.72)', async () => {
+    const advice =
+      'If the app always calls from fixed addresses or a domain, list them here; a stolen key then can’t be used from anywhere else.';
+    at('/settings/connected-apps', {
+      connectedApps: [app(), app({ id: 'a-2', name: 'Ledger', ip_allow: ['203.0.113.0/24'] })],
+    });
+    fireEvent.click(await screen.findByRole('button', { name: 'Connect an app' }));
+    const form = await screen.findByRole('region', { name: 'Connect an app' });
+    expect(within(form).getByText(advice)).toBeVisible();
+    // Something listed: said no more.
+    fireEvent.change(within(form).getByLabelText('Addresses it may send from'), {
+      target: { value: 'feeds.example.com' },
+    });
+    expect(within(form).queryByText(advice)).toBeNull();
+    fireEvent.click(within(form).getByRole('button', { name: 'Cancel' }));
+    // Change: said for the app that may call from anywhere, not for the one with a list.
+    const card = screen.getByRole('region', { name: 'Acme Money' });
+    fireEvent.click(within(card).getByRole('button', { name: 'Change Acme Money' }));
+    expect(within(card).getByText(advice)).toBeVisible();
+    const listed = screen.getByRole('region', { name: 'Ledger' });
+    fireEvent.click(within(listed).getByRole('button', { name: 'Change Ledger' }));
+    expect(within(listed).queryByText(advice)).toBeNull();
+    await expectAccessible();
   });
 
   it('says what is wrong before connecting: a name', async () => {
@@ -881,7 +928,8 @@ describe('Settings → Connected apps (0.9.0, APP1)', () => {
         .getAllByRole('option')
         .map((o) => o.textContent),
     ).toEqual(['30 days', '90 days', '1 year', 'Custom…', 'Never expires']);
-    expect(validity).toHaveValue('365');
+    // 90 days unless the owner says otherwise (0.9.0-dev.72).
+    expect(validity).toHaveValue('90');
     await expectAccessible();
 
     // A custom validity out of range is said, not sent.
@@ -956,9 +1004,14 @@ describe('Settings → Connected apps (0.9.0, APP1)', () => {
     fireEvent.click(
       within(card).getByRole('button', { name: 'Generate an API key for Acme Money' }),
     );
+    // Never expiring is chosen on purpose, and warned of (0.9.0-dev.72).
+    const warning =
+      'A key that never expires works until somebody revokes it: if it is ever copied, it can be used for years without anybody noticing. Choose how long it lasts unless the app truly can’t be given a new key from time to time.';
+    expect(within(card).queryByText(warning)).toBeNull();
     fireEvent.change(within(card).getByLabelText('How long it lasts'), {
       target: { value: 'never' },
     });
+    expect(within(card).getByText(warning)).toBeVisible();
     fireEvent.click(within(card).getByRole('button', { name: 'Generate key' }));
     const sheet = await screen.findByRole('dialog', { name: 'Copy this key now' });
     expect(calls(state, 'POST', '/keys').at(-1)?.body).toEqual({
@@ -1009,19 +1062,34 @@ describe('Settings → Connected apps (0.9.0, APP1)', () => {
       ],
     });
     const card = await screen.findByRole('region', { name: 'Acme Money' });
+    // The keys that work first (the owner, 19 Nov 2026).
     const rows = within(within(card).getByRole('list', { name: 'API keys' })).getAllByRole(
       'listitem',
     );
-    expect(rows).toHaveLength(4);
-    expect(within(rows[0] as HTMLElement).getByText(/Expired/)).toBeVisible();
-    expect(within(rows[0] as HTMLElement).queryByRole('button', { name: /^Revoke/ })).toBeNull();
-    expect(within(rows[1] as HTMLElement).getByText(/Revoked 3 November/)).toBeVisible();
-    expect(within(rows[1] as HTMLElement).queryByRole('button', { name: /^Revoke/ })).toBeNull();
-    expect(within(rows[2] as HTMLElement).getByText(/\(expires in 5 days\)$/)).toBeVisible();
-    expect(within(rows[3] as HTMLElement).getByText('Never')).toBeVisible();
+    expect(rows).toHaveLength(2);
+    expect(within(rows[0] as HTMLElement).getByText(/\(expires in 5 days\)$/)).toBeVisible();
+    expect(within(rows[1] as HTMLElement).getByText('Never')).toBeVisible();
     expect(
-      within(rows[3] as HTMLElement).getByRole('button', { name: 'Revoke the key Forever' }),
+      within(rows[1] as HTMLElement).getByRole('button', { name: 'Revoke the key Forever' }),
     ).toBeEnabled();
+    // Revoked and expired ones below, folded away until asked for.
+    const ended = within(card).getByText('Revoked and expired keys (2)');
+    const folded = within(card).getByRole('list', {
+      name: 'Revoked and expired keys of Acme Money',
+      hidden: true,
+    });
+    expect(folded).not.toBeVisible();
+    fireEvent.click(ended);
+    (ended.closest('details') as HTMLDetailsElement).open = true;
+    expect(folded).toBeVisible();
+    const old = within(folded).getAllByRole('listitem');
+    expect(old).toHaveLength(2);
+    expect(within(old[0] as HTMLElement).getByText(/Expired/)).toBeVisible();
+    expect(within(old[0] as HTMLElement).queryByRole('button', { name: /^Revoke/ })).toBeNull();
+    expect(within(old[1] as HTMLElement).getByText(/Revoked 3 November/)).toBeVisible();
+    expect(within(old[1] as HTMLElement).queryByRole('button', { name: /^Revoke/ })).toBeNull();
+    // Nothing to paste for a key that no longer works.
+    expect(within(folded).queryByText('What to paste into Acme Money')).toBeNull();
     // Two work: no third.
     const generate = within(card).getByRole('button', {
       name: 'Generate an API key for Acme Money',
@@ -1054,7 +1122,10 @@ describe('Settings → Connected apps (0.9.0, APP1)', () => {
     expect(await screen.findByText('The key Live was revoked.')).toBeInTheDocument();
     expect(calls(state, 'DELETE', '/keys/k-1').length).toBeGreaterThan(0);
     expect(state.connectedApps?.[0]?.keys[0]?.state).toBe('revoked');
-    expect(await within(card).findByText(/^ ?Revoked /)).toBeVisible();
+    // Folded away with the other keys that no longer work.
+    const ended = await within(card).findByText('Revoked and expired keys (1)');
+    (ended.closest('details') as HTMLDetailsElement).open = true;
+    expect(await within(card).findByText(/^ ?Revoked [0-9]/)).toBeVisible();
     expect(within(card).queryByRole('button', { name: 'Revoke the key Live' })).toBeNull();
     expect(
       within(card).getByText('Acme Money needs an API key before it can reach the vault.'),

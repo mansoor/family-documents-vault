@@ -850,6 +850,13 @@ export function eventWords(e: ActivityEvent): (ActivityLine & { named: boolean }
     }
     case 'app.key_expired':
       return line(`An API key of ${appOf(detail)} has expired`, true, UNNAMED);
+    // Unusual use (0.9.0-dev.72): a key used from a network it never was
+    // before, and a day far past the app's usual. Nobody did either; the
+    // owners were emailed.
+    case 'app.key_new_network':
+      return line(`An API key of ${appOf(detail)} was used from a new network`, true, UNNAMED);
+    case 'app.busy_day':
+      return line(`${appOf(detail)} made many more requests than usual today`, true, UNNAMED);
     case 'app.paused':
       return line(`${who} paused ${appOf(detail)}`, true);
     case 'app.resumed':

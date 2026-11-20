@@ -1,5 +1,6 @@
 import type { MultipartFile } from '@fastify/multipart';
 import {
+  APP_BASIC_DEPRECATION,
   APP_LINK_COOKIE,
   APP_LINK_PAGE,
   APP_LINK_SESSION_PATH,
@@ -13,7 +14,7 @@ import {
   type ConnectedAppInput,
   type ConnectedAppKeyInput,
 } from '@fdv/shared';
-import type { FastifyInstance, FastifyRequest } from 'fastify';
+import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { metaOf, parse } from '../auth/routes.js';
 import { clientAddressOf } from '../client-address.js';
@@ -32,15 +33,20 @@ export const APP_LINK_TOKEN_ROUTE = '/api/v1/app-links/:token';
 
 /**
  * Connected apps (0.9.0, APP1): the family's routes, signed in, and the
- * app's, with an API key an owner generated (APP6), as HTTP Basic.
+ * app's, with an API key an owner generated (APP6) — since 0.9.0-dev.72
+ * traded at `POST /apps/token` for a short-lived access token, sent as
+ * `Authorization: Bearer` (the key as Basic still taken, deprecated).
  *
- * The routes an app's key is taken by — and nothing else takes it: the
- * hook in app.ts answers Basic authentication `401 app_key_not_accepted`
+ * The routes an app's key and its tokens are taken by — and nothing else
+ * takes them: the hook in app.ts answers either `401 app_key_not_accepted`
  * on every other route, a public one and one that is not there too. And
- * these take nothing else: a bearer token, a session cookie, a device key,
- * a link's or a sender's cookie is `401 app_key_required`.
+ * these take nothing else: a sign-in's bearer token, a session cookie, a
+ * device key, a link's or a sender's cookie is `401 app_key_required`.
  */
 export const APP_ROUTES: ReadonlyMap<string, AppRoute> = new Map<string, AppRoute>([
+  // An access token for the key (0.9.0-dev.72): the key alone, as Basic;
+  // while paused or waiting too, so GET /apps/me can say so.
+  ['POST /api/v1/apps/token', { scope: null, anyState: true, token: true }],
   // The connection test: under any scope, and while paused or waiting.
   ['GET /api/v1/apps/me', { scope: null, anyState: true }],
   ['POST /api/v1/apps/intake', { scope: 'documents.send' }],
@@ -126,7 +132,8 @@ const keyBody = z
   .object({
     name: z.string().max(400).nullable().optional(),
     permissions: z.array(z.string().max(64)).max(10),
-    expires_in_days: z.number().int().nullable(),
+    // Left out: 90 days (0.9.0-dev.72); null, never, said on purpose.
+    expires_in_days: z.number().int().nullable().optional(),
   })
   .strict();
 const linkBody = z.object({ mode: z.string().max(16) }).strict();
@@ -156,8 +163,16 @@ export function registerApps(
       // written down and open the file for nothing. Its key is refused as
       // on any route that is not an app's.
       exposeHeadRoute: false,
-      onRequest: async (req: FastifyRequest) => {
-        req.connectedApp = await apps.authenticate(req, route);
+      onRequest: async (req: FastifyRequest, reply: FastifyReply) => {
+        // The token route's address limit, before its key is looked at (0.9.0-dev.72).
+        if (route.token === true) apps.mintAddressCheck(req);
+        const { caller, via } = await apps.authenticate(req, route);
+        req.connectedApp = { caller };
+        // The key as Basic off the token route (0.9.0-dev.72): taken, and
+        // said to be deprecated (RFC 9745) — an access token replaces it.
+        if (via === 'basic' && route.token !== true) {
+          void reply.header('deprecation', APP_BASIC_DEPRECATION);
+        }
         if (bodiless) return;
         // A body: its length said, and no more than a file and its parts.
         const length = req.headers['content-length'];
@@ -173,6 +188,53 @@ export function registerApps(
   const caller = (req: FastifyRequest) => (req.connectedApp as { caller: AppCaller }).caller;
 
   // ------------------------------------------------------------ the app's
+
+  /**
+   * An access token (0.9.0-dev.72), as OAuth 2.0's client credentials grant
+   * (RFC 6749 §4.4) has it: the API key as `Authorization: Basic`, and the
+   * form body `grant_type=client_credentials`; answered `access_token`,
+   * `token_type: "Bearer"`, `expires_in` and `scope`, never kept by a cache.
+   * Its own scope takes the form: the link's open (below) is the only other
+   * route that reads one.
+   */
+  void app.register(async (scope) => {
+    scope.addContentTypeParser(
+      'application/x-www-form-urlencoded',
+      { parseAs: 'string', bodyLimit: 1024 },
+      (_req, body, done) => done(null, body),
+    );
+    // A form alone, said so, an optional charset beside: no other body —
+    // text/plain, which Fastify reads as a string too, or JSON — is read.
+    scope.addHook('preParsing', async (req) => {
+      const type = req.headers['content-type'] ?? '';
+      if (
+        !/^application\/x-www-form-urlencoded\s*(;\s*charset=[A-Za-z0-9_.:-]+\s*)?$/i.test(type)
+      ) {
+        throw new ApiError(400, 'invalid_request', APP_REFUSALS.invalid_request);
+      }
+    });
+    scope.post('/api/v1/apps/token', keyed('POST /api/v1/apps/token'), async (req, reply) => {
+      if (typeof req.body !== 'string') {
+        throw new ApiError(400, 'invalid_request', APP_REFUSALS.invalid_request);
+      }
+      const form = new URLSearchParams(req.body);
+      // The key in the body as well as the header, or a field twice: no.
+      if (
+        form.has('client_secret') ||
+        form.getAll('grant_type').length !== 1 ||
+        form.getAll('scope').length > 1
+      ) {
+        throw new ApiError(400, 'invalid_request', APP_REFUSALS.invalid_request);
+      }
+      if (form.get('grant_type') !== 'client_credentials') {
+        throw new ApiError(400, 'unsupported_grant_type', APP_REFUSALS.unsupported_grant_type);
+      }
+      const made = await apps.mintToken(caller(req));
+      void reply.header('cache-control', 'no-store');
+      void reply.header('pragma', 'no-cache');
+      return made;
+    });
+  });
 
   app.get('/api/v1/apps/me', keyed('GET /api/v1/apps/me'), async (req) => apps.me(caller(req)));
 
@@ -508,7 +570,8 @@ export function registerApps(
      * leaves the address bar. Used, or too late: the page says so.
      *
      * A form's POST, so its body (form-encoded, and empty) is taken here
-     * alone: nowhere else does the vault read a form, which a page on any
+     * and on the app's token route alone (which takes nothing without its
+     * key): nowhere else does the vault read a form, which a page on any
      * site could send. And one from anywhere but the link's own page —
      * `Sec-Fetch-Site` cross-site or same-site, or its Origin, else its
      * Referer, naming another host — is refused before anything is looked

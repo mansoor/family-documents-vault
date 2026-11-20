@@ -61,8 +61,14 @@ const ALLOWED = [
   // GET /apps/me reads the app's own rows and the key it came with
   // (connected_app is the owners' to read); what it files and reads it does
   // as its person.
-  'apps/service.ts AppService.authenticate',
+  // (`admitted` is its second half, once a key or a token is known, since
+  // 0.9.0-dev.72, which also notes there the network and the day's
+  // requests for the owners' alerts on unusual use.)
+  'apps/service.ts AppService.admitted',
   'apps/service.ts AppService.noteRefusal',
+  // An access token for a key (0.9.0-dev.72): its hash written by the
+  // vault (connected_app_token is the vault's alone), once the key is known.
+  'apps/service.ts AppService.mintToken',
   'apps/service.ts AppService.me',
   // An app acting as itself (0.9.0, APP8) has no person, and no account
   // standing in for one: its own rows — what became of its sends, its caps

@@ -361,6 +361,12 @@ begin
     revoke execute on function public.app_connected_app_versions() from public;
     grant execute on function public.app_connected_app_versions() to fdv_app;
   end if;
+  -- Which key an app's access token names (0119, 0.9.0-dev.72): asked by
+  -- every app request that carries one, before the household is known.
+  if to_regprocedure('public.connected_app_token_find(bytea)') is not null then
+    revoke execute on function public.connected_app_token_find(bytea) from public;
+    grant execute on function public.connected_app_token_find(bytea) to fdv_app;
+  end if;
   -- Which link a token, or a link's session, names (0111, APP3): asked
   -- before the household is known.
   if to_regprocedure('public.connected_app_link_find(bytea)') is not null then

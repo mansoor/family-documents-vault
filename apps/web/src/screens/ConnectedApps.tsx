@@ -533,10 +533,22 @@ export interface KeyForm {
   days: string;
 }
 
-/** A new key's form: named nothing, every permission the app has ticked, for a year. */
+/**
+ * A new key's form: named nothing, every permission the app has ticked, for
+ * 90 days (0.9.0-dev.72; a year before). Never expiring is chosen on purpose,
+ * with a warning.
+ */
 export function blankKeyForm(app: Pick<ConnectedAppView, 'scopes'>): KeyForm {
-  return { name: '', permissions: [...app.scopes], validity: '365', days: '' };
+  return { name: '', permissions: [...app.scopes], validity: '90', days: '' };
 }
+
+/** Said under "How long it lasts" when "Never expires" is chosen (0.9.0-dev.72). */
+export const NEVER_EXPIRES_WARNING =
+  'A key that never expires works until somebody revokes it: if it is ever copied, it can be used for years without anybody noticing. Choose how long it lasts unless the app truly can’t be given a new key from time to time.';
+
+/** Said on Connect and Change while an app may call from anywhere (0.9.0-dev.72). */
+export const ALLOW_LIST_ADVICE =
+  'If the app always calls from fixed addresses or a domain, list them here; a stolen key then can’t be used from anywhere else.';
 
 /** The form, checked: what to send, or what is wrong, in words. */
 export function readKeyForm(
@@ -979,13 +991,21 @@ function AppFields(props: {
           rows={3}
           spellCheck={false}
           autoCapitalize="off"
-          aria-describedby={`${id}-ip-note`}
+          aria-describedby={
+            lines(form.ip).length === 0 ? `${id}-ip-note ${id}-ip-advice` : `${id}-ip-note`
+          }
           onChange={(e) => put({ ip: e.target.value })}
         />
         <p id={`${id}-ip-note`} className="muted field-note">
           {`One a line, up to ${APP_IP_ALLOW_MAX}: an address (203.0.113.7), a network (203.0.113.0/24) or a name (feeds.example.com, up to ${APP_IP_ALLOW_NAMES_MAX}). Left empty, any address.`}{' '}
           {APP_IP_ALLOW_NAME_HINT}
         </p>
+        {/* Steered to the allow-list while it is empty (0.9.0-dev.72). */}
+        {lines(form.ip).length === 0 && (
+          <p id={`${id}-ip-advice`} className="status status-warn field-note" role="note">
+            {ALLOW_LIST_ADVICE}
+          </p>
+        )}
       </div>
       <Check
         id={`${id}-backfill`}
@@ -1668,6 +1688,11 @@ function KeyFormView(props: {
           onChange={(v) => put({ days: v })}
         />
       )}
+      {f.validity === 'never' && (
+        <p id={`${id}-never`} className="status status-warn" role="note">
+          {NEVER_EXPIRES_WARNING}
+        </p>
+      )}
       <p className="muted">
         {`Generating asks for your passkey, or a code from your authenticator app. The secret is shown once.${
           !waitsOnOther(app)
@@ -1688,12 +1713,53 @@ function KeyFormView(props: {
   );
 }
 
-/** One app's API keys: each one's name, client ID, permissions, days and use; Revoke for an owner. */
+/**
+ * What to paste into the app for one live key (0.9.0-dev.72): the vault's
+ * address and that key's client ID, never its secret, with Copy.
+ */
+function PasteKey(props: { app: ConnectedAppView; k: AppKeyView; value: string }) {
+  const { app, k, value } = props;
+  const [copied, setCopied] = useState(false);
+  return (
+    <details className="app-key-paste">
+      <summary>{`What to paste into ${app.name}`}</summary>
+      <div className="stack">
+        <code style={{ wordBreak: 'break-all' }}>{value}</code>
+        <span className="muted">
+          The vault’s address and this key’s client ID. The secret is not in it.
+        </span>
+        <div className="row">
+          <Button
+            kind="quiet"
+            ariaLabel={`Copy what to paste into ${app.name} for the key ${keyName(k)}`}
+            onClick={() => {
+              void navigator.clipboard?.writeText(value).then(
+                () => setCopied(true),
+                () => setCopied(false),
+              );
+            }}
+          >
+            {copied ? 'Copied' : 'Copy'}
+          </Button>
+        </div>
+      </div>
+    </details>
+  );
+}
+
+/**
+ * One app's API keys: each one's name, client ID, permissions, days and use;
+ * Revoke for an owner. The keys that work first, each with what to paste into
+ * the app for it; revoked and expired ones below, folded away (the owner,
+ * 19 Nov 2026).
+ */
 function KeyList(props: {
   app: ConnectedAppView;
   owner: boolean;
   busy: boolean;
   headingId: string;
+  /** What to paste is shown: an owner's, while the app is not being changed. */
+  paste: boolean;
   onRevoke: (key: AppKeyView) => void;
 }) {
   const { app, owner, busy } = props;
@@ -1706,54 +1772,75 @@ function KeyList(props: {
       </p>
     );
   }
+  const live = app.keys.filter((k) => k.state === 'live');
+  const ended = app.keys.filter((k) => k.state !== 'live');
+  // A vault from before each key had its own: the app's, for its newest.
+  const newest = live[live.length - 1];
+  const pasteOf = (k: AppKeyView) =>
+    k.connection_string ?? (k === newest && app.connection_string ? app.connection_string : null);
+  const row = (k: AppKeyView) => {
+    const expiry = keyExpiryWords(k);
+    const ended = keyStateWords(k);
+    const paste = props.paste && owner && k.state === 'live' ? pasteOf(k) : null;
+    return (
+      <li key={k.id} className="app-key">
+        <span className="stack app-key-facts">
+          <span>
+            <strong>{k.name ?? 'Unnamed key'}</strong>
+            {ended && <span className="status status-neutral">{` ${ended}`}</span>}
+          </span>
+          <dl className="facts">
+            <dt>Client ID</dt>
+            <dd>
+              <code>{k.client_id}</code>
+            </dd>
+            <dt>May</dt>
+            <dd>{permissionWords(k.permissions)}</dd>
+            <dt>Created</dt>
+            <dd>{day(k.created_at)}</dd>
+            <dt>Expires</dt>
+            <dd>
+              {expiry.soon ? (
+                <strong className="status status-warn">{expiry.words}</strong>
+              ) : (
+                expiry.words
+              )}
+            </dd>
+            <dt>Last used</dt>
+            <dd>{k.last_used_at ? shortWhenWords(k.last_used_at) : 'Never used'}</dd>
+          </dl>
+          {paste && <PasteKey app={app} k={k} value={paste} />}
+        </span>
+        {owner && k.state === 'live' && (
+          <Button
+            kind="quiet"
+            danger
+            disabled={busy}
+            ariaLabel={`Revoke the key ${keyName(k)}`}
+            onClick={() => props.onRevoke(k)}
+          >
+            Revoke
+          </Button>
+        )}
+      </li>
+    );
+  };
   return (
-    <ul className="list app-keys" aria-labelledby={props.headingId}>
-      {app.keys.map((k) => {
-        const expiry = keyExpiryWords(k);
-        const ended = keyStateWords(k);
-        return (
-          <li key={k.id} className="app-key">
-            <span className="stack app-key-facts">
-              <span>
-                <strong>{k.name ?? 'Unnamed key'}</strong>
-                {ended && <span className="status status-neutral">{` ${ended}`}</span>}
-              </span>
-              <dl className="facts">
-                <dt>Client ID</dt>
-                <dd>
-                  <code>{k.client_id}</code>
-                </dd>
-                <dt>May</dt>
-                <dd>{permissionWords(k.permissions)}</dd>
-                <dt>Created</dt>
-                <dd>{day(k.created_at)}</dd>
-                <dt>Expires</dt>
-                <dd>
-                  {expiry.soon ? (
-                    <strong className="status status-warn">{expiry.words}</strong>
-                  ) : (
-                    expiry.words
-                  )}
-                </dd>
-                <dt>Last used</dt>
-                <dd>{k.last_used_at ? shortWhenWords(k.last_used_at) : 'Never used'}</dd>
-              </dl>
-            </span>
-            {owner && k.state === 'live' && (
-              <Button
-                kind="quiet"
-                danger
-                disabled={busy}
-                ariaLabel={`Revoke the key ${keyName(k)}`}
-                onClick={() => props.onRevoke(k)}
-              >
-                Revoke
-              </Button>
-            )}
-          </li>
-        );
-      })}
-    </ul>
+    <>
+      {live.length > 0 && (
+        <ul className="list app-keys" aria-labelledby={props.headingId}>
+          {live.map(row)}
+        </ul>
+      )}
+      {ended.length > 0 && (
+        <details className="app-keys-ended">
+          <summary>{`Revoked and expired keys (${ended.length})`}</summary>
+          <ul className="list app-keys" aria-label={`Revoked and expired keys of ${app.name}`}>
+            {ended.map(row)}
+          </ul>
+        </details>
+      )}
+    </>
   );
 }
 
@@ -1790,7 +1877,6 @@ function AppCard(props: {
   const { app, owner, busy, keyEdit } = props;
   const [changing, setChanging] = useState<{ start: AppForm; now: AppForm } | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
-  const [copied, setCopied] = useState(false);
   const { grantRows, setGrantRows, onGrantsButton, onGrantsSave } = props;
   const grantsButton = useRef<HTMLButtonElement | null>(null);
   const generateButton = useRef<HTMLButtonElement | null>(null);
@@ -1989,6 +2075,7 @@ function AppCard(props: {
           owner={owner}
           busy={busy}
           headingId={`${h}-keys`}
+          paste={!changing}
           onRevoke={props.onRevoke}
         />
         {owner && full && (
@@ -1997,36 +2084,8 @@ function AppCard(props: {
           </p>
         )}
       </div>
-      {live.length === 0 ? (
+      {live.length === 0 && (
         <p className="muted">{`${app.name} needs an API key before it can reach the vault.`}</p>
-      ) : (
-        owner &&
-        app.connection_string &&
-        !changing && (
-          <details>
-            <summary>{`What to paste into ${app.name}`}</summary>
-            <div className="stack">
-              <code style={{ wordBreak: 'break-all' }}>{app.connection_string}</code>
-              <span className="muted">
-                The address and its newest key’s client ID. The secret is not in it.
-              </span>
-              <div className="row">
-                <Button
-                  kind="quiet"
-                  ariaLabel={`Copy what to paste into ${app.name}`}
-                  onClick={() => {
-                    void navigator.clipboard?.writeText(app.connection_string).then(
-                      () => setCopied(true),
-                      () => setCopied(false),
-                    );
-                  }}
-                >
-                  {copied ? 'Copied' : 'Copy'}
-                </Button>
-              </div>
-            </div>
-          </details>
-        )
       )}
       {keyEdit && owner && (
         <KeyFormView

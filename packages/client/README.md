@@ -9,7 +9,7 @@ the global `fetch` and `crypto`).
 | Import                         | What it is                                                                              |
 | ------------------------------ | --------------------------------------------------------------------------------------- |
 | `@fdv/client`                  | The API client (`createHttp`, `createApi`), its errors, retries and helpers.            |
-| `@fdv/client/apps`             | A connected app's client (`createAppClient`), with its API key.                         |
+| `@fdv/client/apps`             | A connected app's client (`createAppClient`), with its API key and access tokens.       |
 | `@fdv/client/testing`          | `createFakeVault()`, an in-memory vault that answers as the real one does.              |
 | `@fdv/client/testing/contract` | `contractScenarios`: what the fake and the real vault are both held to (vitest, yours). |
 
@@ -22,7 +22,7 @@ It is not on npmjs.com. Each vault release attaches the client of that release t
 ```json
 {
   "dependencies": {
-    "@fdv/client": "https://github.com/mansoor/family-documents-vault/releases/download/v0.9.0-dev.71/fdv-client-0.9.0-dev.71.tgz"
+    "@fdv/client": "https://github.com/mansoor/family-documents-vault/releases/download/v0.9.0-dev.72/fdv-client-0.9.0-dev.72.tgz"
   }
 }
 ```
@@ -40,11 +40,24 @@ a bundler keeps only what an app uses.
 
 An owner connects the app in _Settings → Connected apps_ and **generates an API key** for it
 there: a client ID (`fdvc_…`) and a secret (`fdvs_…`). Each key has its own permissions (some
-of what the app may do) and lasts 30, 90 or 365 days, a number of days the owner chooses
-(1 to 3650), or never expires. The vault shows the secret **once** and keeps only a hash of
-it, with a connection string (`fdvapp2.…`) to paste into the app; the owner may include the
-secret in it. The app sends the key on every request as `Authorization: Basic
-base64(client_id:secret)`; keep the secret as you would a password.
+of what the app may do) and lasts 90 days unless the owner chooses otherwise — 30, 90 or
+365 days, a number of days (1 to 3650), or never expires. The vault shows the secret
+**once** and keeps only a hash of it, with a connection string (`fdvapp2.…`) to paste into
+the app; the owner may include the secret in it. Keep the secret as you would a password.
+
+Since 0.9.0-dev.72 the client sends the key once, as `Authorization: Basic
+base64(client_id:secret)`, to `POST /api/v1/apps/token` (OAuth 2.0 client credentials,
+`grant_type=client_credentials`), and is given an access token (`fdvt_…`, 15 minutes); every
+other request carries `Authorization: Bearer <token>`. The client asks for a token as it is
+first needed, keeps it in memory alone, asks for a new one a minute before it ends or when the
+vault answers `401 app_token_expired` (or `app_token_invalid`) — sending that request again
+once — and never logs it. A token ends at once with its key (revoked or expired) or its app
+(paused or removed): those refusals are the app's to handle, as before. A vault from before
+tokens — whose token route answers `401 app_key_not_accepted` or `404`, and whose capability
+document does not say `connected_app_tokens` — is sent the key as Basic, as before, and the
+token route is asked again every 10 minutes, so an upgraded vault moves the app to tokens. On a
+vault that has tokens, Basic is deprecated and will be removed in a later 0.9.0 development
+build.
 
 ```ts
 import { createAppClient, parseConnectionString } from '@fdv/client/apps';
@@ -156,11 +169,14 @@ const app = createAppClient({
   fetch: fake.fetch,
 });
 fake.expireAppKey(key.client_id); // as time would: its next request is 401 app_key_expired
+fake.expireAppTokens(); // every token ended: the client asks for another
 ```
 
 The fake checks every API key as the vault does, and keeps an app's keys by the vault's
 rules: an owner's alone, two live at most, each with its permissions and expiry, revoked at
-once. Generating or revoking a key asks for a passkey or a code: the fake's owner has none
+once. It gives access tokens at `POST /api/v1/apps/token` as the vault does, ends them with
+their key or app, and answers Basic elsewhere with a `Deprecation` header. Generating or
+revoking a key asks for a passkey or a code: the fake's owner has none
 until `fake.state.ownerTwoStep = true`. It keeps a file's bytes exactly as they were sent —
 bytes, a stream, a Blob or a platform FormData — and gives back those bytes from every
 download (an app's, its re-download of a send, and the family's `api.content`), so a hash

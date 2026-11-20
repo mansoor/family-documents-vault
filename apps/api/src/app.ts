@@ -64,7 +64,7 @@ import type { BatchService } from './uploads/batches.js';
 import { DEVICE_KEY_ROUTES, presentsDeviceKey, registerDevices } from './devices/routes.js';
 import { APP_LINK_TOKEN_ROUTE, APP_ROUTES, registerApps } from './apps/routes.js';
 import type { AppService } from './apps/service.js';
-import { presentsBasic } from './apps/keys.js';
+import { presentsAppToken, presentsBasic } from './apps/keys.js';
 import type { DeviceService } from './devices/service.js';
 import { registerVaults } from './vaults/routes.js';
 import { registerWatchFolder } from './watch-folder/routes.js';
@@ -282,12 +282,13 @@ export async function buildApp(config: ApiConfig, deps: AppDeps): Promise<Fastif
     }
   });
 
-  // A connected app's API key (0.9.0, APP6: HTTP Basic) is taken by the
-  // app routes alone: every other — a public route and one that is not
-  // there too — answers it 401 before anything else is looked at, and
-  // nothing an app does becomes a browser session.
+  // A connected app's API key (0.9.0, APP6: HTTP Basic), and an access
+  // token for it (0.9.0-dev.72: `Bearer fdvt_…`), are taken by the app
+  // routes alone: every other — a public route and one that is not there
+  // too — answers either 401 before anything else is looked at, and nothing
+  // an app does becomes a browser session.
   app.addHook('onRequest', async (req) => {
-    if (!presentsBasic(req.headers)) return;
+    if (!presentsBasic(req.headers) && !presentsAppToken(req.headers)) return;
     if (APP_ROUTES.has(`${req.method} ${req.routeOptions.url ?? ''}`)) return;
     throw new ApiError(401, 'app_key_not_accepted', 'A connected app can only use the app routes.');
   });

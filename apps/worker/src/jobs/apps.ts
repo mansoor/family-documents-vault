@@ -22,10 +22,22 @@ import { queueDbOf, type OwnersAlert, type QueueDb } from '../ai-send.js';
  * were opened in the last week, then it goes; a revoked app's at once. Only
  * hashes are kept of its token and its session, never either.
  *
+ * An app's access tokens (0.9.0-dev.72) last fifteen minutes: one goes once
+ * it has ended, and a revoked key's at once (it ended with its key). The
+ * networks a key was used from go with it revoked or expired, and one not
+ * seen in 90 days goes (it would be news again); an app's days of requests
+ * are kept 35, enough for the week a usual is worked out from.
+ *
  * As the owning role: these rows are the vault's alone to remove, every
  * household's at once, and none of them says anything about a person.
  */
 export const APP_INTAKE_KEEP_DAYS = 90;
+
+/** An app's days of requests are kept this many days (0.9.0-dev.72). */
+export const APP_DAYS_KEEP_DAYS = 35;
+
+/** A network a key was used from is forgotten when not seen for this many days (0.9.0-dev.72). */
+export const APP_NETWORKS_KEEP_DAYS = 90;
 
 /** A send still arriving after this long died on its way: its row and its part-sent item go. */
 export const APP_ARRIVING_GIVE_UP_MINUTES = 60;
@@ -38,7 +50,7 @@ export const APP_LINKS_KEEP_DAYS = 8;
 
 export async function sweepApps(
   admin: pg.Pool,
-): Promise<{ sent: number; stuck: number; changes: number; links: number }> {
+): Promise<{ sent: number; stuck: number; changes: number; links: number; tokens: number }> {
   const sent = await admin.query(
     `delete from public.connected_app_intake
       where state in ('refused', 'removed')
@@ -99,11 +111,33 @@ export async function sweepApps(
                      where a.id = l.app_id and a.revoked_at is not null)`,
     [APP_LINKS_KEEP_DAYS],
   );
+  // Access tokens (0.9.0-dev.72) past their end, or of a key revoked (a
+  // removed app's keys are revoked with it).
+  const tokens = await admin.query(
+    `delete from public.connected_app_token t
+      where t.expires_at <= now()
+         or exists (select 1 from public.connected_app_key k
+                     where k.id = t.key_id and k.revoked_at is not null)`,
+  );
+  // The networks of a key that no longer works, or not seen in 90 days;
+  // and old days of requests.
+  await admin.query(
+    `delete from public.connected_app_key_network n
+      using public.connected_app_key k
+      where k.id = n.key_id
+        and (k.revoked_at is not null or k.expires_at < now()
+             or n.last_seen_at < now() - make_interval(days => $1))`,
+    [APP_NETWORKS_KEEP_DAYS],
+  );
+  await admin.query(`delete from public.connected_app_day where day < current_date - $1::int`, [
+    APP_DAYS_KEEP_DAYS,
+  ]);
   return {
     sent: sent.rowCount ?? 0,
     stuck: gone.rowCount ?? 0,
     changes: changes.rowCount ?? 0,
     links: links.rowCount ?? 0,
+    tokens: tokens.rowCount ?? 0,
   };
 }
 

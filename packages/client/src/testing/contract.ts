@@ -1,4 +1,5 @@
 import {
+  APP_BASIC_DEPRECATION,
   APP_KEYS_MAX,
   CATEGORY_LABELS,
   CORE_FIELDS,
@@ -14,14 +15,21 @@ import {
   type DetailProposal,
   type PaperReading,
   type DocumentTypeInput,
+  type AppAccessToken,
+  type AppMe,
   type AppScope,
   type Role,
   type Tokens,
 } from '@fdv/shared';
 import { expect } from 'vitest';
 import { deviceHeaders, type Api } from '../api.js';
-import { createAppClient, parseConnectionString, type AppClient } from '../apps.js';
-import type { FetchLike } from '../http.js';
+import {
+  basicAuthorization,
+  createAppClient,
+  parseConnectionString,
+  type AppClient,
+} from '../apps.js';
+import type { FetchLike, RequestInitLike, ResponseLike } from '../http.js';
 import { ApiRequestError, isSessionOver } from '../errors.js';
 import { multipartBody } from '../multipart.js';
 import { negotiate } from '../negotiate.js';
@@ -151,6 +159,13 @@ export interface ContractContext {
    * not asked.
    */
   expireAppKey?: (clientId: string) => Promise<void>;
+  /**
+   * Every connected app's access token past its end now (0.9.0-dev.72), as
+   * time would make it: the real API's run moves their dates as the owning
+   * role; the fake's moves its own. Optional: a context from before has
+   * none, and the scenario leaves that part out.
+   */
+  expireAppTokens?: () => Promise<void>;
   /**
    * The pages of a file a connected app sent read as this proposal, and
    * what the vault does once a read finishes (0.9.0, APP4): the real API's
@@ -5260,6 +5275,122 @@ export const contractScenarios: Scenario[] = [
       await api.connectedApps.remove(token, made.id);
       const gone = await refusal(appB.me());
       expect([gone.status, gone.code]).toEqual([401, 'app_revoked']);
+    },
+  },
+  {
+    name: 'a connected app trades its API key for a short-lived access token and calls with Bearer; the key as Basic still works, deprecated; a new key lasts 90 days unless said (0.9.0-dev.72)',
+    run: async (api, ctx) => {
+      if (!ctx.fetch) throw new Error('the contract needs the fetch its vault answers on');
+      const fetch = ctx.fetch;
+      expect((await api.capabilities()).features.connected_app_tokens).toBe(true);
+      const owner = connectedAppOwner;
+      if (!owner) throw new Error('the connected app scenario runs first');
+      const token = owner.access_token;
+      const made = await api.connectedApps.create(token, {
+        name: 'Acme Money',
+        member_id: owner.member_id,
+        allowed_kinds: ['utility_bill'],
+        scopes: ['documents.send', 'documents.read'],
+      });
+      // Nothing said of how long it lasts: 90 days. And each live key's own
+      // connection string, its client ID in it and never its secret.
+      const key = await api.connectedApps.generateKey(token, made.id, {
+        permissions: ['documents.send'],
+      });
+      const left = Date.parse(key.key.expires_at as string) - Date.now();
+      expect(left).toBeGreaterThan(89.9 * 864e5);
+      expect(left).toBeLessThanOrEqual(90 * 864e5 + 60_000);
+      const own = parseConnectionString(key.key.connection_string as string);
+      expect(own).toMatchObject({ client_id: key.client_id });
+      expect(own).not.toHaveProperty('secret');
+      const listed = (await api.connectedApps.list(token)).items.find((a) => a.id === made.id);
+      expect(listed?.keys.map((k) => k.connection_string)).toEqual([key.key.connection_string]);
+
+      const base = api.http.baseUrl;
+      const basic = basicAuthorization(key.client_id, key.secret);
+      const call = (path: string, init: Partial<RequestInitLike> = {}) =>
+        fetch(`${base}${path}`, { method: 'GET', headers: {}, ...init });
+      const bearer = (t: string) => ({ headers: { authorization: `Bearer ${t}` } });
+      const grant = (body: string, authorization = basic) =>
+        call('/api/v1/apps/token', {
+          method: 'POST',
+          headers: { authorization, 'content-type': 'application/x-www-form-urlencoded' },
+          body,
+        });
+      const codeOf = async (r: ResponseLike) =>
+        [r.status, ((await r.json()) as { error?: { code?: string } }).error?.code] as const;
+
+      // The key, as Basic, and the grant, as a form: a token, as RFC 6749 says it.
+      const minted = await grant('grant_type=client_credentials');
+      expect(minted.status).toBe(200);
+      expect(minted.headers.get('cache-control')).toContain('no-store');
+      const t = (await minted.json()) as AppAccessToken;
+      expect(t).toEqual({
+        access_token: expect.stringMatching(/^fdvt_[A-Za-z0-9_-]{43}$/) as string,
+        token_type: 'Bearer',
+        expires_in: 900,
+        scope: 'documents.send',
+      });
+      // Bearer on every other app route, and no word of deprecation.
+      const viaToken = await call('/api/v1/apps/me', bearer(t.access_token));
+      expect(viaToken.status).toBe(200);
+      expect(viaToken.headers.get('deprecation')).toBeNull();
+      expect(((await viaToken.json()) as AppMe).key.client_id).toBe(key.client_id);
+      // The key as Basic there: still taken, and said to be deprecated.
+      const viaBasic = await call('/api/v1/apps/me', { headers: { authorization: basic } });
+      expect(viaBasic.status).toBe(200);
+      expect(viaBasic.headers.get('deprecation')).toBe(APP_BASIC_DEPRECATION);
+      // Client credentials alone, and the key alone on the token route.
+      expect(await codeOf(await grant('grant_type=password'))).toEqual([
+        400,
+        'unsupported_grant_type',
+      ]);
+      expect(
+        await codeOf(await grant('grant_type=client_credentials', `Bearer ${t.access_token}`)),
+      ).toEqual([401, 'app_key_required']);
+      // A token the vault never gave; one on a route that is not an app's;
+      // and what it may do is its key's.
+      expect(await codeOf(await call('/api/v1/apps/me', bearer(`fdvt_${'A'.repeat(43)}`)))).toEqual(
+        [401, 'app_token_invalid'],
+      );
+      expect(await codeOf(await call('/api/v1/documents', bearer(t.access_token)))).toEqual([
+        401,
+        'app_key_not_accepted',
+      ]);
+      expect(await codeOf(await call('/api/v1/apps/documents', bearer(t.access_token)))).toEqual([
+        403,
+        'scope_not_granted',
+      ]);
+      // Ended by time: refused as expired, and the client asks for another.
+      const app = createAppClient({
+        url: base,
+        clientId: key.client_id,
+        secret: key.secret,
+        fetch,
+      });
+      expect((await app.me()).key.client_id).toBe(key.client_id);
+      if (ctx.expireAppTokens) {
+        await ctx.expireAppTokens();
+        expect(await codeOf(await call('/api/v1/apps/me', bearer(t.access_token)))).toEqual([
+          401,
+          'app_token_expired',
+        ]);
+        expect((await app.me()).key.client_id).toBe(key.client_id);
+      }
+      // The key revoked: its tokens end with it, at once, and it is given no more.
+      const fresh = (await (await grant('grant_type=client_credentials')).json()) as AppAccessToken;
+      await api.connectedApps.revokeKey(token, made.id, key.key.id);
+      expect(await codeOf(await call('/api/v1/apps/me', bearer(fresh.access_token)))).toEqual([
+        401,
+        'app_key_revoked',
+      ]);
+      expect(await codeOf(await grant('grant_type=client_credentials'))).toEqual([
+        401,
+        'app_key_revoked',
+      ]);
+      const ended = await refusal(app.me());
+      expect([ended.status, ended.code]).toEqual([401, 'app_key_revoked']);
+      await api.connectedApps.remove(token, made.id);
     },
   },
   {

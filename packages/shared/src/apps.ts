@@ -297,6 +297,12 @@ export const APP_SECRET_PATTERN = /^fdvs_[A-Za-z0-9_-]{43}$/;
 /** How long a key lasts, as Settings offers it, in days; or a custom number up to the most; or never. */
 export const APP_KEY_VALIDITY_DAYS = [30, 90, 365] as const;
 export const APP_KEY_DAYS_MAX = 3650;
+/**
+ * How long a new key lasts when nothing else is said (0.9.0-dev.72): 90
+ * days. Never expiring is a choice made on purpose — `expires_in_days:
+ * null` — and Settings warns before it.
+ */
+export const APP_KEY_DEFAULT_DAYS = 90;
 /** The owners are reminded this many days before a key expires (when it lasts longer than that). */
 export const APP_KEY_WARN_DAYS = 14;
 /** A key's name, at most. */
@@ -306,6 +312,60 @@ export const APP_AUTH_FAILURES_PER_MINUTE = 10;
 
 /** A key's state: works, past its expiry, or revoked (by an owner, or with its app). */
 export type AppKeyState = 'live' | 'expired' | 'revoked';
+
+// ------------------------------------------- access tokens (0.9.0-dev.72)
+
+/*
+ * Short-lived access tokens (OAuth 2.0 client credentials, RFC 6749 §4.4):
+ * an app sends its key once, as `Authorization: Basic`, to
+ * `POST /api/v1/apps/token` with the form body
+ * `grant_type=client_credentials`, and is answered an access token; every
+ * other app route takes `Authorization: Bearer <access token>`. The token
+ * is opaque and random, the vault keeps only its SHA-256, and it is bound
+ * to its key: what it may do is the key's permissions among the app's, as
+ * they are at each request, and it ends at once with the key (revoked or
+ * expired) or the app (paused or removed). Basic on the other app routes is
+ * still taken, deprecated (a `Deprecation` header says so), until a later
+ * 0.9.0 development build.
+ */
+
+/** An access token: `fdvt_` and 32 random bytes, base64url. The prefix lets a scanner spot one. */
+export const APP_TOKEN_PREFIX = 'fdvt_';
+export const APP_TOKEN_PATTERN = /^fdvt_[A-Za-z0-9_-]{43}$/;
+/** How long an access token lasts, in seconds. */
+export const APP_TOKEN_SECONDS = 900;
+/** Tokens a key may be given a minute, and an address (an IPv6 address by its /64). */
+export const APP_TOKENS_PER_KEY_PER_MINUTE = 10;
+export const APP_TOKENS_PER_ADDRESS_PER_MINUTE = 60;
+/**
+ * The `Deprecation` header (RFC 9745) on an app route answered to Basic:
+ * deprecated since 19 November 2026 (0.9.0-dev.72), as a structured date.
+ */
+export const APP_BASIC_DEPRECATION = '@1795046400';
+
+/** `POST /api/v1/apps/token`'s answer, as RFC 6749 §5.1 has it. */
+export interface AppAccessToken {
+  access_token: string;
+  token_type: 'Bearer';
+  /** Seconds it lasts from now. */
+  expires_in: number;
+  /** What it may do, space-separated: the key's permissions among the app's. */
+  scope: string;
+}
+
+/**
+ * Unusual use, which the owners are emailed of (0.9.0-dev.72): a day's
+ * requests past this many times the app's usual (the median of the seven
+ * days before) and past this many in all.
+ */
+export const APP_BUSY_DAY_TIMES = 5;
+export const APP_BUSY_DAY_MIN = 200;
+/**
+ * The networks the vault remembers a key was used from, at most: past it, a
+ * new one is neither kept nor told of. The worker forgets one not seen in 90
+ * days.
+ */
+export const APP_KEY_NETWORKS_MAX = 500;
 
 /** A connection string's prefix: `fdvapp2.` and base64url of its JSON. */
 export const APP_CONNECTION_PREFIX = 'fdvapp2.';
@@ -643,6 +703,12 @@ export interface AppKeyView {
    */
   revoked_reason?: 'owner' | 'app_removed' | 'restore' | 'creator' | null;
   state: AppKeyState;
+  /**
+   * What to paste into the app for this key (0.9.0-dev.72): the vault's
+   * address and this key's client ID, never its secret. Only while it is
+   * live.
+   */
+  connection_string?: string;
 }
 
 /** `GET /apps/me`'s `key`: the key making the call, and nothing of the app's other keys. */
@@ -875,8 +941,11 @@ export interface ConnectedAppKeyInput {
   name?: string | null;
   /** Some of the app's scopes, at least one. */
   permissions: AppScope[];
-  /** How long it lasts: 1 to APP_KEY_DAYS_MAX days; null: it never expires. */
-  expires_in_days: number | null;
+  /**
+   * How long it lasts: 1 to APP_KEY_DAYS_MAX days; null: it never expires.
+   * Left out: APP_KEY_DEFAULT_DAYS (0.9.0-dev.72).
+   */
+  expires_in_days?: number | null;
 }
 
 /**
@@ -913,8 +982,14 @@ export const appsNotPublicWords = (app: string): string =>
 
 /** The refusals an app's request may be answered, in words a person may be shown. */
 export const APP_REFUSALS = {
-  app_key_required: 'Send the app’s API key: Authorization: Basic, with its client ID and secret.',
+  app_key_required:
+    'Send the app’s access token (Authorization: Bearer), from POST /api/v1/apps/token with its API key as Basic.',
   app_key_invalid: 'The client ID or the secret is not right.',
+  app_token_invalid: 'That access token is not one this vault gave. Ask for a new one.',
+  app_token_expired: 'That access token has expired. Ask for a new one.',
+  invalid_request:
+    'Send grant_type=client_credentials, form-encoded, with the API key as Authorization: Basic.',
+  unsupported_grant_type: 'The vault gives tokens for grant_type=client_credentials alone.',
   app_key_expired: 'This API key has expired. An owner can generate a new one in Settings.',
   app_key_revoked: 'An owner has revoked this API key.',
   app_revoked: 'This app has been removed from the vault. Connect it again.',

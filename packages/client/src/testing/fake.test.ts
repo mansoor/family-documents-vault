@@ -103,6 +103,10 @@ describe('the fake vault keeps the contract', () => {
     expireAppKey: async (clientId) => {
       vault.expireAppKey(clientId);
     },
+    // Its access tokens past their end (0.9.0-dev.72): the fake moves their dates.
+    expireAppTokens: async () => {
+      vault.expireAppTokens();
+    },
     // What the pages of an app's file read (APP4): the fake files it, or
     // leaves it waiting, by the vault's own rule.
     readAppSend: async (app, externalId, _file, proposal) => {

@@ -321,7 +321,7 @@ const pkg = {
   name: clientPkg.name,
   version,
   description:
-    'The Family Document Vault API client: a connected app’s client (API keys, HTTP Basic) and a fake vault to test against. Platform-neutral: no DOM, no Node.',
+    'The Family Document Vault API client: a connected app’s client (API keys traded for short-lived access tokens) and a fake vault to test against. Platform-neutral: no DOM, no Node.',
   license: 'MIT',
   type: 'module',
   repository: { ...rootPkg.repository, directory: 'packages/client' },

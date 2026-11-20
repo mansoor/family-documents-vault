@@ -676,6 +676,30 @@ async function seed(url: string): Promise<string> {
                 // A client id of its own: seed() runs once a household, and ids are unique.
                 [hh, a.id, `fdvc_${randomBytes(16).toString('base64url')}`, randomBytes(32)],
               );
+              // And, where the schema has them (0119, 0.9.0-dev.72), an access
+              // token for the key (a hash of its own: ids are unique), a
+              // network it was used from, and the app's day of requests.
+              const tokens = await c.query<{ has: boolean }>(
+                "select to_regclass('public.connected_app_token') is not null as has",
+              );
+              if (tokens.rows[0]?.has) {
+                await c.query(
+                  `insert into connected_app_token (household_id, app_id, key_id, token_hash, expires_at)
+                   select $1, $2, k.id, $3, now() + interval '15 minutes'
+                     from connected_app_key k where k.app_id = $2`,
+                  [hh, a.id, randomBytes(32)],
+                );
+                await c.query(
+                  `insert into connected_app_key_network (key_id, household_id, network)
+                   select k.id, $1, '203.0.113.0/24' from connected_app_key k where k.app_id = $2`,
+                  [hh, a.id],
+                );
+                await c.query(
+                  `insert into connected_app_day (app_id, household_id, day, requests)
+                   values ($2, $1, current_date, 12)`,
+                  [hh, a.id],
+                );
+              }
               await c.query(
                 `insert into connected_app_intake (household_id, app_id, member_id, external_id,
                                                    state, refusal, decided_at)
@@ -2579,6 +2603,87 @@ describe.skipIf(!testAdminUrl())('checking a restored vault', { timeout: 60_000 
     }
     expect(await checkRestored(target())).toMatchObject({ households: 1 });
     // Several whole checks of a restored vault, on a machine others share.
+  }, 240_000);
+
+  it('notices a connected app’s access tokens let out of the vault’s hands; a restore ends them (0.9.0-dev.72)', async () => {
+    const seeded = await sql(
+      vault.adminUrl,
+      `select (select count(*)::int from connected_app_token) as tokens,
+              (select count(*)::int from connected_app_key_network) as networks,
+              (select count(*)::int from connected_app_day) as days`,
+    );
+    expect(seeded.rows[0]).toEqual({ tokens: 1, networks: 1, days: 1 });
+    // Each table's rule for each kind of caller, and the vault's alone.
+    for (const table of ['connected_app_token', 'connected_app_key_network', 'connected_app_day']) {
+      const policy = `${table}_actor`;
+      const { rows } = await sql(
+        vault.adminUrl,
+        `select pg_get_expr(polqual, polrelid) as q, pg_get_expr(polwithcheck, polrelid) as w
+           from pg_policy where polname = '${policy}'`,
+      );
+      const r = rows[0] as { q: string; w: string };
+      // Opened to an owner: caught.
+      await sql(
+        vault.adminUrl,
+        `alter policy ${policy} on public.${table}
+           using (case app_actor() when 'system' then true when 'account' then app_role() = 'owner' else false end)`,
+      );
+      try {
+        await expect(checkRestored(target()), table).rejects.toThrow(/to the vault alone/);
+      } finally {
+        await sql(vault.adminUrl, `alter policy ${policy} on public.${table} using (${r.q})`);
+      }
+      // Gone: caught.
+      await sql(vault.adminUrl, `drop policy ${policy} on public.${table}`);
+      try {
+        await expect(checkRestored(target()), table).rejects.toThrow(
+          new RegExp(`no rule for each kind of caller on ${table}`),
+        );
+      } finally {
+        await sql(
+          vault.adminUrl,
+          `create policy ${policy} on public.${table} as restrictive using (${r.q}) with check (${r.w})`,
+        );
+      }
+    }
+    // A token kept as itself, or for hours: caught.
+    for (const [constraint, words] of [
+      ['connected_app_token_hash_length', /access token kept as its hash/],
+      ['connected_app_token_expires_soon', /an hour long at most/],
+    ] as const) {
+      const { rows } = await sql(
+        vault.adminUrl,
+        `select pg_get_constraintdef(oid) as def from pg_constraint where conname = '${constraint}'`,
+      );
+      await sql(
+        vault.adminUrl,
+        `alter table public.connected_app_token drop constraint ${constraint}`,
+      );
+      try {
+        await expect(checkRestored(target()), constraint).rejects.toThrow(words);
+      } finally {
+        await sql(
+          vault.adminUrl,
+          `alter table public.connected_app_token add constraint ${constraint} ${(rows[0] as { def: string }).def}`,
+        );
+      }
+    }
+    // A restore ends every token: tried in the load's transaction, then rolled back.
+    const pool = new pg.Pool({ connectionString: vault.adminUrl, max: 1 });
+    const client = await pool.connect();
+    try {
+      await client.query('begin');
+      await client.query(RESTORE_UNDO);
+      const { rows } = await client.query<{ tokens: number }>(
+        'select count(*)::int as tokens from connected_app_token',
+      );
+      expect(rows[0]).toEqual({ tokens: 0 });
+    } finally {
+      await client.query('rollback');
+      client.release();
+      await pool.end();
+    }
+    expect(await checkRestored(target())).toMatchObject({ households: 1 });
   }, 240_000);
 
   it('a restore ends every link a connected app made, and every session opened from one (0111, APP3)', async () => {
@@ -4533,9 +4638,11 @@ describe.skipIf(!testAdminUrl() || (PG_BIN === null && !MUST_RESTORE))('restorin
       t.adminUrl,
       `select (select count(*)::int from connected_app where paused_reason = 'restored') as paused,
               (select count(*)::int from connected_app_key where revoked_reason = 'restore') as keys,
-              (select count(*)::int from connected_app_intake) as sent`,
+              (select count(*)::int from connected_app_intake) as sent,
+              (select count(*)::int from connected_app_token) as tokens`,
     );
-    expect(apps.rows[0]).toEqual({ paused: 2, keys: 1, sent: 2 });
+    // And every access token gone with them (0119, 0.9.0-dev.72).
+    expect(apps.rows[0]).toEqual({ paused: 2, keys: 1, sent: 2, tokens: 0 });
     // A Reading check that had not finished is stopped, what it had read let
     // go; one done keeps its numbers and its owner's misses (0074, R0).
     expect(report.readingChecksStopped).toBe(1);
