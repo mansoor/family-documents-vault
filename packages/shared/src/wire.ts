@@ -38,7 +38,32 @@ export interface Tokens {
    * same session goes on. Absent otherwise, and from older vaults.
    */
   two_step_setup_required?: true;
+  /**
+   * 0.9.0: this device's proof that it signed in to the account — kept and
+   * sent back as `device_proof` at the next `POST /auth/password`, so that
+   * failed tries from anywhere else never make this device wait. Opens
+   * nothing; good for 90 days. Given at a sign-in, not a refresh; in a
+   * cookie, not here, to a browser that asks for its refresh token as one.
+   */
+  device_proof?: string;
 }
+
+/**
+ * A browser's refresh token as a cookie (0.9.0). A request that sends this
+ * header with the value `cookie` — the web app sends it with every request
+ * — is answered with its refresh token in an HttpOnly cookie
+ * (`fdv_refresh`, path /api/v1/auth, SameSite=Strict; Secure whenever the
+ * vault was reached over https) and an empty `refresh_token` in the body,
+ * wherever a sign-in, a refresh or an invitation accepted gives tokens;
+ * and its `device_proof` in a cookie of its own (`fdv_device`, the same
+ * options, 90 days), read back at `POST /auth/password`.
+ * `POST /auth/refresh` and `POST /auth/logout` with the header and no token
+ * of their own read the cookie, from the vault's own page only. Without the
+ * header — a phone, the client package's other users, any older client —
+ * nothing is different: the refresh token is in the body, as ever.
+ */
+export const REFRESH_COOKIE_HEADER = 'x-fdv-refresh';
+export const REFRESH_COOKIE_MODE = 'cookie';
 
 /** What password sign-in answers when two-step sign-in is on. */
 export interface MfaChallenge {

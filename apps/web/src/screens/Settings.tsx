@@ -1,10 +1,10 @@
-import { useEffect, useState, type FormEvent, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import QRCode from 'qrcode';
 import { Link, Navigate, useLocation } from 'react-router';
 import * as passkeys from '../passkeys.js';
 import { api, type ExportRow, type NewVault, type Provider } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
-import { Button, Check, ErrorNote, Field, LoadFailed, TopBar } from '../ui.js';
+import { Button, Check, ConfirmDialog, ErrorNote, Field, LoadFailed, TopBar } from '../ui.js';
 import { can, refusalFor } from '@fdv/shared';
 import { storedRole } from '../session.js';
 import { useShellMode } from '../shell.js';
@@ -87,7 +87,7 @@ export function SettingsScreen() {
  * passkeys, the devices signed in, and the single keys on this device.
  */
 export function AccountScreen() {
-  const { authVersion, withToken } = useApp();
+  const { authVersion, withToken, guarded } = useApp();
   const {
     data: sessions,
     error: sessionsError,
@@ -96,6 +96,34 @@ export function AccountScreen() {
   const revoke = async (id: string) => {
     await withToken((t) => api.revokeSession(t, id));
     await reload();
+  };
+  // Every other device signed out at once (0.9.0): asked first, as anything
+  // that cannot be undone is, then confirmed it's you.
+  const others = (sessions ?? []).filter((d) => !d.current).length;
+  const [askingOthers, setAskingOthers] = useState(false);
+  const [endingOthers, setEndingOthers] = useState(false);
+  const [othersError, setOthersError] = useState<string | null>(null);
+  const [othersDone, setOthersDone] = useState<string | null>(null);
+  const othersButton = useRef<HTMLButtonElement>(null);
+  const signOutOthers = async () => {
+    // The question goes before confirming it's you is asked: one dialog at a time.
+    setAskingOthers(false);
+    setEndingOthers(true);
+    setOthersError(null);
+    try {
+      const done = await guarded((t) => api.signOutOtherDevices(t));
+      if (!done) return;
+      setOthersDone(
+        done.ended === 1
+          ? 'Your other device is signed out.'
+          : `Your ${done.ended} other devices are signed out.`,
+      );
+      await reload();
+    } catch (err) {
+      setOthersError(describeError(err));
+    } finally {
+      setEndingOthers(false);
+    }
   };
   return (
     <SettingsPage title="Your account">
@@ -133,6 +161,45 @@ export function AccountScreen() {
               </li>
             ))}
           </ul>
+        )}
+        {others > 0 && (
+          <div className="row">
+            <button
+              ref={othersButton}
+              type="button"
+              className="btn btn-quiet"
+              aria-disabled={endingOthers}
+              onClick={() => {
+                if (endingOthers) return;
+                setOthersDone(null);
+                setAskingOthers(true);
+              }}
+            >
+              {endingOthers ? 'Signing them out…' : 'Sign out my other devices'}
+            </button>
+          </div>
+        )}
+        {othersDone && (
+          <p className="muted" role="status">
+            {othersDone}
+          </p>
+        )}
+        <ErrorNote message={othersError} />
+        {askingOthers && (
+          <ConfirmDialog
+            title="Sign out your other devices?"
+            confirmLabel="Sign them out"
+            danger
+            returnFocus={othersButton}
+            onConfirm={() => void signOutOthers()}
+            onCancel={() => setAskingOthers(false)}
+          >
+            <p>
+              Every phone and browser signed in as you, but this one, is signed out now and must
+              sign in again. Use this if you lost a device, or think somebody else is signed in as
+              you. This one stays signed in.
+            </p>
+          </ConfirmDialog>
         )}
       </section>
       <KeyShortcuts />

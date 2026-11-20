@@ -15,11 +15,16 @@ import { disable as disablePush } from './push.js';
  * Holds the signed-in session for the web app: `@fdv/client`'s session
  * core over localStorage.
  *
- * The refresh token is kept in localStorage so the app survives a reload;
- * the access token lives in memory only and is renewed through the
- * refresh endpoint — once at a time, however many screens ask at once
- * (see `SessionCore`). Everything storage-related is wrapped, because
- * private windows and blocked site data make localStorage throw.
+ * Since 0.9.0 the refresh token is an HttpOnly cookie the vault sets
+ * (path /api/v1/auth), which script on the page — anybody's, should a flaw
+ * ever let some run — cannot read. localStorage keeps only who is signed in
+ * (household, member, role), so the app knows at once whether to show the
+ * sign-in page; the access token lives in memory only and is renewed
+ * through the refresh endpoint, with the cookie — once at a time, however
+ * many screens ask at once (see `SessionCore`). A refresh token a version
+ * before 0.9.0 kept here is spent once, for a cookie, and forgotten.
+ * Everything storage-related is wrapped, because private windows and
+ * blocked site data make localStorage throw.
  */
 
 const KEY = 'fdv.session';
@@ -37,7 +42,9 @@ function read(): StoredSession | null {
 
 function write(s: StoredSession | null) {
   try {
-    if (s) localStorage.setItem(KEY, JSON.stringify(s));
+    // Never a refresh token: it is in the cookie (0.9.0). An empty one says
+    // "the cookie's"; the one kept from before goes with this write.
+    if (s) localStorage.setItem(KEY, JSON.stringify({ ...s, refresh_token: '' }));
     else localStorage.removeItem(KEY);
   } catch {
     // storage unavailable: the session simply does not persist across reloads
@@ -47,6 +54,61 @@ function write(s: StoredSession | null) {
 const localStorageStore: TokenStore = {
   load: async () => read(),
   save: async (s) => write(s),
+};
+
+/**
+ * A sign-out the vault could not be told of (0.9.0): the session its
+ * cookie names still open there. Kept here, and sent as the app next loads,
+ * before the sign-in page is shown (`flushPendingLogout`).
+ */
+const LOGOUT_PENDING = 'fdv.logout-pending';
+
+function setLogoutPending(on: boolean) {
+  try {
+    if (on) localStorage.setItem(LOGOUT_PENDING, '1');
+    else localStorage.removeItem(LOGOUT_PENDING);
+  } catch {
+    // storage unavailable: nothing to remember it in
+  }
+}
+
+/** Signing out with the cookie; not reached, remembered for the next load. */
+async function logoutByCookie(): Promise<void> {
+  try {
+    await api.logoutWithCookie();
+    setLogoutPending(false);
+  } catch {
+    setLogoutPending(true);
+  }
+}
+
+/**
+ * The sign-out the vault was not told of, told now (0.9.0): as the app
+ * loads, before it shows anything. Not reached again: kept for the next.
+ */
+export async function flushPendingLogout(): Promise<void> {
+  let pending: boolean;
+  try {
+    pending = localStorage.getItem(LOGOUT_PENDING) === '1';
+  } catch {
+    pending = false;
+  }
+  if (!pending) return;
+  try {
+    await api.logoutWithCookie();
+    setLogoutPending(false);
+  } catch {
+    // Still not reached: tried again next time.
+  }
+}
+
+/**
+ * Renewing the sign-in (0.9.0): with the cookie; or, once, with a refresh
+ * token a version before kept in localStorage, which the vault answers
+ * with a cookie — the token is then forgotten (`write`).
+ */
+const refresher = {
+  refresh: (kept: string) => (kept ? api.refresh(kept) : api.refreshWithCookie()),
 };
 
 /**
@@ -80,7 +142,7 @@ export class Session {
   private readonly waitListeners = new Set<(seconds: number | null) => void>();
   // localStorage can be read at once, so the web starts already knowing
   // whether anybody is signed in; a phone calls hydrate() instead.
-  private readonly core = new SessionCore(api, localStorageStore, {
+  private readonly core = new SessionCore(refresher, localStorageStore, {
     initial: read(),
     ...(tabLock ? { lock: tabLock } : {}),
     onWait: (seconds) => {
@@ -118,6 +180,9 @@ export class Session {
 
   accept(tokens: Tokens) {
     this.twoStepSetup = tokens.two_step_setup_required === true;
+    // A new sign-in's cookie replaced the one a sign-out could not end: the
+    // next load must not end this one in its place (0.9.0).
+    setLogoutPending(false);
     // A new sign-in starts with no notes half-written by the last one
     // (5.35, A32).
     forgetDrafts();
@@ -164,14 +229,18 @@ export class Session {
   async signOut() {
     // Never behind a renewal waiting out "too many tries" (up to two
     // minutes; the review round): the access token while it lasts, or a
-    // renewal that waits for nothing. Without one, as offline: signed out
-    // here, the vault not told.
+    // renewal that waits for nothing.
     const r = await this.token({ wait: false });
     if (r.kind === 'ok') {
       // This browser stops being told things before the sign-in ends, so
       // the next person to use it is not sent the last one's digest.
       await disablePush(r.token).catch(() => undefined);
-      await api.logout(r.token).catch(() => undefined);
+      // Not reached, or refused: the cookie ends it instead (0.9.0).
+      await api.logout(r.token).catch(() => logoutByCookie());
+    } else if (this.core.signedIn) {
+      // Without one (offline, or too many tries just now): the session the
+      // cookie names is ended by the cookie (0.9.0).
+      await logoutByCookie();
     }
     this.clear();
   }

@@ -6,6 +6,31 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.9.0-dev.75] - 2026-11-19 — sessions you can trust, and failed sign-ins that are noticed
+
+### Security
+
+- **The web app's sign-in can no longer be read by script on the page.** Its refresh token, which keeps a browser signed in for up to 30 days, now lives in an `HttpOnly` cookie, `SameSite=Strict`, sent back only to the vault's sign-in routes. The page keeps only the 15-minute access token, in memory, and renews it with the cookie when it loads. The cookie is `Secure` whenever the vault is reached over https; over plain http on the home network a browser would not keep a `Secure` cookie, so there it is not. A browser signed in before this version spends the token it kept once, for the cookie, and forgets it: nobody is signed out by the upgrade. Renewing or signing out with the cookie is refused to any page but the vault's own. The phone app is unchanged. Signing out when the vault cannot be reached is finished the next time the app loads, before anything is shown.
+- **The web app sends what it reads only to the vault.** Its Content-Security-Policy now limits its requests (`connect-src 'self'`), its images (`img-src 'self' data: blob:`) and its forms (`form-action 'self'`) to the vault: a script that ever ran there has far fewer ways to send anything out (not every way: it could still navigate away). Notifications are unaffected.
+- **Failed sign-ins are counted per account**, whichever addresses they come from: a wrong password, or a code from an authenticator app or by text that didn't match. After five, signing in to that account with a password or a code waits a minute, then five, then fifteen, never longer; the count starts again 24 hours after its first failure, or when a sign-in succeeds. Each try is reserved before it is checked, so tries sent at once cannot get past the limit. An address with no account is counted and answered exactly the same, so this says nothing about which addresses have accounts.
+- **Nobody can keep you out by failing on purpose.** A device that has signed in to an account before keeps a proof of it (a cookie in a browser; `device_proof` for an app that keeps it), and its tries are counted on their own: failures from anywhere else make only unknown devices wait, never the phone or browser you use. A passkey never waits. Confirming it's you, and the current password when you change it, are counted per session, so they never make your sign-in wait either.
+- **Failed sign-ins are recorded, and people are told.** Each one is a line in the person's Activity — which step failed, never what was typed — at most ten an hour. After five failures the person is emailed (and pushed to, and sent one text if they asked for alerts by text), once per incident, which lasts until a day passes without a failure; when it is an owner's account, the other owners are emailed too, once. Failures and waits are also in the API's log: see the README, "Security events".
+- **A code from an authenticator app works once.** A code already given, or one from before it, is refused at signing in, at confirming it's you, and at setting the app up or turning it off: one seen over a shoulder, or passed on by a copy of the sign-in page, cannot be used again.
+- **"Forgot password" answers in the same time** whether or not the address has a sign-in here.
+- **An access token is held to its session's own account**: one made with the signing key naming a real session and somebody else's account opens nothing.
+
+### Added
+
+- **Sign out my other devices**, in Settings → Your account, under the devices signed in: every phone and browser signed in as you, but the one you are using, is signed out at once. It asks first, and then for any of your credentials.
+
+### Database
+
+- Migration 0122: `sign_in_failure`, the installation's (no row-level security): failed sign-ins per account, known device, address with no account and session, and each account's notices, kept only as HMACs, never an address; a row quiet for a day is deleted. `account.totp_last_step`: the time step of the last authenticator code taken.
+
+### Upgrading
+
+Nothing to do: `docker compose pull && docker compose up -d`. Browsers stay signed in, with one exception: a tab left open from before the upgrade, and not reloaded, still holds the refresh token the first new page has already moved to the cookie; when that old tab renews with it, the vault takes it for a copied token and signs the browser out, once, in every tab (it says so: the session ended). Sign in again. Reloading old tabs after the upgrade avoids it. Until a browser or app has signed in once after the upgrade it has no proof of being a known device, and is counted with unknown devices. With the vault's own https (`docker-compose.tls.yml`) the cookie is marked `Secure`. Behind an https proxy of your own that reaches the vault on port 8080, the vault is told only that the request came over http, so the cookie is not marked `Secure` (it is still `HttpOnly` and `SameSite=Strict`); never open such a vault over plain http too.
+
 ## [0.9.0-dev.74] - 2026-11-19 — containers locked down, and a supply chain you can check
 
 ### Security

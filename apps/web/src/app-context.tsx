@@ -15,7 +15,7 @@ import { onFamilyZoneHeard, setCurrentFamilyZone } from './family-zone-store.js'
 
 /** The family's zone is asked again as the tab is come back to, at most this often. */
 export const ZONE_ASK_AGAIN_MS = 60_000;
-import { Session } from './session.js';
+import { flushPendingLogout, Session } from './session.js';
 import { StepUpPrompt } from './StepUpPrompt.js';
 
 /**
@@ -109,7 +109,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const reloadCaps = useCallback(async () => {
     try {
-      setCaps(await api.capabilities());
+      // A sign-out the vault could not be told of, told first (0.9.0):
+      // nothing is shown, the sign-in page included, until it has been tried.
+      const [answer] = await Promise.all([api.capabilities(), flushPendingLogout()]);
+      setCaps(answer);
       setConnectionError(null);
     } catch (err) {
       setConnectionError(describeError(err));

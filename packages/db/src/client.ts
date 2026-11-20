@@ -274,6 +274,33 @@ export interface Schema {
     sign_in_text: Generated<boolean>;
     /** Whether a reset of their password also asks for a code by text (0088, SMS3). */
     reset_text: Generated<boolean>;
+    /**
+     * The time step of the last code from an authenticator app taken (0122):
+     * one at or before it is refused. Null until one is, and again whenever
+     * a new authenticator is set up.
+     */
+    totp_last_step: number | null;
+  };
+
+  /**
+   * Failed sign-ins (0122): per account, per known device, per address
+   * with no account, per session; and an account's notices. By an HMAC,
+   * never an address or an id itself. Not tenant data: no row-level
+   * security.
+   */
+  sign_in_failure: {
+    subject: Buffer;
+    failures: Generated<number>;
+    window_started_at: GeneratedTimestamp;
+    inflight: Generated<number>;
+    inflight_at: Timestamp | null;
+    second_step: Generated<boolean>;
+    last_failed_at: GeneratedTimestamp;
+    throttled_until: Timestamp | null;
+    audited: Generated<number>;
+    audited_since: GeneratedTimestamp;
+    incident_told: Generated<boolean>;
+    owners_told: Generated<boolean>;
   };
 
   account_household: {

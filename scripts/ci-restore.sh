@@ -18,16 +18,26 @@ PASSWORD=${FDV_E2E_PASSWORD:-correct horse battery staple}
 
 field() { node -e 'let s="";process.stdin.on("data",(d)=>(s+=d)).on("end",()=>console.log(JSON.parse(s)[process.argv[1]]))' "$1"; }
 titles() { node -e 'let s="";process.stdin.on("data",(d)=>(s+=d)).on("end",()=>console.log(JSON.parse(s).items.map((d)=>d.title).sort().join("|")))'; }
-# The owner's authenticator code now (RFC 6238), from the key the end-to-end
-# run kept in .e2e-owner-totp (or FDV_E2E_TOTP_SECRET).
+# The owner's authenticator code (RFC 6238), from the key the end-to-end run
+# kept in .e2e-owner-totp (or FDV_E2E_TOTP_SECRET). The vault takes each code
+# once (0.9.0): this gives one of the step after the last given, which the
+# specs keep in .e2e-owner-totp-step too, waiting (30 seconds at most) when
+# that step is not yet near enough to be taken.
 totp_code() {
   node -e '
     const fs = require("fs"); const { createHmac } = require("crypto");
     const s = (process.env.FDV_E2E_TOTP_SECRET || fs.readFileSync(".e2e-owner-totp", "utf8")).trim().toUpperCase();
+    const now = () => Math.floor(Date.now() / 30000);
+    let last = -1;
+    try { last = Number(fs.readFileSync(".e2e-owner-totp-step", "utf8").trim()); } catch { last = -1; }
+    const want = Math.max(now(), Number.isFinite(last) ? last + 1 : now());
+    const until = Date.now() + 31000;
+    while (want > now() + 1 && Date.now() < until) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 500);
+    fs.writeFileSync(".e2e-owner-totp-step", want + "\n");
     const a = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
     const bits = [...s.replace(/=+$/, "")].map((c) => a.indexOf(c).toString(2).padStart(5, "0")).join("");
     const key = Buffer.from(bits.match(/.{8}/g).map((b) => parseInt(b, 2)));
-    const c = Buffer.alloc(8); c.writeBigUInt64BE(BigInt(Math.floor(Date.now() / 30000)));
+    const c = Buffer.alloc(8); c.writeBigUInt64BE(BigInt(want));
     const h = createHmac("sha1", key).update(c).digest(); const o = h[h.length - 1] & 15;
     const n = ((h[o] & 127) << 24) | (h[o + 1] << 16) | (h[o + 2] << 8) | h[o + 3];
     console.log(String(n % 1e6).padStart(6, "0"));'

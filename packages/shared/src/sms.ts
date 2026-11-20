@@ -429,6 +429,8 @@ export type AlertTextKind =
   | 'unlocked'
   | 'signed_out'
   | 'owner_change'
+  // 0.9.0: failed tries at signing in to their account, and signing in waits.
+  | 'sign_in_tries'
   | 'news';
 
 export const ALERT_TEXTS: Record<AlertTextKind, { text: string; urgent: boolean }> = {
@@ -453,6 +455,10 @@ export const ALERT_TEXTS: Record<AlertTextKind, { text: string; urgent: boolean 
   signed_out: { text: 'Family Vault: you were signed out everywhere.', urgent: true },
   owner_change: {
     text: 'Family Vault: there was a change to who owns your vault.',
+    urgent: true,
+  },
+  sign_in_tries: {
+    text: 'Family Vault: somebody keeps trying to sign in to your account. Details are in your email.',
     urgent: true,
   },
   news: { text: 'Family Vault: there is news about your vault in your email.', urgent: false },

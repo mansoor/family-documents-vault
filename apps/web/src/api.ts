@@ -1,6 +1,11 @@
 import { createApi, createHttp, type ResponseLike, type UploadBody } from '@fdv/client';
 import { heardFamilyZone } from './family-zone-store.js';
-import type { CaptureMetadata, PhotoCrop } from '@fdv/shared';
+import {
+  REFRESH_COOKIE_HEADER,
+  REFRESH_COOKIE_MODE,
+  type CaptureMetadata,
+  type PhotoCrop,
+} from '@fdv/shared';
 import type {
   PublicKeyCredentialCreationOptionsJSON,
   PublicKeyCredentialRequestOptionsJSON,
@@ -63,6 +68,10 @@ const client = createApi(
     // is looked up on every call, so a test can stand in for it.
     baseUrl: '',
     fetch: (url, init) => globalThis.fetch(url, init as RequestInit),
+    // The refresh token in an HttpOnly cookie, never where script on the
+    // page can read it (0.9.0): asked for on every request, so every
+    // sign-in, refresh and invitation accepted gives it so.
+    headers: () => ({ [REFRESH_COOKIE_HEADER]: REFRESH_COOKIE_MODE }),
   }),
 );
 

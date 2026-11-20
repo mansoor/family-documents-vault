@@ -1296,6 +1296,33 @@ export function eventWords(e: ActivityEvent): (ActivityLine & { named: boolean }
       return line(`${who} signed in`);
     case 'auth.session_revoked':
       return line(`${who} signed a device out`);
+    // 0.9.0: every other device of theirs signed out at once.
+    case 'auth.signed_out_others':
+      return line(`${who} signed out their other devices`, true);
+    // 0.9.0: a failed try at signing in to somebody's account, or at
+    // confirming it's them: which step, and whether signing in now waits —
+    // never what was typed, nor the address. Whoever tried is not named:
+    // it may not have been them.
+    case 'auth.sign_in_failed': {
+      const why =
+        detail.step === 'code'
+          ? 'the code didn’t match'
+          : detail.step === 'passkey'
+            ? 'the passkey wasn’t accepted'
+            : 'the password was wrong';
+      const minutes = typeof detail.paused_minutes === 'number' ? detail.paused_minutes : null;
+      const waits =
+        minutes === null
+          ? ''
+          : `, so signing in waits ${minutes === 1 ? 'a minute' : `${minutes} minutes`}`;
+      return line(
+        detail.at === 'step_up'
+          ? `Confirming it’s them failed in ${possessive(who)} session: ${why}${waits}`
+          : `A sign-in to ${possessive(who)} account failed: ${why}${waits}`,
+        true,
+        UNNAMED,
+      );
+    }
     case 'auth.totp_enabled':
       return line(`${who} switched on two-step sign-in`, true);
     case 'auth.totp_disabled':

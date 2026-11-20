@@ -24,6 +24,7 @@ import { AuthService } from './auth/service.js';
 import { SetupToken } from './auth/setup-token.js';
 import { TotpService } from './auth/totp.js';
 import { deriveSigningKey } from './auth/tokens.js';
+import { SignInGuard } from './auth/sign-in-guard.js';
 import { buildApp } from './app.js';
 import { loadConfig, runsMigrations } from './config.js';
 import { PgBoss } from 'pg-boss';
@@ -221,6 +222,9 @@ async function main(): Promise<void> {
 
   // Passkeys are bound to the address the vault is published at, so this
   // is where FDV_BASE_URL stops being cosmetic.
+  // Failed sign-ins counted per account (0.9.0): a wait after five in a
+  // row, a line in the person's Activity, an alert.
+  const guard = new SignInGuard(db, deriveSigningKey(masterSecret), alert);
   const auth = new AuthService(
     db,
     deriveSigningKey(masterSecret),
@@ -230,6 +234,7 @@ async function main(): Promise<void> {
     totp,
     push,
     textCodes,
+    { guard },
   );
   const passkeys = new PasskeyService(
     db,
@@ -254,7 +259,7 @@ async function main(): Promise<void> {
     );
   }
 
-  const stepUpService = new StepUpService(db, passkeys, totp, textCodes);
+  const stepUpService = new StepUpService(db, passkeys, totp, textCodes, guard);
   const passwords = new PasswordService(
     db,
     keys,
@@ -447,9 +452,14 @@ async function main(): Promise<void> {
   // What a connected app sent, filed automatically (APP4): consumed once
   // the server listens, on every instance (each job is filed once, under
   // its item's lock), and stopped before the server closes.
+  // A failed sign-in, and signing in made to wait, in the API's own log
+  // (README, "Security events"): `"event":"sign_in_failed"`, `"event":"sign_in_throttled"`.
+  guard.useLog((fields, message) => app.log.warn(fields, message));
+
   const consumers: Array<{ stop: () => Promise<void> }> = [];
   const shutdown = async (signal: string) => {
     app.log.info({ signal }, 'shutting down');
+    await guard.settled();
     await stopApi({ proposals: proposalPool, consumers, app, boss, db });
     process.exit(0);
   };

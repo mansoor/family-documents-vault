@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { finishSignIn, keepOwnerKey, setupCode, totpCode } from './vault.js';
+import { finishSignIn, freshTotpCode, keepOwnerKey, setupCode } from './vault.js';
 
 /**
  * The Phase 1 proof, end to end, on the real stack: set up a household,
@@ -7,9 +7,35 @@ import { finishSignIn, keepOwnerKey, setupCode, totpCode } from './vault.js';
  * Runs once against a fresh database; a second run signs in instead.
  */
 
-const PDF = Buffer.from(
-  '%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n2 0 obj<</Type/Pages/Kids[]/Count 0>>endobj\ntrailer<</Root 1 0 R>>\n%%EOF\n',
-);
+/**
+ * A one-page PDF the worker can draw, so the document's pages are there for
+ * the specs after this one (desktop's two panes) however long they take to
+ * get to it: an empty PDF's pages are "could not be drawn" once the worker
+ * has given up on it. Its words say nothing a reading would act on.
+ */
+function onePagePdf(): Buffer {
+  const text = 'BT /F1 14 Tf 72 700 Td (A page for the end-to-end test.) Tj ET';
+  const objs = [
+    '<< /Type /Catalog /Pages 2 0 R >>',
+    '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>',
+    `<< /Length ${text.length} >>\nstream\n${text}\nendstream`,
+    '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>',
+  ];
+  let out = '%PDF-1.4\n';
+  const offsets: number[] = [];
+  objs.forEach((o, i) => {
+    offsets.push(out.length);
+    out += `${i + 1} 0 obj\n${o}\nendobj\n`;
+  });
+  const xref = out.length;
+  out += `xref\n0 ${objs.length + 1}\n0000000000 65535 f \n`;
+  for (const off of offsets) out += `${String(off).padStart(10, '0')} 00000 n \n`;
+  out += `trailer\n<< /Size ${objs.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
+  return Buffer.from(out, 'latin1');
+}
+
+const PDF = onePagePdf();
 const EMAIL = 'e2e-owner@example.test';
 const PASSWORD = 'correct horse battery staple';
 
@@ -38,7 +64,9 @@ test('first run to first document', async ({ page }) => {
     const key = (await page.locator('code').first().textContent())?.trim() ?? '';
     expect(key).toMatch(/^[A-Z2-7]{16,}$/);
     keepOwnerKey(key);
-    await page.getByLabel('Code from the app').fill(totpCode(key));
+    // Each code is taken once (0.9.0): the step it is of is kept, so the
+    // next spec's sign-in gives a later one.
+    await page.getByLabel('Code from the app').fill(await freshTotpCode(key));
     await page.getByRole('button', { name: 'Turn on' }).click();
 
     await expect(page.getByRole('heading', { name: 'A few quick questions' })).toBeVisible();

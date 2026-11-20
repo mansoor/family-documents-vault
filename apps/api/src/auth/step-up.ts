@@ -5,7 +5,8 @@ import { FACTOR_STEP_UPS, type StepUpState, type TextCodeSent } from '@fdv/share
 import { ApiError } from '../errors.js';
 import type { PasskeyService } from './passkeys.js';
 import type { Principal, RequestMeta } from './service.js';
-import type { TotpService } from './totp.js';
+import { CODE_USED_MESSAGE, type TotpService } from './totp.js';
+import type { Attempt, FailedStep, SignInGuard } from './sign-in-guard.js';
 import { smsCodeNotOffered, type TextCodeService } from '../sms/codes.js';
 
 /**
@@ -54,7 +55,8 @@ export type StepUpAction =
   | 'neutral_wording'
   | 'share_emergency'
   | 'download_sensitive'
-  | 'connect_app';
+  | 'connect_app'
+  | 'sign_out_others';
 
 const WHY: Record<StepUpAction, string> = {
   open_private_document: 'to open a document only you can see',
@@ -164,6 +166,10 @@ const WHY: Record<StepUpAction, string> = {
   // APP1): an app that sends papers into somebody's Inbox, as them, is an
   // owner power — a passkey or a code, never the password alone.
   connect_app: 'to connect an app, or change what it may do',
+  // Every other device of one's own signed out at once (0.9.0): any
+  // credential. A session picked up from an unlocked device could otherwise
+  // sign the person out everywhere else, and keep the vault to itself.
+  sign_out_others: 'to sign out your other devices',
 };
 
 /**
@@ -200,6 +206,12 @@ export class StepUpService {
      * of an owner's (who are never offered one), is served by a text.
      */
     private readonly textCodes: TextCodeService | null = null,
+    /**
+     * Failed tries counted (0.9.0): a wrong password or code here counts
+     * on the session's own count, and waits with it, never the person's
+     * sign-in. A passkey never waits.
+     */
+    private readonly guard: SignInGuard | null = null,
   ) {}
 
   /**
@@ -344,20 +356,70 @@ export class StepUpService {
     },
     meta: RequestMeta,
   ): Promise<{ verified_at: string; expires_in: number }> {
+    // Counted per session (0.9.0), each try reserved before it is checked:
+    // only somebody signed in gets here, and whatever they get wrong never
+    // makes the person's sign-in wait. A passkey is never counted.
+    const guard = this.guard;
+    let attempt: Attempt | null = null;
+    if (guard && !input.passkey) attempt = await guard.begin(guard.subjectOfSession(p.sessionId));
+    let method: string;
+    try {
+      method = await this.checkCredential(p, input, meta, attempt);
+      if (guard && attempt) await guard.succeeded(attempt);
+    } finally {
+      if (guard && attempt) await guard.release(attempt);
+    }
+    return this.verified(p, method, meta);
+  }
+
+  /** Whether what was presented is the account's: the method it was, or a refusal. */
+  private async checkCredential(
+    p: Principal,
+    input: {
+      password?: string;
+      code?: string;
+      passkey?: AuthenticationResponseJSON;
+      text_code?: string;
+    },
+    meta: RequestMeta,
+    attempt: Attempt | null,
+  ): Promise<string> {
+    const guard = this.guard;
+    const failed = async (step: Exclude<FailedStep, 'passkey'>) => {
+      if (guard && attempt) await guard.failed(attempt, p.accountId, step, meta, 'step_up');
+    };
     let method: string;
     if (input.passkey) {
       if (!this.passkeys) throw refused();
-      await this.passkeys.verifyForAccount(p.accountId, input.passkey);
+      try {
+        await this.passkeys.verifyForAccount(p.accountId, input.passkey);
+      } catch (err) {
+        if (err instanceof ApiError && err.code === 'passkey_rejected') {
+          guard?.noted(p.accountId, meta, 'step_up');
+        }
+        throw err;
+      }
       method = 'passkey';
     } else if (input.code) {
-      if (!this.totp || !(await this.totp.verify(p.accountId, input.code))) throw refused();
+      const found = this.totp ? await this.totp.checkCode(p.accountId, input.code) : 'wrong';
+      if (found !== 'ok') {
+        await failed('code');
+        throw found === 'used'
+          ? new ApiError(401, 'invalid_credentials', CODE_USED_MESSAGE)
+          : refused();
+      }
       method = 'totp';
     } else if (input.text_code) {
       // Offered to adults and teens who asked for it, never an owner
       // (forStepUp): a text is the weakest proof, and serves only what any
       // credential serves.
       if (!this.textCodes || !(await this.textCodes.forStepUp(p))) throw smsCodeNotOffered();
-      await this.textCodes.verify(p.accountId, 'step_up', input.text_code);
+      try {
+        await this.textCodes.verify(p.accountId, 'step_up', input.text_code);
+      } catch (err) {
+        if (err instanceof ApiError && err.code === 'sms_code_wrong') await failed('code');
+        throw err;
+      }
       method = 'text';
     } else if (input.password) {
       const account = await this.db
@@ -369,13 +431,22 @@ export class StepUpService {
         !account?.password_hash ||
         !(await argon2.verify(account.password_hash, input.password))
       ) {
+        await failed('password');
         throw refused();
       }
       method = 'password';
     } else {
       throw new ApiError(422, 'validation_failed', 'Send a passkey, a code or your password.');
     }
+    return method;
+  }
 
+  /** The session confirmed just now, by `method`. */
+  private async verified(
+    p: Principal,
+    method: string,
+    meta: RequestMeta,
+  ): Promise<{ verified_at: string; expires_in: number }> {
     const now = new Date();
     // A passkey or a code is also what the owner's powers ask (A54); a
     // password moves only the time any credential was last seen.

@@ -144,13 +144,28 @@ function codeFrom(base32, at = Date.now()) {
   return String((mac.readUInt32BE(at4) & 0x7fffffff) % 1_000_000).padStart(6, '0');
 }
 
+/**
+ * A code nobody has used yet: the vault takes each code once (0.9.0), so a
+ * second one in the same 30 seconds waits for the next.
+ */
+let lastStep = 0;
+async function freshCode(base32) {
+  let step = Math.floor(Date.now() / 30_000);
+  if (step <= lastStep) {
+    await new Promise((r) => setTimeout(r, (lastStep + 1) * 30_000 - Date.now() + 250));
+    step = Math.floor(Date.now() / 30_000);
+  }
+  lastStep = step;
+  return codeFrom(base32);
+}
+
 const password = () => `${randomBytes(9).toString('base64url')}-demo`;
 
 /** Somebody signed in: their tokens, and their password to confirm it is them. */
 async function signIn(email, secret) {
   let tokens = await call('POST', '/auth/password', { body: { email, password: secret } });
   if (tokens.mfa_required) {
-    const code = totpSecret ? codeFrom(totpSecret) : totpCode;
+    const code = totpSecret ? await freshCode(totpSecret) : totpCode;
     if (!code) {
       fail(`${email} has two-step sign-in: give a code from the authenticator with --code.`);
     }
@@ -161,12 +176,19 @@ async function signIn(email, secret) {
   return tokens;
 }
 
-/** Confirms it is them, for what asks (inviting somebody): with a code once there is a key. */
-const confirm = (token, secret) =>
-  call('POST', '/auth/step-up', {
+/**
+ * Confirms it is them, for what asks (inviting somebody): with a code once
+ * there is a key. A confirmation lasts five minutes; it is asked again after four.
+ */
+let confirmedAt = 0;
+async function confirm(token, secret) {
+  if (Date.now() - confirmedAt < 4 * 60_000) return;
+  await call('POST', '/auth/step-up', {
     token,
-    body: totpSecret ? { code: codeFrom(totpSecret) } : { password: secret },
+    body: totpSecret ? { code: await freshCode(totpSecret) } : { password: secret },
   });
+  confirmedAt = Date.now();
+}
 
 /**
  * An owner held to two-step sign-in (0.9.0) may do nothing else until one is
@@ -176,7 +198,10 @@ async function twoStepIfAsked(token) {
   const me = await call('GET', '/me', { token });
   if (!me.two_step_setup_required) return;
   const enrol = await call('POST', '/auth/totp/enrol', { token });
-  await call('POST', '/auth/totp/confirm', { token, body: { code: codeFrom(enrol.secret) } });
+  await call('POST', '/auth/totp/confirm', {
+    token,
+    body: { code: await freshCode(enrol.secret) },
+  });
   totpSecret = enrol.secret;
   console.log(
     `  set up two-step sign-in for the owner: add this key to an authenticator app: ${enrol.secret}`,

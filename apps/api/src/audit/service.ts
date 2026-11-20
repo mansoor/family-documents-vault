@@ -501,6 +501,11 @@ const RULES: ReadonlyMap<string, Audience | typeof BY_TYPE> = new Map<
   // signing in
   ['auth.signed_in', BY_TYPE],
   ['auth.session_revoked', BY_TYPE],
+  // 0.9.0: every other device of one's own signed out, as one is.
+  ['auth.signed_out_others', BY_TYPE],
+  // 0.9.0: a failed try at signing in to somebody's account, or at
+  // confirming it's them: for the person and the owners, nobody else.
+  ['auth.sign_in_failed', ownersThePersonAndTheActor],
   ['auth.totp_enabled', BY_TYPE],
   ['auth.totp_disabled', BY_TYPE],
   // 0.9.0 (SMS3): codes by text turned on or off for a reset or a sign-in,
