@@ -258,15 +258,19 @@ describe.skipIf(!testAdminUrl())('failed sign-ins, counted per account (0.9.0)',
         payload: { code: codeFor(secret, Date.now() - 30_000) },
       });
       expect(again.statusCode).toBe(401);
-      expect(again.json<{ error: { message: string } }>().error.message).toMatch(/used already/);
+      const againSaid = again.json<{ error: { message: string; reason?: string } }>().error;
+      expect(againSaid.message).toMatch(/used already/);
+      expect(againSaid.reason).toBe('code_used');
       const now = codeFor(secret);
       const first = await mfa(await robinSignIn(), now);
       expect(first.statusCode).toBe(200);
       const replayed = await mfa(await robinSignIn(), now);
       expect(replayed.statusCode).toBe(401);
-      const said = replayed.json<{ error: { code: string; message: string } }>().error;
+      const said = replayed.json<{ error: { code: string; message: string; reason?: string } }>()
+        .error;
       expect(said.code).toBe('totp_invalid');
       expect(said.message).toMatch(/used already/);
+      expect(said.reason).toBe('code_used');
       // An owner cannot turn it off; an adult's own, tried below, is refused the same.
       const step = await h.app.inject({
         method: 'POST',
@@ -275,6 +279,7 @@ describe.skipIf(!testAdminUrl())('failed sign-ins, counted per account (0.9.0)',
         payload: { code: now },
       });
       expect(step.statusCode).toBe(401);
+      expect(step.json<{ error: { reason?: string } }>().error.reason).toBe('code_used');
       // The next step's code is still good.
       const next = await h.app.inject({
         method: 'POST',

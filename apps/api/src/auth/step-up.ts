@@ -5,7 +5,7 @@ import { FACTOR_STEP_UPS, type StepUpState, type TextCodeSent } from '@fdv/share
 import { ApiError } from '../errors.js';
 import type { PasskeyService } from './passkeys.js';
 import type { Principal, RequestMeta } from './service.js';
-import { CODE_USED_MESSAGE, type TotpService } from './totp.js';
+import { CODE_USED_MESSAGE, CODE_USED_REASON, type TotpService } from './totp.js';
 import type { Attempt, FailedStep, SignInGuard } from './sign-in-guard.js';
 import { smsCodeNotOffered, type TextCodeService } from '../sms/codes.js';
 
@@ -410,7 +410,9 @@ export class StepUpService {
       if (found !== 'ok') {
         await failed('code');
         throw found === 'used'
-          ? new ApiError(401, 'invalid_credentials', CODE_USED_MESSAGE)
+          ? new ApiError(401, 'invalid_credentials', CODE_USED_MESSAGE, {
+              reason: CODE_USED_REASON,
+            })
           : refused();
       }
       method = 'totp';

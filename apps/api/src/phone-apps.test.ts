@@ -52,9 +52,15 @@ describe('the phone apps table (phone-apps.json)', () => {
       expect(devOf(older.vault_tag) <= devOf(newer.vault_tag), older.app).toBe(true);
     }
     expect(apps).toContain(MIN_CLIENT_VERSION);
-    expect(SUPPORTED_PHONE_APPS.map((a) => a.app)).toEqual(['0.19.0', '0.18.1', '0.18.0']);
-    // Two tags' clients to run: 0.18.0 and 0.18.1 carry the same one.
+    expect(SUPPORTED_PHONE_APPS.map((a) => a.app)).toEqual([
+      '0.20.0',
+      '0.19.0',
+      '0.18.1',
+      '0.18.0',
+    ]);
+    // Three tags' clients to run: 0.18.0 and 0.18.1 carry the same one.
     expect([...new Set(SUPPORTED_PHONE_APPS.map((a) => a.vault_tag))]).toEqual([
+      'v0.9.0-dev.79',
       'v0.9.0-dev.66',
       'v0.9.0-dev.65',
     ]);

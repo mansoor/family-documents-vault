@@ -1,6 +1,7 @@
 import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
 import { appendAudit, withPrincipal, type Db } from '@fdv/db';
 import { SignJWT, jwtVerify } from 'jose';
+import { CODE_USED_REASON } from '@fdv/shared';
 import * as OTPAuth from 'otpauth';
 import { ApiError } from '../errors.js';
 import { stillSignedIn, type Principal, type RequestMeta } from './service.js';
@@ -25,6 +26,7 @@ import { stillSignedIn, type Principal, type RequestMeta } from './service.js';
 export type CodeCheck = 'ok' | 'wrong' | 'used';
 
 /** Said of a code from an authenticator app that was taken already (0.9.0). */
+export { CODE_USED_REASON };
 export const CODE_USED_MESSAGE =
   'That code was used already. Wait for the next one from your authenticator app, and type that.';
 
@@ -115,6 +117,7 @@ export class TotpService {
         found === 'used'
           ? CODE_USED_MESSAGE
           : "That code didn't match. Codes change every 30 seconds — try the current one.",
+        found === 'used' ? { reason: CODE_USED_REASON } : {},
       );
     }
     await withPrincipal(this.db, p, async (trx) => {
@@ -159,6 +162,7 @@ export class TotpService {
         422,
         'totp_invalid',
         found === 'used' ? CODE_USED_MESSAGE : "That code didn't match.",
+        found === 'used' ? { reason: CODE_USED_REASON } : {},
       );
     }
     await this.db

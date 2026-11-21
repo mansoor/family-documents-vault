@@ -1,1 +1,2 @@
 *.bin binary
+*.sh text eol=lf

@@ -847,6 +847,15 @@ export const APP_UPDATE_REQUIRED_CODE = 'app_update_required';
 export const APP_UPDATE_REQUIRED_MESSAGE =
   'The app on this phone is too old for this vault. Update the app to keep using it.';
 
+/**
+ * `error.reason` when a code from an authenticator app is refused because it
+ * was taken already (0.9.0-dev.80): signing in (`401 totp_invalid`),
+ * confirming it's you (`401 invalid_credentials`), and setting up or turning
+ * off two-step sign-in (`422 totp_invalid`). The person waits for the next
+ * code; a client tells it apart by this, never by the message.
+ */
+export const CODE_USED_REASON = 'code_used';
+
 export interface Capabilities {
   product: typeof PRODUCT_ID;
   server_version: string;
