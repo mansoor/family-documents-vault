@@ -118,15 +118,11 @@ jobs:
       - run: pnpm typecheck
       - run: pnpm test
       # A phone already in someone's pocket carries the client of one vault
-      # release; a server change that would break it fails here (5.2).
-      - name: The client an older phone carries still works (app 0.2.0)
-        run: pnpm test:older-client
-      # App 0.2.1 carries the client of v0.5.11: its type scenarios hold
-      # expiry_driver and reminder_leads to what it reads (5.16a).
-      - name: The client an older phone carries still works (app 0.2.1)
-        run: pnpm test:older-client
-        env:
-          OLDER_CLIENT_REF: v0.5.11
+      # tag; a server change that would break it fails here (5.2). Every app
+      # at or above min_client_version in apps/api/src/phone-apps.json, each
+      # with its own tag's client: fixed, or the minimum raised on purpose.
+      - name: The client every supported phone app carries still works
+        run: pnpm test:older-client --all-supported
       - run: pnpm build
 
   # The API client (MIT) as an app installs it: a tarball on each GitHub

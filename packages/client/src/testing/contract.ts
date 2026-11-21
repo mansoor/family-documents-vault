@@ -330,9 +330,12 @@ export const contractScenarios: Scenario[] = [
   {
     name: 'a new vault says what it is, and that it needs setting up',
     run: async (api) => {
-      const outcome = negotiate(await api.capabilities(), {
-        clientVersion: '0.1.0',
-        // About setup, not versions: every server version is new enough.
+      const caps = await api.capabilities();
+      const outcome = negotiate(caps, {
+        // About setup, not versions: a client as new as the vault asks
+        // (since 0.9.0-dev.79 the oldest phone app it works with), and every
+        // server version new enough.
+        clientVersion: caps.min_client_version,
         minServerVersion: '0.0.0',
       });
       expect(outcome.kind).toBe('setup_required');

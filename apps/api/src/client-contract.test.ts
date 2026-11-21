@@ -1,6 +1,6 @@
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
-import { createApi, createHttp, type FetchLike } from '@fdv/client';
+import { createApi, createHttp, negotiate, type FetchLike } from '@fdv/client';
 import { contractScenarios, type ContractContext } from '@fdv/client/testing';
 import {
   EncryptStream,
@@ -22,6 +22,53 @@ import { codeFor } from './auth/totp.js';
 import { createHarness, TEST_MASTER, TEST_SETUP_TOKEN, type Harness } from './test-harness.js';
 
 /**
+ * Set by scripts/older-client.mjs: the vault tag whose client this run
+ * carries, and the phone app released with it (apps/api/src/phone-apps.json).
+ */
+const OLDER_CLIENT = process.env.FDV_OLDER_CLIENT;
+const OLDER_CLIENT_APP = process.env.FDV_OLDER_CLIENT_APP;
+const PHONE_AGENT = OLDER_CLIENT_APP
+  ? `FamilyDocumentVault/${OLDER_CLIENT_APP} (Android 15; contract run)`
+  : undefined;
+
+/** A vault tag as a number to compare: 0.9.0-dev.63 before 0.9.0, before 0.9.1. */
+const tagOrder = (tag: string): number[] => {
+  const m = /^v?(\d+)\.(\d+)\.(\d+)(?:-[a-z]+\.(\d+))?/.exec(tag);
+  if (!m) return [Infinity];
+  return [Number(m[1]), Number(m[2]), Number(m[3]), m[4] === undefined ? Infinity : Number(m[4])];
+};
+const tagBefore = (a: string, b: string): boolean => {
+  const [x, y] = [tagOrder(a), tagOrder(b)];
+  for (let i = 0; i < Math.max(x.length, y.length); i += 1) {
+    if ((x[i] ?? 0) !== (y[i] ?? 0)) return (x[i] ?? 0) < (y[i] ?? 0);
+  }
+  return false;
+};
+
+/**
+ * What an older client's run leaves out, and why: the scenarios a later
+ * release changed on purpose, each announced in docs/api-changelog.md. An
+ * older client's scenarios are frozen at its tag; the server is this
+ * commit's. None is the phone's: it is never a connected app, and its own
+ * scenarios all still run.
+ */
+const CHANGED_ON_PURPOSE: readonly { before: string; scenario: RegExp; why: string }[] = [
+  {
+    before: 'v0.9.0-dev.68',
+    scenario: /^a connected app’s link opens once/,
+    why: "an app link's GET a page, its POST the open",
+  },
+  {
+    before: 'v0.9.0-dev.79',
+    scenario: /^a new vault says what it is/,
+    why: 'it negotiated as a made-up app 0.1.0, below min_client_version (asked below as the app)',
+  },
+];
+const leftOut = (name: string): boolean =>
+  OLDER_CLIENT !== undefined &&
+  CHANGED_ON_PURPOSE.some((c) => c.scenario.test(name) && tagBefore(OLDER_CLIENT, c.before));
+
+/**
  * The contract every client relies on, against the real API.
  *
  * `@fdv/client` is the one client — the web app's today, the phone's
@@ -37,6 +84,12 @@ describe.skipIf(!testAdminUrl())('the client contract, against the real API', ()
 
   /** fetch, as the client sees it, answered by Fastify's inject. */
   const viaInject: FetchLike = async (url, init) => {
+    // An older client is run as the phone app that carries it: its
+    // User-Agent, which the vault checks against min_client_version.
+    const headers =
+      PHONE_AGENT && !Object.keys(init.headers).some((k) => k.toLowerCase() === 'user-agent')
+        ? { ...init.headers, 'user-agent': PHONE_AGENT }
+        : init.headers;
     // First-run setup takes a code since 0.9.0, which a client older than
     // that never sends: no phone sets a vault up (the web does), but the
     // contract an older client carries does. Given here, as the person
@@ -48,7 +101,7 @@ describe.skipIf(!testAdminUrl())('the client contract, against the real API', ()
     const res = await h.app.inject({
       method: init.method as 'GET',
       url: url.replace(/^https?:\/\/[^/]+/, ''),
-      headers: init.headers,
+      headers,
       ...(body instanceof Uint8Array
         ? { payload: Buffer.from(body) }
         : typeof body === 'string'
@@ -409,7 +462,22 @@ describe.skipIf(!testAdminUrl())('the client contract, against the real API', ()
   afterAll(() => h.close());
 
   // Each a scenario of many calls: more than 15 s on a machine running other suites beside it.
-  for (const s of contractScenarios) it(s.name, () => s.run(api, ctx), 60_000);
+  // An older client's run (scripts/older-client.mjs) first asks, with that
+  // client's own negotiate and its phone app's version, whether this vault
+  // works with the app: on a new vault, "set it up", never "too old".
+  it.skipIf(!OLDER_CLIENT_APP)(
+    `the phone app carrying this client (${OLDER_CLIENT_APP ?? 'none'}) is not too old for this vault`,
+    async () => {
+      const outcome = negotiate(await api.capabilities(), {
+        clientVersion: OLDER_CLIENT_APP as string,
+        minServerVersion: '0.0.0',
+      });
+      expect(outcome.kind).toBe('setup_required');
+    },
+  );
+  for (const s of contractScenarios) {
+    it.skipIf(leftOut(s.name))(s.name, () => s.run(api, ctx), 60_000);
+  }
 });
 
 /**

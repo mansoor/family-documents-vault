@@ -1,5 +1,12 @@
 import type { Role, Tokens } from '@fdv/shared';
-import { ApiRequestError, isRetriableStatus, isSessionOver, NetworkError } from './errors.js';
+import { APP_UPDATE_REQUIRED_CODE } from '@fdv/shared';
+import {
+  ApiRequestError,
+  AppUpdateRequired,
+  isRetriableStatus,
+  isSessionOver,
+  NetworkError,
+} from './errors.js';
 
 /**
  * A signed-in session, on any platform.
@@ -78,6 +85,13 @@ export type TokenResult =
        * seconds, when it said. Absent when there was no answer at all.
        */
       tooMany?: { retryAfterSeconds: number | null };
+      /**
+       * The vault answered, and will not work with this app until it is
+       * updated (0.9.0-dev.79, `426 app_update_required`): the session is
+       * still good, and nothing kept is to be deleted. Show the update
+       * screen. The oldest app version it works with, when it said.
+       */
+      updateRequired?: { minClientVersion: string | null };
     }
   | { kind: 'ended'; reason: string }
   | { kind: 'signed_out' };
@@ -306,6 +320,14 @@ export class SessionCore {
     } catch (err) {
       // A sign-in or sign-out landed while this was in the air: it stands.
       if (this.stored !== using) return done(this.current());
+      // The vault will not work with this app until it is updated: never an
+      // ending. The session waits, untouched, for the updated app.
+      if (err instanceof AppUpdateRequired) {
+        return done({
+          kind: 'offline',
+          updateRequired: { minClientVersion: err.minClientVersion ?? null },
+        });
+      }
       if (isSessionOver(err)) return done(await this.end(err));
       if (err instanceof ApiRequestError && isVaultRefusal(err)) return done(await this.end(err));
       if (err instanceof ApiRequestError && err.status === 429) {
@@ -346,6 +368,8 @@ export class SessionCore {
  */
 function isVaultRefusal(err: ApiRequestError): boolean {
   if (err.code === 'http_error') return false;
+  // "Update the app" is about the app, never this session (0.9.0-dev.79).
+  if (err.code === APP_UPDATE_REQUIRED_CODE) return false;
   if (isRetriableStatus(err.status)) return false;
   return err.status >= 400 && err.status < 500 && err.status !== 401;
 }

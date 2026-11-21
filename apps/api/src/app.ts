@@ -14,6 +14,7 @@ import type { StepUpService } from './auth/step-up.js';
 import type { PasswordService } from './auth/passwords.js';
 import { endedMeanwhile, type AuthService } from './auth/service.js';
 import { buildCapabilities } from './capabilities.js';
+import { refuseOldPhoneApp } from './phone-apps.js';
 import { registerDocuments } from './documents/routes.js';
 import type { ZipService } from './documents/zip.js';
 import { registerZips } from './documents/zip-routes.js';
@@ -312,6 +313,14 @@ export async function buildApp(config: ApiConfig, deps: AppDeps): Promise<Fastif
       'device_key_not_accepted',
       "A computer's key can only send scans. Sign in to do anything else.",
     );
+  });
+
+  // A phone app older than this vault works with (0.9.0-dev.79): told to
+  // update, on every API route but the capability document, renewing its
+  // session, sign-out and the health checks. Browsers, other clients, connected apps and paired
+  // computers are never refused by it.
+  app.addHook('onRequest', async (req) => {
+    refuseOldPhoneApp(req);
   });
 
   // The session a share link's Open gives (5.16). Unsigned: its value is 32

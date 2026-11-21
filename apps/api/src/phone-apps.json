@@ -1,0 +1,12 @@
+{
+  "min_client_version": "0.18.0",
+  "apps": [
+    { "app": "0.19.0", "vault_tag": "v0.9.0-dev.66" },
+    { "app": "0.18.1", "vault_tag": "v0.9.0-dev.65" },
+    { "app": "0.18.0", "vault_tag": "v0.9.0-dev.65" },
+    { "app": "0.17.0", "vault_tag": "v0.9.0-dev.61" },
+    { "app": "0.16.0", "vault_tag": "v0.9.0-dev.60" },
+    { "app": "0.15.0", "vault_tag": "v0.9.0-dev.53" },
+    { "app": "0.14.0", "vault_tag": "v0.9.0-dev.51" }
+  ]
+}

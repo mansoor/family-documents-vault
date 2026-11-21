@@ -8,6 +8,7 @@ import {
   type Capabilities,
   type Edition,
 } from '@fdv/shared';
+import { MIN_CLIENT_VERSION } from './phone-apps.js';
 
 export interface CapabilityConfig {
   serverVersion: string;
@@ -43,10 +44,12 @@ export interface CapabilityConfig {
 }
 
 /**
- * Oldest client this server will talk to. Bumped only with a published
- * deprecation window; see docs/api-changelog.md.
+ * The oldest phone app this vault works with, from phone-apps.json (the
+ * one place it is written). A phone below it is told to update: by
+ * `negotiate` on the capability document, and by 426 app_update_required
+ * on any other call (phone-apps.ts).
  */
-export const MIN_CLIENT_VERSION = '0.0.1';
+export { MIN_CLIENT_VERSION };
 
 /**
  * What is going, and in which release (docs/api-changelog.md: four minor

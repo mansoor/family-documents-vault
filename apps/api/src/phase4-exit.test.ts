@@ -30,7 +30,7 @@ const OWNER = { email: 'owner@example.test', password: 'correct horse battery' }
 const LEE = { email: 'lee-exit@example.test', password: 'lee correct horse battery' };
 /** The first adult's private Essential: its title must reach nobody else. */
 const SECRET = 'Anna Example sealed will';
-const APP = 'FamilyDocumentVault/0.2.0 (Android 15; Google Pixel 8a)';
+const APP = 'FamilyDocumentVault/0.19.0 (Android 15; Google Pixel 8a)';
 
 /** A small seeded generator: a failure names its seed, and FDV_EXIT_SEED runs it again. */
 function seeded(seed: number): () => number {

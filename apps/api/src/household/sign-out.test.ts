@@ -36,7 +36,7 @@ const PDF = Buffer.from(
   '%PDF-1.4\n1 0 obj<</Type/Catalog>>endobj\ntrailer<</Root 1 0 R>>\n%%EOF\n',
 );
 const PASSWORD = 'another correct horse';
-const APP_AGENT = 'FamilyDocumentVault/0.2.1 (Android 15; Google Pixel 8a)';
+const APP_AGENT = 'FamilyDocumentVault/0.19.0 (Android 15; Google Pixel 8a)';
 
 describe.skipIf(!testAdminUrl())(
   'role changes reach every device; sign out everywhere (5.30)',
