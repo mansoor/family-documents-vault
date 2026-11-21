@@ -1316,6 +1316,13 @@ export function eventWords(e: ActivityEvent): (ActivityLine & { named: boolean }
       return line(`${who} asked for a copy of everything`, true);
     case 'export.downloaded':
       return line(`${who} downloaded a copy of everything`, true);
+    // 0.9.0-dev.82: the activity log downloaded as a spreadsheet — never
+    // how many lines, nor which filters: those are what the reader was shown.
+    // One document's lines are that document's line.
+    case 'audit.exported':
+      return e.object_type === 'document'
+        ? line(`${who} downloaded the activity of ${doc} as a spreadsheet`)
+        : line(`${who} downloaded the activity log as a spreadsheet`);
 
     // ---------------------------------------------------- signing in
     case 'auth.signed_in':

@@ -1,18 +1,34 @@
-import { householdZone, withPrincipal, type Db, type Role, type Visibility } from '@fdv/db';
 import {
+  appendAudit,
+  householdZone,
+  withPrincipal,
+  type Db,
+  type Role,
+  type Visibility,
+} from '@fdv/db';
+import {
+  ACTIVITY_ANYBODY_ELSE,
+  activityKind,
+  activityLineKept,
+  APP_SENT_FOLD_MS,
   can,
   canSee,
   canSeeCollection,
   describeEvents,
   describeEventSpans,
   guestLabel,
+  localToday,
+  SENSITIVE_IN_WORDS,
+  type ActivityCsvLine,
   type ActivityEvent,
+  type ActivityExportAsk,
+  type ActivityFilters,
   type ActivityLine,
 } from '@fdv/shared';
 import { sql, type RawBuilder } from 'kysely';
 import type { Principal } from '../auth/service.js';
 import { requireCapability } from '../authz.js';
-import { notFound } from '../errors.js';
+import { ApiError, notFound } from '../errors.js';
 import { sensitiveSql } from '../documents/filters.js';
 import { madeWith } from '../documents/made-with.js';
 
@@ -35,6 +51,147 @@ import { madeWith } from '../documents/made-with.js';
  */
 
 const PAGE = 50;
+
+/** How many of the log's rows an export reads at a time (0.9.0-dev.82). */
+export const EXPORT_BATCH = 500;
+/**
+ * The most of the log's rows one export reads, and for how long: a filter
+ * that keeps few lines (a rare kind, a teen shown little) stops there, and
+ * says how far back it read, as a file past its lines' cap does.
+ */
+export const EXPORT_MAX_ROWS = 250_000;
+export const EXPORT_MAX_MS = 60_000;
+
+/** What an export is asked, its filters checked: as `GET /audit/export`'s query. */
+export type ExportAsk = ActivityExportAsk;
+
+/** How much an export may read: rows a batch, rows in all, and milliseconds. */
+export interface ExportLimits {
+  batch?: number;
+  rows?: number;
+  ms?: number;
+}
+
+/** Why an export stopped short of the end of the log, and the newest moment it no longer holds lines before. */
+export interface ExportOutcome {
+  stopped: { by: 'rows' | 'time'; readTo: string } | null;
+}
+
+/** What an export knows before its first line (`exportStart`). */
+export interface ExportStart {
+  /** The household's time zone: its clock for the When column, its calendar for the days. */
+  zone: string;
+  /** The household's today, for the file's name. */
+  today: string;
+  /** The family as the reader is given it, by member id: the Who column's names. */
+  family: Map<string, string>;
+  /** One document's links' stretches (`aboutDocument`), when one document's lines are asked. */
+  windows: Window[] | null;
+  /** Midnight starting the From day, and midnight ending the To day, on the household's clock. */
+  fromStart: Date | null;
+  toEnd: Date | null;
+}
+
+/**
+ * What an export's reads leave out before its lines are said, each only
+ * where it cannot change a line the page would show:
+ *
+ *  - moments past the To day by more than a fold can reach (an app's files
+ *    an hour apart are one line, whose moment is its newest);
+ *  - actions of another sort of thing, for a sort none of whose lines fold
+ *    (not Opened and downloaded, not Added: a line between two looks keeps
+ *    them two lines on the page);
+ *  - rows by anybody but the person asked for: a line names its doer only
+ *    when it is theirs. (Two of their sittings parted only by somebody
+ *    else's line are one line here, two on the page.)
+ */
+interface Narrow {
+  until: Date | null;
+  actions: readonly string[] | null;
+  who: string | null;
+}
+
+/** A read narrowed, as SQL on the audit row's columns (`e.` or none). */
+function narrowed(
+  n: Narrow | undefined,
+  householdId: string,
+  prefix: '' | 'e.',
+): RawBuilder<unknown> {
+  if (!n) return sql``;
+  const col = (c: string) => sql.ref(`${prefix}${c}`);
+  return sql`${n.until ? sql`and ${col('at')} < ${n.until}` : sql``}
+    ${n.actions ? sql`and ${col('action')} = any(${n.actions}::text[])` : sql``}
+    ${
+      n.who
+        ? sql`and ${col('actor_account_id')} in (
+            select account_id from account_household
+             where household_id = ${householdId} and member_id = ${n.who}::uuid)`
+        : sql``
+    }`;
+}
+
+/**
+ * Whether the reader still reads the log as the export began (0.9.0-dev.82),
+ * asked again before each batch: their session open, the same person with
+ * the same role (a role lowered mid-download would see the rest by the old
+ * one's rules), not locked or paused, a guest's access not ended. One
+ * indexed row; anything else ends the file there, unfinished.
+ */
+async function stillReading(trx: Db, p: Principal): Promise<void> {
+  const row = await trx
+    .selectFrom('session')
+    .innerJoin('account_household', (j) =>
+      j
+        .onRef('account_household.account_id', '=', 'session.account_id')
+        .onRef('account_household.household_id', '=', 'session.household_id'),
+    )
+    .select([
+      'account_household.role',
+      'account_household.member_id',
+      'account_household.suspended_at',
+      'account_household.suspended_until',
+      'account_household.access_expires_at',
+    ])
+    .where('session.id', '=', p.sessionId)
+    .where('session.account_id', '=', p.accountId)
+    .where('session.revoked_at', 'is', null)
+    .executeTakeFirst();
+  const now = Date.now();
+  const suspended =
+    row?.suspended_at != null &&
+    (row.suspended_until == null || new Date(row.suspended_until).getTime() > now);
+  const ended = row?.access_expires_at != null && new Date(row.access_expires_at).getTime() <= now;
+  if (
+    !row ||
+    row.role !== p.role ||
+    row.member_id !== p.memberId ||
+    !can(row.role, 'audit.read') ||
+    suspended ||
+    ended
+  ) {
+    throw new ApiError(403, 'forbidden', 'You no longer read the activity log as you did.');
+  }
+}
+
+/**
+ * Each sort of thing's actions, from the actions the log has a rule for —
+ * no other line is ever shown — for a sort none of whose lines fold.
+ */
+function actionsOfKind(kind: string): string[] | null {
+  if (kind === 'opened' || kind === 'added') return null;
+  return [...RULES.keys()].filter((a) => activityKind(a) === kind);
+}
+
+/**
+ * The document a line is about, as its words name it: its title, or "a
+ * sensitive document" (H1a); null for a line about none, or one whose
+ * title is not given (removed for good).
+ */
+function documentNamed(e: ActivityEvent): string | null {
+  if (e.object_type !== 'document') return null;
+  if (e.object_sensitive === true) return SENSITIVE_IN_WORDS;
+  return e.object_title;
+}
 
 /** Who is reading, as far as the rules below care. */
 export interface Reader {
@@ -507,6 +664,10 @@ const RULES: ReadonlyMap<string, Audience | typeof BY_TYPE> = new Map<
   ['backup.offsite_removed', ownersAndThePerson],
   ['export.requested', BY_TYPE],
   ['export.downloaded', BY_TYPE],
+  // 0.9.0-dev.82: the activity log downloaded as a spreadsheet — the whole
+  // log's for whoever reads it (no object), as a copy of everything asked
+  // for is; one document's lines, that document's line, for whoever may see it.
+  ['audit.exported', BY_TYPE],
   // signing in
   ['auth.signed_in', BY_TYPE],
   ['auth.session_revoked', BY_TYPE],
@@ -717,6 +878,179 @@ export class AuditService {
   }
 
   /**
+   * What an export of the log (0.9.0-dev.82) needs before its first line,
+   * and everything it may refuse, asked before anything is written: whoever
+   * reads the log (`audit.read`), and for one document's lines a document
+   * they can see (`404` else, as `GET /documents/{id}/activity` says). The
+   * household's clock and calendar, and the family as the reader is given
+   * it (`GET /members`): the names of the Who column and its filter.
+   */
+  async exportStart(p: Principal, ask: ExportAsk): Promise<ExportStart> {
+    requireCapability(p, 'audit.read');
+    return withPrincipal(this.db, p, async (trx) => {
+      const household = await trx
+        .selectFrom('household')
+        .select(['timezone'])
+        .where('id', '=', p.householdId)
+        .executeTakeFirst();
+      const zone = householdZone(household?.timezone);
+      // As GET /members gives the family: never a guest but oneself.
+      const family = await trx
+        .selectFrom('member')
+        .select(['id', 'display_name'])
+        .where((eb) => eb.or([eb('kind', '=', 'family'), eb('id', '=', p.memberId)]))
+        .execute();
+      const windows = ask.document ? await this.aboutDocument(trx, p, ask.document) : null;
+      // The From and To days' bounds, on the household's clock as the
+      // database keeps its zones: a day of 23 or 25 hours as it was.
+      const bounds = await sql<{ from_start: Date | null; to_end: Date | null }>`
+        select case when ${ask.from ?? null}::date is null then null
+                    else (${ask.from ?? null}::date)::timestamp at time zone ${zone} end as from_start,
+               case when ${ask.to ?? null}::date is null then null
+                    else (${ask.to ?? null}::date + 1)::timestamp at time zone ${zone} end as to_end
+      `.execute(trx);
+      return {
+        zone,
+        today: localToday(zone),
+        family: new Map(family.map((m) => [m.id, m.display_name])),
+        windows,
+        fromStart: bounds.rows[0]?.from_start ?? null,
+        toEnd: bounds.rows[0]?.to_end ?? null,
+      };
+    });
+  }
+
+  /**
+   * The lines an export writes, newest first, each as the log shows it to
+   * this reader — the same rows, the same rule, the same words, a sitting's
+   * looks one line — and the filters' lines alone, each kept as the page
+   * keeps it: a line's day is its newest moment's. Read `EXPORT_BATCH` rows
+   * at a time, each batch in its own transaction, so a long log is never
+   * held whole, nor one transaction kept open while a slow download is
+   * taken; each batch asks again that the reader still reads the log as
+   * they did (`stillReading`). A line that may yet fold older rows (a
+   * sitting) waits for the next batch. The reads leave out what cannot be
+   * a line the filters keep (`Narrow`), and stop once past the From day
+   * with no line left that began in it. At most `EXPORT_MAX_ROWS` rows, or
+   * `EXPORT_MAX_MS`: `outcome` then says how far back it read.
+   */
+  async *exportLines(
+    p: Principal,
+    ask: ExportAsk,
+    start: ExportStart,
+    limits: ExportLimits = {},
+    outcome: ExportOutcome = { stopped: null },
+  ): AsyncGenerator<ActivityCsvLine> {
+    const batch = limits.batch ?? EXPORT_BATCH;
+    const maxRows = limits.rows ?? EXPORT_MAX_ROWS;
+    const maxMs = limits.ms ?? EXPORT_MAX_MS;
+    const began = Date.now();
+    const narrow: Narrow = {
+      until: start.toEnd ? new Date(start.toEnd.getTime() + APP_SENT_FOLD_MS) : null,
+      actions: ask.kind ? actionsOfKind(ask.kind) : null,
+      who: ask.who && ask.who !== ACTIVITY_ANYBODY_ELSE ? ask.who : null,
+    };
+    const filters: ActivityFilters = {
+      who: ask.who ?? '',
+      kind: ask.kind ?? '',
+      // Kept by moment below, as the days' bounds are moments.
+      from: '',
+      to: '',
+    };
+    const isFamily = (id: string) => start.family.has(id);
+    const inDays = (iso: string) => {
+      const at = Date.parse(iso);
+      return (
+        (!start.fromStart || at >= start.fromStart.getTime()) &&
+        (!start.toEnd || at < start.toEnd.getTime())
+      );
+    };
+    let cursor: number | undefined;
+    let carry: ActivityEvent[] = [];
+    let read = 0;
+    for (;;) {
+      const before = cursor;
+      const { rows, events } = await withPrincipal(this.db, p, async (trx) => {
+        await stillReading(trx, p);
+        const picked =
+          ask.document && start.windows
+            ? this.picked(p, ask.document, start.windows, before, batch, narrow)
+            : null;
+        const rows = await this.read(trx, p, picked, before, batch, narrow);
+        return { rows, events: await this.shown(trx, p, rows, start.zone) };
+      });
+      read += rows.length;
+      const all = [...carry, ...events];
+      const done = rows.length < batch;
+      const spans = describeEventSpans(all);
+      const ready = done ? spans : spans.slice(0, -1);
+      for (const { line } of ready) {
+        if (!inDays(line.at) || !activityLineKept(line, filters, isFamily, () => '')) continue;
+        const e = all.find((x) => x.id === line.id);
+        yield {
+          line,
+          who: line.actor_member_id ? (start.family.get(line.actor_member_id) ?? null) : null,
+          document: e ? documentNamed(e) : null,
+        };
+      }
+      const last = rows[rows.length - 1];
+      if (done || !last) return;
+      const waiting = spans[spans.length - 1];
+      carry = waiting ? all.slice(all.findIndex((x) => x.id === waiting.line.id)) : [];
+      cursor = Number(last.id);
+      // Past the From day, and the line still folding (if any) newer than
+      // nothing in it: there is nothing more to keep.
+      if (
+        start.fromStart &&
+        last.at.getTime() < start.fromStart.getTime() &&
+        (!waiting || Date.parse(waiting.line.at) < start.fromStart.getTime())
+      ) {
+        return;
+      }
+      const by = read >= maxRows ? 'rows' : Date.now() - began >= maxMs ? 'time' : null;
+      if (by) {
+        outcome.stopped = { by, readTo: waiting ? waiting.line.at : last.at.toISOString() };
+        return;
+      }
+    }
+  }
+
+  /**
+   * An export's own line (0.9.0-dev.82), written once as it ends: the
+   * filters it was asked for, how many lines it wrote, whether it stopped
+   * short and why (its lines, the rows or the time one file reads), and
+   * whether it was taken to the end. Never a line's words.
+   */
+  async recordExport(
+    p: Principal,
+    ask: ExportAsk,
+    done: { lines: number; capped: 'lines' | 'rows' | 'time' | null; finished: boolean },
+    ip: string | null | undefined,
+  ): Promise<void> {
+    await withPrincipal(this.db, p, (trx) =>
+      appendAudit(trx, {
+        householdId: p.householdId,
+        actorAccountId: p.accountId,
+        action: 'audit.exported',
+        objectType: ask.document ? 'document' : null,
+        objectId: ask.document ?? null,
+        detail: {
+          format: 'csv',
+          ...(ask.who ? { who: ask.who } : {}),
+          ...(ask.kind ? { kind: ask.kind } : {}),
+          ...(ask.from ? { from: ask.from } : {}),
+          ...(ask.to ? { to: ask.to } : {}),
+          lines: done.lines,
+          capped: done.capped !== null,
+          ...(done.capped ? { capped_by: done.capped } : {}),
+          finished: done.finished,
+        },
+        ip: ip ?? null,
+      }),
+    );
+  }
+
+  /**
    * One document's page (0.9.0, DA): read on until it has `limit` lines
    * the reader is shown, or there is nothing older. Its cursor is the
    * oldest row of the last line shown (a sitting's last look), never a row
@@ -764,6 +1098,7 @@ export class AuditService {
     picked: RawBuilder<unknown> | null,
     before: number | undefined,
     count: number,
+    narrow?: Narrow,
   ): Promise<Row[]> {
     // Raw SQL because this joins the audit row to three different
     // things by `object_type`, which Kysely would make harder to read
@@ -844,6 +1179,7 @@ export class AuditService {
                         end
          where e.household_id = ${p.householdId}
            ${before ? sql`and e.id < ${before}` : sql``}
+           ${narrowed(narrow, p.householdId, 'e.')}
            ${picked ? sql`and e.id in (select id from picked)` : sql``}
          order by e.id desc
          limit ${count}
@@ -1012,8 +1348,9 @@ export class AuditService {
     windows: Window[],
     before: number | undefined,
     count: number,
+    narrow?: Narrow,
   ): RawBuilder<unknown> {
-    const older = before ? sql`and id < ${before}` : sql``;
+    const older = sql`${before ? sql`and id < ${before}` : sql``} ${narrowed(narrow, p.householdId, '')}`;
     return sql`
       with picked as (
         (select id from audit_event

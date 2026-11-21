@@ -1,9 +1,14 @@
 import {
+  ACTIVITY_ANYBODY_ELSE,
+  ACTIVITY_CSV_MAX_LINES,
   ACTIVITY_KINDS,
+  activityCsvFileName,
+  activityLineKept,
   documentActivityEmptyWords,
   documentActivityWords,
   formatDate,
   localToday,
+  type ActivityFilters,
   type ActivityLine,
 } from '@fdv/shared';
 import { useEffect, useId, useRef, useState } from 'react';
@@ -15,6 +20,7 @@ import { FilterSelect } from '../table-grid.js';
 import { Button, ErrorNote, TopBar } from '../ui.js';
 import { exactWords, relativeWords, useFamilyZone } from '../family-time.js';
 import { NOTHING, PrintOut } from '../print.js';
+import { saveFile } from '../save-file.js';
 
 /**
  * The household activity log (SHR-07).
@@ -43,6 +49,12 @@ import { NOTHING, PrintOut } from '../print.js';
  * the older lines loaded down to it first, as Show older would; the print
  * goes back as far as the lines loaded, and says how far when there are
  * older ones. Show older and Print wait for each other.
+ *
+ * Download CSV (0.9.0-dev.82, `features.activity_export`), beside Print:
+ * the vault writes the lines the same filters keep — who, what, which days,
+ * the document of the chip — as a spreadsheet, every one it has, not only
+ * those loaded, as it shows them to the reader. Past its cap it holds the
+ * newest, and the page says so.
  */
 export function ActivityScreen() {
   const { withToken, authVersion, caps } = useApp();
@@ -110,6 +122,14 @@ export function ActivityScreen() {
   // Print (0.9.0): the older lines it needs on their way, then the printing.
   const [preparing, setPreparing] = useState(false);
   const [printing, setPrinting] = useState(false);
+  // Download CSV (0.9.0-dev.82): on its way, and whether the file stopped at its cap.
+  const exportable = caps?.features.activity_export === true;
+  const [downloading, setDownloading] = useState(false);
+  // Pressed twice before the first has answered: once.
+  const downloadingNow = useRef(false);
+  // The filters (and document) whose file stopped at its cap: the note goes
+  // as soon as they change.
+  const [cappedFor, setCappedFor] = useState<string | null>(null);
   // Still shown, and about which document: a print being prepared stops
   // when the page goes, and is not printed under another document's chip.
   const alive = useRef(true);
@@ -124,6 +144,8 @@ export function ActivityScreen() {
     };
   }, []);
   const filters = filtersFrom(params);
+  const askedNow = JSON.stringify([filters, about]);
+  const capped = cappedFor === askedNow;
   const setFilter = (key: keyof Filters, value: string) => {
     const next = new URLSearchParams(params);
     if (value) next.set(key, value);
@@ -220,23 +242,67 @@ export function ActivityScreen() {
     }
   };
 
+  /**
+   * Download CSV: the vault's file of the lines these filters keep, for the
+   * document of the chip when there is one; saved as the vault names it.
+   */
+  const downloadCsv = async () => {
+    if (downloadingNow.current || undecided) return;
+    setError(null);
+    setCappedFor(null);
+    // Days the other way round: said here, as the vault would refuse them.
+    if (filters.from && filters.to && filters.from > filters.to) {
+      setError('From is after To: choose days in order.');
+      return;
+    }
+    downloadingNow.current = true;
+    setDownloading(true);
+    const of = askedNow;
+    try {
+      const file = await withToken((t) =>
+        api.activityCsv(t, { ...filters, ...(about ? { document: about } : {}) }),
+      );
+      if (!file || !alive.current) return;
+      saveFile(file.blob, file.filename ?? activityCsvFileName(localToday(timezone ?? 'UTC')));
+      if (file.capped) setCappedFor(of);
+    } catch (err) {
+      if (alive.current) setError(describeError(err));
+    } finally {
+      downloadingNow.current = false;
+      if (alive.current) setDownloading(false);
+    }
+  };
+
   const ids = useId();
   return (
     <main className="page page-top page-wide has-nav">
       <TopBar
         title="What has been happening"
         action={
-          // Never disabled outright: pressed, it keeps the focus while it
-          // prepares, and says it is not to be pressed meanwhile.
-          <button
-            type="button"
-            className="btn btn-quiet"
-            style={{ minHeight: 40 }}
-            aria-disabled={mayPrint ? undefined : true}
-            onClick={() => void print()}
-          >
-            {preparing ? 'Preparing…' : 'Print'}
-          </button>
+          <>
+            {exportable && (
+              <button
+                type="button"
+                className="btn btn-quiet"
+                style={{ minHeight: 40 }}
+                aria-disabled={downloading || undecided ? true : undefined}
+                onClick={() => void downloadCsv()}
+              >
+                {downloading ? 'Downloading…' : 'Download CSV'}
+              </button>
+            )}
+            {/* Never disabled outright: pressed, it keeps the focus while it
+                prepares, and says it is not to be pressed meanwhile. */}
+            <button
+              type="button"
+              className="btn btn-quiet"
+              style={{ minHeight: 40 }}
+              aria-disabled={mayPrint ? undefined : true}
+              onClick={() => void print()}
+            >
+              {preparing ? 'Preparing…' : 'Print'}
+            </button>
+          </>
         }
       />
       {printing && (
@@ -285,6 +351,13 @@ export function ActivityScreen() {
         </PrintOut>
       )}
       <ErrorNote message={error ?? loadError} />
+      {capped && (
+        <p className="notice" role="status">
+          Only the newest lines are in the file: it holds{' '}
+          {new Intl.NumberFormat('en-GB').format(ACTIVITY_CSV_MAX_LINES)} at most, and reads only so
+          much of the log. Choose fewer days or a narrower filter for the rest.
+        </p>
+      )}
       <p className="muted">
         Everything anybody has done in this vault. Your own private documents are only ever in your
         copy of this list.
@@ -448,7 +521,7 @@ export function ActivityScreen() {
 }
 
 /** Who the filter asks for that is not one of the family the reader is given. */
-const ELSE = 'else';
+const ELSE = ACTIVITY_ANYBODY_ELSE;
 
 /**
  * What a printed log is (0.9.0): the document it is about, if one; who,
@@ -501,14 +574,7 @@ export function ActivityPrintAbout(props: {
 }
 
 /** What the address asks the lines to be: each empty for any. */
-interface Filters {
-  /** A member's id, or `else`. */
-  who: string;
-  kind: string;
-  /** Days, YYYY-MM-DD, on the household's calendar, as the times are said. */
-  from: string;
-  to: string;
-}
+type Filters = ActivityFilters;
 
 const DAY = /^\d{4}-\d{2}-\d{2}$/;
 const KINDS: readonly string[] = ACTIVITY_KINDS.map((k) => k.value);
@@ -539,23 +605,19 @@ function dayOf(iso: string, timezone: string | null): string {
   return `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())}`;
 }
 
-/** Whether a line is one the filters keep. */
+/** Whether a line is one the filters keep: as the vault's export asks it. */
 function matches(
   l: ActivityLine,
   f: Filters,
   family: readonly Member[],
   timezone: string | null,
 ): boolean {
-  if (f.who) {
-    const id = l.actor_member_id ?? null;
-    const known = id !== null && family.some((m) => m.id === id);
-    if (f.who === ELSE ? known : id !== f.who) return false;
-  }
-  if (f.kind && l.kind !== f.kind) return false;
-  const day = f.from || f.to ? dayOf(l.at, timezone) : '';
-  if (f.from && day < f.from) return false;
-  if (f.to && day > f.to) return false;
-  return true;
+  return activityLineKept(
+    l,
+    f,
+    (id) => family.some((m) => m.id === id),
+    (iso) => dayOf(iso, timezone),
+  );
 }
 
 function emptyWords(filtered: boolean, older: boolean, oneDocument: boolean): string {

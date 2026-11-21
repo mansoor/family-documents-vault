@@ -145,6 +145,16 @@ import {
   canSeeIdentity,
   CATEGORY_LABELS,
   describeEvents,
+  describeEventSpans,
+  ACTIVITY_CSV_MAX_LINES,
+  ACTIVITY_KINDS,
+  activityCsvCappedRow,
+  activityCsvFileName,
+  activityCsvHeader,
+  activityCsvRow,
+  activityLineKept,
+  ACTIVITY_ANYBODY_ELSE,
+  SENSITIVE_IN_WORDS,
   checkCaptureMetadata,
   checkExtra,
   COLLECTION_AUDIENCES,
@@ -3909,6 +3919,8 @@ export function createFakeVault(): {
           ended_sharing: true,
           // One document's activity (0.9.0, DA).
           document_activity: true,
+          // The activity log as CSV (0.9.0-dev.82).
+          activity_export: true,
           // Connected apps (0.9.0, APP1).
           connected_apps: true,
           connected_app_reads: true,
@@ -8661,6 +8673,121 @@ export function createFakeVault(): {
         return ok(lk(r));
       }
     }
+    // The activity log as CSV (0.9.0-dev.82): the lines GET /audit gives,
+    // or one document's, through the page's filters, on the fake's clock
+    // (UTC); 404 for a document not seen, 422 for a filter that is not one.
+    if (path === '/api/v1/audit/export' && init.method === 'GET') {
+      const s = session();
+      if (!('id' in s)) return s;
+      const who = whoOf(s);
+      if (!can(who.role, 'audit.read')) return fail(403, 'forbidden', refusalFor('audit.read'));
+      const ask = {
+        who: param(url, 'who') ?? '',
+        kind: param(url, 'kind') ?? '',
+        from: param(url, 'from') ?? '',
+        to: param(url, 'to') ?? '',
+      };
+      // As the vault checks them: a member's id or `else`, a day there is
+      // (1900 on), From not after To. (A document is one the fake has, or
+      // not there: its ids are not the vault's.)
+      const isDay = (d: string) =>
+        /^\d{4}-\d{2}-\d{2}$/.test(d) &&
+        d >= '1900-01-01' &&
+        new Date(`${d}T00:00:00Z`).toISOString().slice(0, 10) === d;
+      const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      const about = param(url, 'document');
+      if (
+        (ask.who && ask.who !== ACTIVITY_ANYBODY_ELSE && !uuid.test(ask.who)) ||
+        (ask.kind && !ACTIVITY_KINDS.some((k) => k.value === ask.kind)) ||
+        (ask.from && !isDay(ask.from)) ||
+        (ask.to && !isDay(ask.to)) ||
+        (ask.from && ask.to && ask.from > ask.to)
+      ) {
+        return fail(422, 'validation_failed', 'That is not a filter of the activity log.');
+      }
+      const seen = (id: string | null) => {
+        const doc = state.documents.find((d) => d.id === id);
+        return (
+          doc !== undefined &&
+          canSee(who, {
+            visibility: doc.visibility ?? 'household',
+            owner_member_id: doc.owner_member_id ?? null,
+          })
+        );
+      };
+      if (about !== undefined && !seen(about)) {
+        return fail(404, 'not_found', 'That document does not exist.');
+      }
+      const events = [...(state.activity ?? [])].reverse().filter((e) => {
+        if (about !== undefined) return e.object_type === 'document' && e.object_id === about;
+        // About nothing (an export of the whole log): whoever reads the log.
+        if (e.object_type === null) return true;
+        if (e.object_type === 'member') {
+          return who.role === 'owner' || (e.object_id !== null && e.object_id === who.memberId);
+        }
+        return seen(e.object_id);
+      });
+      const name = (id: string) => state.members.find((m) => m.id === id)?.display_name;
+      let text = activityCsvHeader();
+      let lines = 0;
+      for (const { line } of describeEventSpans(events)) {
+        if (
+          !activityLineKept(
+            line,
+            ask,
+            (id) => name(id) !== undefined,
+            (at) => at.slice(0, 10),
+          )
+        ) {
+          continue;
+        }
+        if (lines === ACTIVITY_CSV_MAX_LINES) {
+          text += activityCsvCappedRow();
+          break;
+        }
+        const e = events.find((x) => x.id === line.id);
+        const document =
+          e?.object_type !== 'document'
+            ? null
+            : e.object_sensitive === true
+              ? SENSITIVE_IN_WORDS
+              : e.object_title;
+        text += activityCsvRow(
+          {
+            line,
+            who: line.actor_member_id ? (name(line.actor_member_id) ?? null) : null,
+            document,
+          },
+          'UTC',
+        );
+        lines += 1;
+      }
+      // Its own line (audit.exported): one document's is that document's.
+      const actor = state.members.find((m) => m.id === who.memberId);
+      const aboutDoc = state.documents.find((d) => d.id === about);
+      (state.activity ??= []).push({
+        id: (state.activity?.length ?? 0) + 1,
+        at: new Date().toISOString(),
+        action: 'audit.exported',
+        actor: actor?.display_name ?? null,
+        actor_member_id: actor?.id ?? null,
+        actor_label: null,
+        object_type: aboutDoc ? 'document' : null,
+        object_id: aboutDoc?.id ?? null,
+        object_title: aboutDoc?.title ?? null,
+        // A sensitive document's line never names it (H1a), as the vault's.
+        ...(aboutDoc &&
+        sensitiveOf(aboutDoc, state.types.find((t) => t.key === aboutDoc.type_key) ?? null)
+          ? { object_sensitive: true }
+          : {}),
+        detail: { format: 'csv', lines, capped: false, finished: true },
+      });
+      return attachment(new TextEncoder().encode(text), {
+        'content-type': 'text/csv; charset=utf-8',
+        'content-disposition': attachmentDisposition(activityCsvFileName(localToday('UTC'))),
+        'cache-control': 'private, no-store',
+      });
+    }
     // The activity log (R4): what the fake keeps of it, newest first, each
     // line about a document only to whoever may see the document.
     if (path === '/api/v1/audit' && init.method === 'GET') {
@@ -8669,6 +8796,9 @@ export function createFakeVault(): {
       const who = whoOf(s);
       if (!can(who.role, 'audit.read')) return fail(403, 'forbidden', refusalFor('audit.read'));
       const events = [...(state.activity ?? [])].reverse().filter((e) => {
+        // About nothing (an export of the whole log, 0.9.0-dev.82): whoever
+        // reads the log, as the vault's.
+        if (e.object_type === null) return true;
         // A line about a person (a connected app's, APP8): to the owners,
         // and to the person it is about, as the real vault's audience.
         if (e.object_type === 'member') {

@@ -188,6 +188,8 @@ describe('buildCapabilities', () => {
       backup_offsite: true,
       // 0.9.0-dev.78: Settings → Security & health.
       security_health: true,
+      // 0.9.0-dev.82: the activity log as CSV.
+      activity_export: true,
     });
     // Never on the hosted edition, whose operator keeps the backups.
     expect(buildCapabilities({ ...config, edition: 'hosted' }).features).not.toHaveProperty(

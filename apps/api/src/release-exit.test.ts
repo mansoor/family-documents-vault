@@ -1281,6 +1281,13 @@ const RULES: Record<string, Rule> = {
 
   // The activity log.
   'GET /api/v1/audit': { who: 'family' },
+  // As CSV (0.9.0-dev.82): whoever reads the log, never a viewer or a guest;
+  // one document's lines of a document they can see, nothing of one they
+  // cannot; a person of another household filters nothing in.
+  'GET /api/v1/audit/export': {
+    who: 'family',
+    queries: (f) => ['', `document=${f.document}`, `who=${f.member}&kind=opened`],
+  },
 
   // Requests to send documents, and what came in.
   'POST /api/v1/upload-requests': {
@@ -4418,7 +4425,11 @@ ${JSON.stringify(r.headers)}`;
         };
         const get = await h.app.inject({ method: 'GET', url, ...as, ...peer() });
         const head = await h.app.inject({ method: 'HEAD', url, ...as, ...peer() });
-        const noHead = head.statusCode === 404 && route.url.startsWith('/api/v1/apps/');
+        // Nor has the activity log's CSV (0.9.0-dev.82): each download is a
+        // line in the log, so none is made to be thrown away.
+        const noHead =
+          head.statusCode === 404 &&
+          (route.url.startsWith('/api/v1/apps/') || route.url === '/api/v1/audit/export');
         const leaks = leaksIn(head, a?.forbidden ?? forbidden);
         const who = a?.name ?? 'nobody';
         if (leaks.length > 0) problems.push(say(`${who} HEAD ${route.url}`, head, leaks));

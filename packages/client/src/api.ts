@@ -3,6 +3,7 @@ import type {
   OriginalPlaceBulkResult,
   AccessGrant,
   AccessPreview,
+  ActivityExportAsk,
   ActivityLine,
   BatchAccepted,
   BatchAcceptInput,
@@ -214,7 +215,7 @@ import type {
   MyCaregivers,
   PersonCaregivers,
 } from '@fdv/shared';
-import { REFRESH_COOKIE_HEADER, REFRESH_COOKIE_MODE } from '@fdv/shared';
+import { activityExportQuery, REFRESH_COOKIE_HEADER, REFRESH_COOKIE_MODE } from '@fdv/shared';
 import type { Http, ResponseLike, UploadBody } from './http.js';
 import {
   batchItemUpload,
@@ -872,6 +873,21 @@ export function createApi(http: Http) {
         `/api/v1/documents/${enc(documentId)}/activity${before ? `?before=${before}` : ''}`,
         { token },
       ),
+    /**
+     * The activity log as CSV (0.9.0-dev.82, `features.activity_export`):
+     * the lines the Activity page's filters keep (`who` — a member's id, or
+     * `else` — `kind`, `from` and `to` days on the household's calendar, and
+     * one `document`'s lines), as the log shows them to the caller, newest
+     * first; UTF-8 with a byte-order mark, its name in Content-Disposition.
+     * At most `ACTIVITY_CSV_MAX_LINES` lines: past them, the last row says
+     * so (`activityCsvCapped(text)`). `403` to a viewer; `404 not_found` for
+     * a document the caller cannot see; `422 validation_failed` for a filter
+     * that is not one. Written in the activity log (`audit.exported`).
+     */
+    activityCsv: (token: string, ask: ActivityExportAsk = {}): Promise<ResponseLike> => {
+      const q = activityExportQuery(ask);
+      return raw(`/api/v1/audit/export${q ? `?${q}` : ''}`, { token });
+    },
 
     // ----------------------------------------------------------- invitations
     invitations: (token: string) =>

@@ -798,6 +798,12 @@ export interface CapabilityFeatures {
    * used from two places. Absent from older vaults.
    */
   security_health?: boolean;
+  /**
+   * The activity log as a spreadsheet (0.9.0-dev.82): `GET
+   * /audit/export`, CSV, with the Activity page's filters, for whoever
+   * reads the log. Absent from older vaults.
+   */
+  activity_export?: boolean;
 }
 
 export interface CapabilityLimits {
