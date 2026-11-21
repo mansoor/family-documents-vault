@@ -1580,6 +1580,8 @@ describe('every address Settings had still works (R1)', () => {
     ['/settings/texts', '/settings/texts', 'Text messages'],
     // Backups, and their copy off-site (0.9.0-dev.76).
     ['/settings/backups', '/settings/backups', 'Backups'],
+    // Security & health (0.9.0-dev.78).
+    ['/settings/health', '/settings/health', 'Security & health'],
     // Caregivers (0.9.0, H1b).
     ['/settings/caregivers', '/settings/caregivers', 'Caregivers'],
     ['/settings/activity', '/activity', 'What has been happening'],

@@ -10,6 +10,7 @@ import {
   ScopeKeys,
 } from '@fdv/crypto';
 import { createDb, createPool } from '@fdv/db';
+import { HEALTH_EVENTS } from '@fdv/shared';
 import { loadConfig } from './config.js';
 import { ProposalThread } from './jobs/proposal-thread.js';
 import { readingCheckNow } from './jobs/reading-check.js';
@@ -27,6 +28,7 @@ import {
 } from './jobs/restore.js';
 import { backupKeyFor } from './jobs/restore-keys.js';
 import { restoreSummary } from './restore-summary.js';
+import { noteVaultCheck } from './jobs/vault-health.js';
 
 /**
  * Operator commands, run inside the worker container:
@@ -58,17 +60,38 @@ async function main() {
     current: masterSecret,
     previous: process.env.FDV_MASTER_KEY_PREVIOUS || undefined,
   };
-  const backupNow = async () =>
-    (
-      await backupDatabase({
-        adminUrl,
-        backupKey,
-        dir: config.FDV_BACKUP_DIR,
-        retainDays: config.FDV_BACKUP_RETAIN_DAYS,
-        log,
-        masterSecret,
-      })
-    ).file;
+  /**
+   * A line in each household's log for Settings → Security & health
+   * (0.9.0): a backup made here, and a drill run. Never in the way: a vault
+   * whose database cannot take it still has its backup, or its drill's word.
+   */
+  const note = async (
+    action: (typeof HEALTH_EVENTS)[keyof typeof HEALTH_EVENTS],
+    detail: Record<string, unknown> = {},
+  ) => {
+    const admin = createPool(adminUrl, 1);
+    const appPool = createPool(config.DATABASE_URL, 1);
+    try {
+      await noteVaultCheck({ admin, db: createDb(appPool) }, action, () => detail);
+    } catch (err) {
+      console.error(`(not noted in Settings → Security & health: ${(err as Error).message})`);
+    } finally {
+      await admin.end();
+      await appPool.end();
+    }
+  };
+  const backupNow = async () => {
+    const made = await backupDatabase({
+      adminUrl,
+      backupKey,
+      dir: config.FDV_BACKUP_DIR,
+      retainDays: config.FDV_BACKUP_RETAIN_DAYS,
+      log,
+      masterSecret,
+    });
+    await note(HEALTH_EVENTS.backupMade, { bytes: made.bytes });
+    return made.file;
+  };
 
   if (command === 'backup-now') {
     const file = await backupNow();
@@ -121,12 +144,15 @@ async function main() {
       );
       if (report.households < 1) {
         console.error('restore drill FAILED: the backup has no household in it');
+        await note(HEALTH_EVENTS.restoreDrilled, { ok: false });
         process.exitCode = 1;
         return;
       }
+      await note(HEALTH_EVENTS.restoreDrilled, { ok: true });
       console.log('restore drill OK: the vault would read it as it reads itself');
     } catch (err) {
       console.error(`restore drill FAILED: ${(err as Error).message}`);
+      await note(HEALTH_EVENTS.restoreDrilled, { ok: false });
       const hint = previousKeyHint(
         err,
         master.previous,

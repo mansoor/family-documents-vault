@@ -185,6 +185,8 @@ describe('buildCapabilities', () => {
       connected_apps: true,
       // 0.9.0-dev.76: an off-site copy of the nightly backups.
       backup_offsite: true,
+      // 0.9.0-dev.78: Settings → Security & health.
+      security_health: true,
     });
     // Never on the hosted edition, whose operator keeps the backups.
     expect(buildCapabilities({ ...config, edition: 'hosted' }).features).not.toHaveProperty(

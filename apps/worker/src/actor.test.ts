@@ -20,7 +20,6 @@ import { createTestDatabase, testAdminUrl, type TestDatabase } from '@fdv/db/tes
 import { LocalAdapter, memberPhotoUploadKey } from '@fdv/storage';
 import { Kysely, PostgresDialect } from 'kysely';
 import pg from 'pg';
-import webpush from 'web-push';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { sendAlert } from './jobs/alerts.js';
 import { pruneShareCodes } from './jobs/mail.js';
@@ -39,6 +38,7 @@ import { drawSharePages, pruneSharePages } from './jobs/share-pages.js';
 import { regenerateTypeReminders } from './jobs/types.js';
 import { pruneUploads } from './jobs/uploads.js';
 import { verifyAllAuditChains } from './jobs/verify-audit.js';
+import { webPush } from './jobs/web-push.js';
 
 /**
  * The worker is the vault itself (5.5): every job it runs says so to the
@@ -147,7 +147,7 @@ describe.skipIf(!testAdminUrl())('the worker asks as the vault itself', () => {
   const hh = randomUUID();
   const keys = new ScopeKeys(new EnvKeyProvider(MASTER));
   const credentialsKey = deriveKey(MASTER, 'vault-credentials');
-  const vapid = { ...webpush.generateVAPIDKeys(), subject: 'mailto:test@example.test' };
+  const vapid = { ...webPush.generateVAPIDKeys(), subject: 'mailto:test@example.test' };
   // A Sunday evening in the household's own zone: every reminder job has work.
   const now = new Date('2026-09-27T19:00:00Z');
   const log = () => undefined;

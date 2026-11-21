@@ -288,6 +288,8 @@ export function buildCapabilities(config: CapabilityConfig): Capabilities {
       // Settings → Backups; never on the hosted edition, whose operator
       // keeps the backups.
       ...(config.edition === 'hosted' ? {} : { backup_offsite: true }),
+      // 0.9.0-dev.78: Settings → Security & health, an owner's.
+      security_health: true,
       // 0.9.0 (AIR1): the AI reader set in Settings → Reading, unless the
       // operator keeps it out (FDV_AI_READER_SETTINGS=off); and the kinds
       // of reader this vault reads with — Ollama, Anthropic and an

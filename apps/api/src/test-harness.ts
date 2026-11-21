@@ -88,6 +88,7 @@ import { SettingsCheckService } from './settings-checks.js';
 import { LocalAiService } from './household/local-ai.js';
 import { AiReaderService } from './household/ai-reader.js';
 import { BackupOffsiteService } from './backups/offsite.js';
+import { SecurityHealthService } from './backups/health.js';
 import { PHONE_CODE_KEY_PURPOSE, MemberPhoneService } from './sms/phones.js';
 import type { SmsProvider, SmsProviderFactory } from '@fdv/db';
 import { SmsService } from './sms/service.js';
@@ -249,6 +250,8 @@ export interface HarnessOptions {
    * only the S3 test server's address.
    */
   offsiteTest?: (b: OffsiteBucket) => Promise<OffsiteTestFound>;
+  /** Settings → Security & health's clock (0.9.0): what is late, and what is due. */
+  healthNow?: () => Date;
   /** FDV_AI_READER_SETTINGS (AIR1): on unless a test says off. */
   aiReaderSettings?: 'on' | 'off';
   /** DNS for the AI reader's address (AIR1): the harness's own, a name → its addresses. */
@@ -614,6 +617,10 @@ export async function createHarness(opts: HarnessOptions = {}): Promise<Harness>
       edition: config.FDV_EDITION,
       ...(opts.offsiteTest ? { test: opts.offsiteTest } : {}),
       alert,
+    }),
+    securityHealth: new SecurityHealthService(db, {
+      edition: config.FDV_EDITION,
+      ...(opts.healthNow ? { now: opts.healthNow } : {}),
     }),
     pingDatabase: async () => undefined,
     auth,

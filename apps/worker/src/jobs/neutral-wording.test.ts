@@ -4,11 +4,11 @@ import { createDb, createPool, withSystem, type Db, type SmsProviderFactory } fr
 import { createTestDatabase, testAdminUrl, type TestDatabase } from '@fdv/db/testing';
 import nodemailer from 'nodemailer';
 import pg from 'pg';
-import webpush from 'web-push';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createNotifier } from './notify.js';
 import { deliver, weekly, type Digest } from './reminders.js';
 import { createTexter } from './texts.js';
+import { webPush } from './web-push.js';
 
 /**
  * Neutral wording in notifications and email (0.9.0, H2), from the side of
@@ -155,7 +155,7 @@ describe.skipIf(!testAdminUrl())('neutral wording, as it is sent (H2)', () => {
   let db: Db;
   let admin: pg.Pool;
   let today = '';
-  const vapid = webpush.generateVAPIDKeys();
+  const vapid = webPush.generateVAPIDKeys();
 
   interface House {
     hh: string;
@@ -350,7 +350,7 @@ describe.skipIf(!testAdminUrl())('neutral wording, as it is sent (H2)', () => {
   /** Every household's digests, sent as the worker sends them. */
   async function run(which: 'daily' | 'weekly'): Promise<Sent> {
     const sent: Sent = { digests: [], mails: [], pushes: [], texts: [] };
-    vi.spyOn(webpush, 'sendNotification').mockImplementation(async (sub, payload) => {
+    vi.spyOn(webPush, 'sendNotification').mockImplementation(async (sub, payload) => {
       sent.pushes.push({ endpoint: sub.endpoint, payload: String(payload) });
       return { statusCode: 201, body: '', headers: {} };
     });

@@ -977,6 +977,35 @@ h3 {
   display: block;
 }
 
+/* Settings → Security & health (0.9.0-dev.78): one line a check, fine or not. */
+.health-lines {
+  list-style: none;
+  margin: 12px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.health-line-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+
+/* A note, not a problem: worth doing when there is a moment. */
+.badge-quiet {
+  background: var(--surface);
+  color: var(--ink-soft);
+  border: 1px solid var(--border);
+}
+
+.health-words,
+.health-fix {
+  margin: 4px 0 0;
+}
+
 /* Somebody turned 13 (after 0.7.0): told to the owners, on Home. */
 .turned-13-words {
   margin: 0;

@@ -81,6 +81,7 @@ import { registerSettingsChecks, type SettingsCheckService } from './settings-ch
 import { registerLocalAi, type LocalAiService } from './household/local-ai.js';
 import { registerAiReader, type AiReaderService } from './household/ai-reader.js';
 import { registerBackupOffsite, type BackupOffsiteService } from './backups/offsite.js';
+import { registerSecurityHealth, type SecurityHealthService } from './backups/health.js';
 import type { VaultService } from './vaults/service.js';
 import type { ApiConfig } from './config.js';
 import { ownNetworks, trustProxyFor } from './client-address.js';
@@ -172,6 +173,8 @@ export interface AppDeps {
   aiReader?: AiReaderService;
   /** Settings → Backups: an off-site copy of the nightly backups, an owner's (0.9.0-dev.76). */
   backupOffsite?: BackupOffsiteService;
+  /** Settings → Security & health: backups, the log's check, sign-ins; an owner's (0.9.0). */
+  securityHealth?: SecurityHealthService;
   logger?: boolean | object;
   /**
    * The networks this process is on, for `FDV_TRUST_PROXY=network` (5.30):
@@ -605,6 +608,7 @@ export async function buildApp(config: ApiConfig, deps: AppDeps): Promise<Fastif
   if (deps.localAi) registerLocalAi(app, deps.localAi);
   if (deps.aiReader) registerAiReader(app, deps.aiReader, deps.stepUp);
   if (deps.backupOffsite) registerBackupOffsite(app, deps.backupOffsite, deps.stepUp);
+  if (deps.securityHealth) registerSecurityHealth(app, deps.securityHealth);
   registerDevices(app, deps.devices, deps.stepUp, config.FDV_MAX_UPLOAD_BYTES);
   if (deps.apps) registerApps(app, deps.apps, deps.stepUp, config.FDV_MAX_UPLOAD_BYTES);
 

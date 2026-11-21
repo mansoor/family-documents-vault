@@ -242,6 +242,23 @@ needs a vault of 0.4.10 or later.
 
 ## Unreleased
 
+- **Security & health** (0.9.0-dev.78). Migration 0125. Everything is **additive**; owners only.
+  - **New `features.security_health`** (`true`; absent from older vaults).
+  - **New route** `GET /api/v1/household/health` → `SecurityHealthView`, an owner's (`403 forbidden` to anybody else); no passkey or code asked, as it changes nothing:
+    `{ hosted, backup, offsite, restore_drill, audit_chain, failed_sign_ins, token_reuse }`.
+    - `hosted`: the hosted edition, whose operator keeps the server: say to contact them, never to restore a backup or run a command.
+    - `backup`: `{ state: "fine" | "late" | "failed" | "not_yet", last_at }` — late after `FDV_BACKUP_LATE_DAYS` (2) since the last backup, or since the vault was set up with none yet; `failed` when the last one did not finish after its retries; `not_yet` on a vault too new for one to be due.
+    - `offsite`: `{ state: "fine" | "late" | "failed" | "off", last_at, problem }`, as Settings → Backups says it (`FDV_BACKUP_OFFSITE_LATE_DAYS`); null when no copy is set up.
+    - `restore_drill`: `{ state: "fine" | "due" | "failed" | "never", last_at }` — due after 31 days. `never` and `due` are a note, not a problem.
+    - `backup`, `offsite` and `restore_drill` are null on the hosted edition, and for every household but the one that set the vault up.
+    - `audit_chain`: `{ state: "fine" | "broken" | "late" | "not_yet", last_at }` — the nightly check of the activity log; late after two days since the last check; `not_yet` (never checked) is no problem.
+    - `failed_sign_ins`: `{ state: "fine" | "many", count }` — the last 24 hours' `auth.sign_in_failed`; many from 5.
+    - `token_reuse`: `{ state: "fine" | "seen", count }` — sessions the vault ended in the last 24 hours because a refresh token was used twice.
+    - `securityHealthLines(view, when)` in `@fdv/shared` says each in the web's words, with a `tone` (`fine`, `note` or `problem`) and where to fix it.
+  - **Activity:** the worker's own lines `vault.backup_made` (`detail.bytes`), `vault.backup_failed` (after the backup's last try), `vault.restore_drilled` (`detail.ok`) — in the log of the household that set the vault up — and `vault.audit_checked` (`detail.ok`, `detail.broken_at`) in each household's, and `vault.owners_told` (`detail.about`: `backup` or `audit_chain`); `object_type: "household"`. Never in anybody's `GET /api/v1/audit`; in the chain and the export.
+  - The owners are emailed (the alert job) once when the backups stop or the activity log fails its check, and not again until it clears.
+  - **Client:** `securityHealth`. The fake vault (`@fdv/client/testing`) does not offer the feature.
+
 - **Hygiene before launch** (0.9.0-dev.77). Migration 0124. **Additive**, but for the answers below marked **changed**.
   - **Changed answer:** `GET /readyz` when the database does not answer is `503 not_ready` with no `error.detail`; the reason is in the server's log.
   - **SMS Gate's local server** (`PUT /api/v1/sms/settings` with `mode: "local"`): an address that is loopback (by name or address), link-local or cloud metadata, `host.docker.internal` and the like, or one of the vault's own compose services by name (with or without a domain after it), is `422 sms_address_refused` (until now only the cloud relay and a server of your own could be), and so is a port other than 8080, 80, 443, 8000, 8443 or 8888 (`SMS_GATE_LOCAL_PORTS` in `@fdv/shared`; the operator's `FDV_SMS_GATE_ALLOWED_PORTS` changes it). **Changed:** for the local server, the words of a failed test or send (`words`, `last_error`, `503 sms_not_sent`) are one "couldn't reach SMS Gate on the phone" sentence whatever failed, a refused password included — but a port the vault doesn't reach is said as such, with the setting; the cloud relay, a server of your own and Twilio are unchanged. **Changed:** a local server saved before (or since the operator narrowed the ports) that is now refused shows `status: "failed"` with `last_error` saying why as `GET /api/v1/sms/settings` is read or a text meets it, and `GET /api/v1/sms/status` answers `ready: false` until a test passes.

@@ -3,11 +3,11 @@ import { deriveKey } from '@fdv/crypto';
 import { createDb, createPool, withSystem, type Db } from '@fdv/db';
 import { createTestDatabase, testAdminUrl, type TestDatabase } from '@fdv/db/testing';
 import pg from 'pg';
-import webpush from 'web-push';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { sendAlert } from './alerts.js';
 import { createNotifier } from './notify.js';
 import type { Digest } from './reminders.js';
+import { webPush } from './web-push.js';
 
 /**
  * Notifications end when the sign-in does.
@@ -24,7 +24,7 @@ describe.skipIf(!testAdminUrl())('push reaches only live sign-ins', () => {
   let admin: pg.Pool;
   const hh = randomUUID();
   let account = '';
-  const vapid = { ...webpush.generateVAPIDKeys(), subject: 'mailto:test@example.test' };
+  const vapid = { ...webPush.generateVAPIDKeys(), subject: 'mailto:test@example.test' };
   const smtpKey = deriveKey('push-sessions-test-master-secret-32-bytes', 'smtp-credentials');
   const linkKey = deriveKey('push-sessions-test-master-secret-32-bytes', 'alert-link-job');
 
@@ -69,7 +69,7 @@ describe.skipIf(!testAdminUrl())('push reaches only live sign-ins', () => {
 
   const pushedTo = () => {
     const endpoints: string[] = [];
-    vi.spyOn(webpush, 'sendNotification').mockImplementation(async (sub) => {
+    vi.spyOn(webPush, 'sendNotification').mockImplementation(async (sub) => {
       endpoints.push(sub.endpoint.split('/').pop() as string);
       return { statusCode: 201, body: '', headers: {} };
     });

@@ -18,9 +18,10 @@ import { Splitter, useKeptWidth, type WidthBounds } from './splitter.js';
  *    H2), Time zone, Kinds of document, Tags — an owner
  *    changes them; everybody else reads what is theirs, as before.
  *  - Server and reading, an owner's: Storage, Email in and out, Scanner
- *    folder, Reading and the check (and Text messages, and Backups, where
- *    the vault offers them). What was the For owners page's list, each now
- *    in the menu itself; /settings/owners opens Storage.
+ *    folder, Reading and the check (and Text messages, Backups, and
+ *    Security & health, where the vault offers them). What was the For
+ *    owners page's list, each now in the menu itself; /settings/owners
+ *    opens Storage.
  *
  * From 768 px a menu, "Settings sections", down the left of the Settings
  * area, as wide as its person dragged it, and the chosen page across the
@@ -54,6 +55,7 @@ export type SectionKey =
   | 'reading'
   | 'texts'
   | 'backups'
+  | 'health'
   | 'caregivers';
 
 export type GroupKey = 'you' | 'household' | 'server';
@@ -320,6 +322,18 @@ export function settingsGroups(
       section('backups', '/settings/backups', 'Backups', 'Nightly backups, and a copy elsewhere'),
     );
   }
+  // Security & health (0.9.0-dev.78): backups, the activity log's check and
+  // the day's sign-ins at a look, an owner's.
+  if (owner && caps?.features.security_health === true) {
+    server.push(
+      section(
+        'health',
+        '/settings/health',
+        'Security & health',
+        'Backups, the activity log’s check, sign-ins',
+      ),
+    );
+  }
 
   return (
     [
@@ -574,6 +588,13 @@ const DRAWN: Record<SectionKey, ReactNode> = {
     <>
       <rect x="3.5" y="10" width="17" height="10" rx="1.5" />
       <path d="M12 3.5v9M8.5 7 12 3.5 15.5 7" />
+    </>
+  ),
+  // A shield with a tick: the vault's security and health at a look.
+  health: (
+    <>
+      <path d="M12 3.5 19 6v5.5c0 4.2-2.9 7.6-7 9-4.1-1.4-7-4.8-7-9V6z" />
+      <path d="m9 12 2.2 2.2L15.5 10" />
     </>
   ),
   // A heart in a hand's keeping: someone who may see your medical papers.

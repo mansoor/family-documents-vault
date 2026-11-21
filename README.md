@@ -321,8 +321,11 @@ A short list for whoever runs the vault. Each line links to where it is explaine
 - **Watch what the vault tells you.** Each person is told when a new device signs in to their
   account, when their password changes, and when sign-ins to their account keep failing (for
   an owner's account, the other owners are told too); owners are emailed when the off-site
-  backup copy fails or has not gone for two days, and when another owner lowers how many
-  copies are kept there. Read **Activity** now and then. A mail
+  backup copy fails or has not gone for two days, when another owner lowers how many
+  copies are kept there, and when the backups stop or the nightly check of the activity log
+  fails. Settings → **Security & health** shows it all at a look — the last backup and its
+  copy, the last restore drill, the activity log's check, and the day's failed sign-ins —
+  each fine or saying where to fix it. Read **Activity** now and then. A mail
   server (Settings → Email, in and out) is what lets those emails reach you.
 
 ## Phones and other apps
@@ -826,7 +829,7 @@ npm or pnpm and no token (from CI too):
 ```json
 {
   "dependencies": {
-    "@fdv/client": "https://github.com/mansoor/family-documents-vault/releases/download/v0.9.0-dev.77/fdv-client-0.9.0-dev.77.tgz"
+    "@fdv/client": "https://github.com/mansoor/family-documents-vault/releases/download/v0.9.0-dev.78/fdv-client-0.9.0-dev.78.tgz"
   }
 }
 ```
@@ -877,6 +880,7 @@ All configuration is through environment variables in `.env` (see [`.env.example
 | `FDV_DISPLAY_NAME`                              | `Our family vault`                        | The vault's name until it is set up. From then on every screen, and the phone app, shows the family's name, given at setup.                                                                                                                                                                               |
 | `FDV_PORT`                                      | `8080`                                    | The port the web app listens on.                                                                                                                                                                                                                                                                          |
 | `FDV_BIND`                                      | every interface                           | The address that port is published on. Unset, every interface, IPv4 and IPv6, so the house reaches it. `127.0.0.1` keeps it to this machine — a VPS, or a reverse proxy of your own: Docker's published ports go round `ufw` and `firewalld`. See [Security checklist](#security-checklist).              |
+| `FDV_BACKUP_LATE_DAYS`                          | `2`                                       | How many days without a backup before Settings → Security & health says it is late and the owners are emailed (once, until a backup is made). Two assumes nightly backups: raise it if `FDV_BACKUP_CRON` backs up less often. API and worker (the compose file gives both).                               |
 | `FDV_BACKUP_OFFSITE_LATE_DAYS`                  | `2`                                       | How many days without an off-site copy of the backups, while it is on, before the owners are told. Two assumes nightly backups: raise it if `FDV_BACKUP_CRON` backs up less often. API and worker (the compose file gives both). See [An off-site copy of the backups](#an-off-site-copy-of-the-backups). |
 | `LOG_LEVEL`                                     | `info`                                    | `fatal`, `error`, `warn`, `info`, `debug` or `trace`.                                                                                                                                                                                                                                                     |
 | `FDV_VERSION`                                   | `latest`                                  | Image tag to run. Pin it to a release once you are past testing.                                                                                                                                                                                                                                          |
