@@ -127,7 +127,7 @@ CMD ["node", "apps/worker/dist/main.mjs"]
 # nginx as its own unprivileged user (uid 101), never root: it listens on
 # 8080, and keeps its pid and buffers in /tmp, the one folder the compose
 # file leaves writable.
-FROM nginxinc/nginx-unprivileged:1.28-alpine@sha256:7377697a821c131a924a7105fafbe7414db4e9fcc77a6f08f776f33f141ec3f8 AS web
+FROM nginxinc/nginx-unprivileged:1.31-alpine@sha256:b5047b9b76845eac124358373c6852377c52e4b05834a47647e955dd91cb8f1e AS web
 COPY docker/nginx.conf /etc/nginx/conf.d/default.conf
 COPY --from=build /app/apps/web/dist /usr/share/nginx/html
 EXPOSE 8080
