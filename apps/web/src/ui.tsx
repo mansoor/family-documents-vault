@@ -6,6 +6,8 @@ import {
   type Status,
 } from '@fdv/shared';
 import {
+  createContext,
+  useContext,
   useEffect,
   useId,
   useLayoutEffect,
@@ -428,6 +430,25 @@ export function StatusBadge({ status }: { status: Status }) {
   const t = statusTone(status);
   if (!t) return null;
   return <span className={`status status-${t.tone}`}>{t.words}</span>;
+}
+
+/**
+ * Ids made unique to one of many (flyouts): a document beside the list
+ * draws the same forms as its page — Share a link's, a Who can see it's —
+ * and more than one can be open at once. Inside an IdScope a fixed id
+ * (`share-label`) gains the scope's own ending; outside one, as on a
+ * document's page and everywhere else, it is the id it always was.
+ */
+const IdScopeContext = createContext<string | null>(null);
+
+export function IdScope(props: { id: string; children: ReactNode }) {
+  return <IdScopeContext.Provider value={props.id}>{props.children}</IdScopeContext.Provider>;
+}
+
+/** `name` as it is here: itself, or with the scope's ending. */
+export function useIdScope(): (name: string) => string {
+  const scope = useContext(IdScopeContext);
+  return (name) => (scope ? `${name}-${scope}` : name);
 }
 
 /**

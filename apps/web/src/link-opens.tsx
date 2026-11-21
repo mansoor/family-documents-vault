@@ -4,7 +4,7 @@ import {
   type ShareOpening,
   type ShareOpens,
 } from '@fdv/shared';
-import { useState } from 'react';
+import { useId, useState } from 'react';
 import { api } from './api.js';
 import { describeError, useApp, useLoad } from './app-context.js';
 import { dateTimeWords } from './family-time.js';
@@ -83,6 +83,7 @@ export function LinkOpens(props: {
  */
 export function TheirLinksOpened(props: { documentId: string }) {
   const { caps, authVersion } = useApp();
+  const headingId = `${useId()}-h`;
   const on = caps?.features.share_opens === true;
   const { data } = useLoad(
     async (t) =>
@@ -94,8 +95,8 @@ export function TheirLinksOpened(props: { documentId: string }) {
   const others = (data?.items ?? []).filter((l) => !l.mine);
   if (others.length === 0) return null;
   return (
-    <section className="card stack" aria-labelledby="their-links-h">
-      <h2 id="their-links-h" style={{ fontSize: 18 }}>
+    <section className="card stack" aria-labelledby={headingId}>
+      <h2 id={headingId} style={{ fontSize: 18 }}>
         Shared outside the family
       </h2>
       <p className="muted">

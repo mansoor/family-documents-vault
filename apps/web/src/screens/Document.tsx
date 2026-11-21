@@ -54,6 +54,7 @@ import {
   categoryLabel,
   ConfirmDialog,
   ErrorNote,
+  IdScope,
   MoveToTrashDialog,
   Sheet,
   StatusBadge,
@@ -125,10 +126,20 @@ export type DocumentViewClosed =
  * always was.
  */
 export function DocumentView(props: DocumentViewProps) {
-  return props.host === 'flyout' ? (
-    <OneDocumentView key={props.id} {...props} />
-  ) : (
-    <OneDocumentView {...props} />
+  return props.host === 'flyout' ? <BesideTheList {...props} /> : <OneDocumentView {...props} />;
+}
+
+/**
+ * Beside the list, more than one may be open at once: the ids of the forms
+ * inside (Share a link's) are each one's own (IdScope), the same while it
+ * loads and once it has.
+ */
+function BesideTheList(props: DocumentViewProps & { host: 'flyout' }) {
+  const scope = useId();
+  return (
+    <IdScope id={scope}>
+      <OneDocumentView key={props.id} {...props} />
+    </IdScope>
   );
 }
 
@@ -146,9 +157,27 @@ export type DocumentViewProps =
       onClosed: (why: DocumentViewClosed) => void;
       /** Both panes, or its pages alone (Hide details). */
       view?: DocPanesView;
-      /** The host's own buttons, beside Edit. */
+      /** The host's own buttons, before Edit (Hide details). */
       tools?: ReactNode;
+      /** The host's own buttons, after Edit (Minimise, Close). */
+      controls?: ReactNode;
+      /** The heading's id, for the host's dialog to be named by. */
+      headingId?: string;
+      /** Told what the host needs of it once it is loaded, and whenever that changes. */
+      onLoaded?: (loaded: DocumentViewLoaded) => void;
     };
+
+/**
+ * What a document beside the list tells its host as it loads and changes:
+ * its name (the tray), whether it is in the Trash (nothing to show beside
+ * a list), and a stamp that changes whenever it is saved, here or elsewhere (the
+ * lists under it are loaded again).
+ */
+export interface DocumentViewLoaded {
+  title: string;
+  inTrash: boolean;
+  stamp: string;
+}
 
 function OneDocumentView(props: DocumentViewProps) {
   const { id, host } = props;
@@ -225,10 +254,15 @@ function OneDocumentView(props: DocumentViewProps) {
   // the page, as ever; beside the list, its own, as others may be open.
   const ownId = useId();
   const detailsId = onPage ? 'doc-details' : `doc-details-${ownId}`;
+  // Every id inside it likewise: as on the page, there; beside the list,
+  // its own, as more than one document may be open there at once.
+  const own = (name: string) => (onPage ? name : `${name}-${ownId}`);
   // Told to the host beside the list: the latest it gave.
   const closed = useRef(flyout?.onClosed);
+  const toldLoaded = useRef(flyout?.onLoaded);
   useEffect(() => {
     closed.current = flyout?.onClosed;
+    toldLoaded.current = flyout?.onLoaded;
   });
 
   const download = async (v: VersionView) => {
@@ -358,6 +392,20 @@ function OneDocumentView(props: DocumentViewProps) {
   useEffect(() => {
     if (!onPage && noteId !== null) closed.current?.({ reason: 'note', noteId });
   }, [onPage, noteId]);
+  // What its host beside the list needs of it (DocumentViewLoaded).
+  const loadedTitle = data ? (data.doc.title ?? 'Needs a name') : null;
+  const loadedInTrash = Boolean(data?.doc.deleted_at);
+  const loadedStamp = data
+    ? `${data.doc.etag}|${data.versions.length}|${data.versions[0]?.id ?? ''}`
+    : null;
+  useEffect(() => {
+    if (loadedTitle === null || loadedStamp === null) return;
+    toldLoaded.current?.({
+      title: loadedTitle,
+      inTrash: loadedInTrash,
+      stamp: loadedStamp,
+    });
+  }, [loadedTitle, loadedInTrash, loadedStamp]);
 
   if (error) {
     return onPage ? (
@@ -366,7 +414,12 @@ function OneDocumentView(props: DocumentViewProps) {
         <ErrorNote message={error} />
       </main>
     ) : (
-      <FlyoutView title="Document" tools={flyout?.tools}>
+      <FlyoutView
+        title="Document"
+        tools={flyout?.tools}
+        controls={flyout?.controls}
+        headingId={flyout?.headingId}
+      >
         <ErrorNote message={error} />
       </FlyoutView>
     );
@@ -377,7 +430,12 @@ function OneDocumentView(props: DocumentViewProps) {
         <TopBar title="Document" back="/" backInApp />
       </main>
     ) : (
-      <FlyoutView title="Document" tools={flyout?.tools} />
+      <FlyoutView
+        title="Document"
+        tools={flyout?.tools}
+        controls={flyout?.controls}
+        headingId={flyout?.headingId}
+      />
     );
 
   const { doc, versions, members, types } = data;
@@ -413,6 +471,7 @@ function OneDocumentView(props: DocumentViewProps) {
   const caregiver = doc.caregiver === true;
   const history = (
     <HistorySection
+      headingId={own('history-h')}
       versions={versions}
       viewing={viewing?.id ?? null}
       onDownload={(v) => void download(v)}
@@ -447,6 +506,7 @@ function OneDocumentView(props: DocumentViewProps) {
         kind="document"
         memberId={memberId}
         fromAddress={onPage}
+        place={host}
         onDownload={!viewing.file_removed ? () => void download(viewing) : null}
         onTrash={null}
         error={<ErrorNote message={actionError} />}
@@ -477,7 +537,7 @@ function OneDocumentView(props: DocumentViewProps) {
           {doc.no_longer_needed && (
             <NoLongerNeededInfo
               open={aboutUnneeded}
-              controls="nln-about"
+              controls={own('nln-about')}
               onToggle={() => setAboutFor((o) => (o === id ? null : id))}
             />
           )}
@@ -491,7 +551,7 @@ function OneDocumentView(props: DocumentViewProps) {
         doc={doc}
         mayChange={mayChangeIt}
         open={aboutUnneeded}
-        id="nln-about"
+        id={own('nln-about')}
         onChanged={(saved) => setData((d) => (d ? { ...d, doc: saved } : d))}
       />
       {askAgain && (
@@ -619,6 +679,7 @@ function OneDocumentView(props: DocumentViewProps) {
         can(storedRole(), 'reminder.manage') && (
           <YearlyReview
             key={`review-${doc.id}`}
+            idBase={own('yearly-review')}
             documentId={doc.id}
             signed={doc.issued?.date ?? null}
             offered={yearlyReviewOffered(type)}
@@ -632,8 +693,8 @@ function OneDocumentView(props: DocumentViewProps) {
       )}
 
       {others.length > 0 && (
-        <section aria-labelledby="other-h">
-          <h2 id="other-h" className="section-h">
+        <section aria-labelledby={own('other-h')}>
+          <h2 id={own('other-h')} className="section-h">
             Other details
           </h2>
           <p className="muted">
@@ -709,6 +770,7 @@ function OneDocumentView(props: DocumentViewProps) {
         kind="document"
         memberId={memberId}
         fromAddress={onPage}
+        place={host}
         onDownload={latest && !latest.file_removed ? () => void download(latest) : null}
         onPrint={() => setPrinting(true)}
         printRef={printButton}
@@ -782,6 +844,7 @@ function OneDocumentView(props: DocumentViewProps) {
                       : countBadge(counts.collections, 'collection', 'collections'),
                   render: () => (
                     <DocumentCollections
+                      headingId={own('doc-collections-h')}
                       documentId={doc.id}
                       title={title}
                       onCount={onCollections}
@@ -894,6 +957,8 @@ function OneDocumentView(props: DocumentViewProps) {
             {edit}
           </>
         }
+        controls={flyout?.controls}
+        headingId={flyout?.headingId}
       >
         <DocPanes
           fit="own"
@@ -923,14 +988,21 @@ function OneDocumentView(props: DocumentViewProps) {
  * A document beside the list: its name as the heading (for its host to
  * focus as it opens), the host's buttons and Edit beside it, then the view.
  */
-function FlyoutView(props: { title: string; tools?: ReactNode; children?: ReactNode }) {
+function FlyoutView(props: {
+  title: string;
+  tools?: ReactNode;
+  controls?: ReactNode;
+  headingId?: string | undefined;
+  children?: ReactNode;
+}) {
   return (
     <div className="doc-view doc-view-flyout">
       <div className="doc-flyout-head">
-        <h2 className="doc-flyout-title" tabIndex={-1}>
+        <h2 id={props.headingId} className="doc-flyout-title" tabIndex={-1}>
           {props.title}
         </h2>
         <div className="row doc-flyout-tools">{props.tools}</div>
+        {props.controls && <div className="row doc-flyout-controls">{props.controls}</div>}
       </div>
       {props.children}
     </div>
@@ -965,6 +1037,7 @@ function HistorySection({
   ref,
   ...props
 }: {
+  headingId: string;
   versions: VersionView[];
   /** The older version shown, if one is. */
   viewing: string | null;
@@ -978,8 +1051,8 @@ function HistorySection({
 }) {
   const { versions, onAdd } = props;
   return (
-    <section aria-labelledby="history-h">
-      <h2 id="history-h" className="section-h">
+    <section aria-labelledby={props.headingId}>
+      <h2 id={props.headingId} className="section-h">
         History
       </h2>
       <ul className="list">
@@ -1064,7 +1137,13 @@ function HistorySection({
  * day it was signed, else a year from today, and Done brings the next one a
  * year on. Off removes it. The vault never says what to change.
  */
-function YearlyReview(props: { documentId: string; signed: string | null; offered: boolean }) {
+function YearlyReview(props: {
+  documentId: string;
+  signed: string | null;
+  offered: boolean;
+  /** Its box's id; its next date's, the same and `-next`. */
+  idBase: string;
+}) {
   const { withToken, authVersion } = useApp();
   // Its own reminders: an older vault answers them all, so asked again here.
   const { data, error, reload } = useLoad(
@@ -1109,17 +1188,17 @@ function YearlyReview(props: { documentId: string; signed: string | null; offere
       <ErrorNote message={error ?? problem} />
       <div className="check">
         <input
-          id="yearly-review"
+          id={props.idBase}
           type="checkbox"
           checked={review !== null}
           disabled={busy || data === null}
-          aria-describedby={review ? 'yearly-review-next' : undefined}
+          aria-describedby={review ? `${props.idBase}-next` : undefined}
           onChange={(e) => void turn(e.currentTarget.checked)}
         />
-        <label htmlFor="yearly-review">{REVIEW_LABEL}</label>
+        <label htmlFor={props.idBase}>{REVIEW_LABEL}</label>
       </div>
       {review && (
-        <span id="yearly-review-next" className="muted">
+        <span id={`${props.idBase}-next`} className="muted">
           Next review: {formatDate({ date: review.fire_at, precision: 'day' })}
         </span>
       )}
@@ -1132,6 +1211,8 @@ function YearlyReview(props: { documentId: string; signed: string | null; offere
  * a collection" (5.15). A collection the reader may not see is not mentioned at all.
  */
 export function DocumentCollections(props: {
+  /** Its heading's id: `doc-collections-h` unless said. */
+  headingId?: string;
   documentId: string;
   title: string;
   /** Told how many it is in, as that changes (the action row). */
@@ -1161,8 +1242,8 @@ export function DocumentCollections(props: {
   };
 
   return (
-    <section aria-labelledby="doc-collections-h">
-      <h2 id="doc-collections-h" className="section-h">
+    <section aria-labelledby={props.headingId ?? 'doc-collections-h'}>
+      <h2 id={props.headingId ?? 'doc-collections-h'} className="section-h">
         Collections
       </h2>
       <ErrorNote message={error} />

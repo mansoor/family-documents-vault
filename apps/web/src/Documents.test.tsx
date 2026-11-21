@@ -1047,9 +1047,12 @@ describe('the Documents table, from 768 px (R2)', () => {
     expect(
       screen.getByText('Tick documents to do something with many at once.'),
     ).toBeInTheDocument();
-    // A click on the row, not on its box, opens it.
+    // A click on the row, not on its box, opens it: beside the list, which
+    // stays where it is.
     fireEvent.click(within(t).getByText('Desk drawer'));
-    await screen.findByRole('heading', { name: "Sara's visa", level: 1 });
+    const aside = await screen.findByRole('dialog', { name: "Sara's visa" });
+    expect(within(aside).getByRole('heading', { name: "Sara's visa", level: 2 })).toHaveFocus();
+    expect(window.location.pathname).toBe('/documents');
   });
 
   it('is one stop for Tab: the arrows move between its cells, and what to do with the chosen comes straight after it (W1)', async () => {
@@ -1249,8 +1252,10 @@ describe('the Documents table, from 768 px (R2)', () => {
       .closest('td') as HTMLElement;
     fireEvent.click(cell);
     expect(window.location.pathname).toBe('/documents');
-    // To a document, and Back.
+    // To a document — beside the list, then as its own page — and Back.
     fireEvent.click(within(t).getByRole('link', { name: 'Statement 125' }));
+    const aside = await screen.findByRole('dialog', { name: 'Statement 125' });
+    fireEvent.click(within(aside).getByRole('link', { name: 'Open as a page' }));
     await screen.findByRole('heading', { name: 'Statement 125', level: 1 });
     act(() => window.history.back());
     const again = await table();
@@ -1404,6 +1409,8 @@ describe('the Documents table, from 768 px (R2)', () => {
     fireEvent.click(within(t).getByRole('checkbox', { name: 'Select “House deed”' }));
     expect(selected()).toBe('1 selected');
     fireEvent.click(within(t).getByRole('link', { name: 'House deed' }));
+    const aside = await screen.findByRole('dialog', { name: 'House deed' });
+    fireEvent.click(within(aside).getByRole('link', { name: 'Open as a page' }));
     await screen.findByRole('heading', { name: 'House deed', level: 1 });
     // Signed out, from the document.
     fireEvent.click(screen.getByRole('button', { name: /^Your account/ }));

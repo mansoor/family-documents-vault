@@ -47,13 +47,7 @@ import {
   type SyntheticEvent,
 } from 'react';
 import { flushSync } from 'react-dom';
-import {
-  Link,
-  NavigationType,
-  useNavigate,
-  useNavigationType,
-  useSearchParams,
-} from 'react-router';
+import { Link, NavigationType, useNavigationType, useSearchParams } from 'react-router';
 import { api, type Member } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
 import { AddToCollection, collectionsOffered } from '../collections.js';
@@ -104,6 +98,7 @@ import {
 } from '../column-widths.js';
 import { storedRole } from '../session.js';
 import { moveInMenu, useShellMode } from '../shell.js';
+import { plainClick, useChangesBeside, useFlyouts, useOpenDocument } from '../flyout-context.js';
 import { FilterSelect, None, OutcomeNote, PickAll, useGrid, type Outcome } from '../table-grid.js';
 import {
   Button,
@@ -897,7 +892,10 @@ function TableDocuments(props: {
   scope?: TableScope | undefined;
 }) {
   const { view, setView, pages, who, known, holder, scope } = props;
-  const navigate = useNavigate();
+  // Changed beside the list: loaded again, and one moved to the Trash there gone at once.
+  const gone = useChangesBeside(pages.reload);
+  // A row opens its document beside the list (flyouts).
+  const openDocument = useOpenDocument();
   const cabinets = useApp().caps?.features.cabinets === true;
   // A collection's own table remembers its columns apart, and starts without
   // Collections (0.9.0): every row there is in that one.
@@ -1068,7 +1066,8 @@ function TableDocuments(props: {
     window.setTimeout(() => outcomeRef.current?.focus(), 0);
   };
 
-  const openRow = (e: ReactMouseEvent<HTMLTableRowElement>, id: string) => {
+  const openRow = (e: ReactMouseEvent<HTMLTableRowElement>, d: DocumentView) => {
+    const id = d.id;
     const target = e.target as HTMLElement;
     // The box's cell is the box's (W4): a near miss on it chooses nothing,
     // and opens nothing.
@@ -1076,8 +1075,15 @@ function TableDocuments(props: {
     if (target.closest('a, button, input, label, select, td.col-pick, td.col-more')) return;
     // A word being chosen to copy is not a click on the row.
     if (window.getSelection?.()?.toString()) return;
-    rememberOpened(id);
-    void navigate(`/documents/${id}`);
+    // Beside the list; with Ctrl, ⌘, Shift or the middle button, its page
+    // elsewhere, as its name's link does. The focus comes back to its name;
+    // from its own page, Back finds its row.
+    openDocument(id, {
+      title: titleOf(d),
+      event: e,
+      from: e.currentTarget.querySelector<HTMLElement>('.cell-title'),
+      toPage: () => rememberOpened(id),
+    });
   };
 
   // Back from a document opened here: the focus on its row again, after the
@@ -1288,57 +1294,67 @@ function TableDocuments(props: {
             </tr>
           </thead>
           <tbody>
-            {pages.items.map((d) => {
-              const hint = hints ? hintOf(scope, d) : null;
-              return (
-                <tr
-                  key={d.id}
-                  data-id={d.id}
-                  className={pickedIds.has(d.id) ? 'picked' : undefined}
-                  onClick={(e) => openRow(e, d.id)}
-                >
-                  {selectable && (
-                    <td className="col-pick">
-                      <label className="pick-cell">
-                        <input
-                          type="checkbox"
-                          checked={pickedIds.has(d.id)}
-                          onChange={(e) => pick(d.id, e.target.checked)}
+            {pages.items
+              .filter((d) => !gone.has(d.id))
+              .map((d) => {
+                const hint = hints ? hintOf(scope, d) : null;
+                return (
+                  <tr
+                    key={d.id}
+                    data-id={d.id}
+                    className={pickedIds.has(d.id) ? 'picked' : undefined}
+                    onClick={(e) => openRow(e, d)}
+                    onAuxClick={(e) => {
+                      if (e.button === 1) openRow(e, d);
+                    }}
+                  >
+                    {selectable && (
+                      <td className="col-pick">
+                        <label className="pick-cell">
+                          <input
+                            type="checkbox"
+                            checked={pickedIds.has(d.id)}
+                            onChange={(e) => pick(d.id, e.target.checked)}
+                          />
+                          <span className="visually-hidden">Select “{titleOf(d)}”</span>
+                        </label>
+                      </td>
+                    )}
+                    {shown.map((c) => (
+                      <Fragment key={c.key}>
+                        <Cell
+                          column={c}
+                          doc={d}
+                          known={known}
+                          offset={selectable ? PICK_WIDTH : 0}
                         />
-                        <span className="visually-hidden">Select “{titleOf(d)}”</span>
-                      </label>
+                        {hints && c.key === 'title' && (
+                          <td>
+                            {hint ? (
+                              <Clip text={hint} always>
+                                <span className="collection-hint">
+                                  {HINT_WORDS[hint] ?? 'Some people'}
+                                </span>
+                              </Clip>
+                            ) : (
+                              <None />
+                            )}
+                          </td>
+                        )}
+                      </Fragment>
+                    ))}
+                    <td className="col-more">
+                      <RowMore
+                        doc={d}
+                        scope={scope}
+                        onSay={sayRow}
+                        onChanged={rowChanged}
+                        onTrashed={(title) => sayRow(trashedWords(title))}
+                      />
                     </td>
-                  )}
-                  {shown.map((c) => (
-                    <Fragment key={c.key}>
-                      <Cell column={c} doc={d} known={known} offset={selectable ? PICK_WIDTH : 0} />
-                      {hints && c.key === 'title' && (
-                        <td>
-                          {hint ? (
-                            <Clip text={hint} always>
-                              <span className="collection-hint">
-                                {HINT_WORDS[hint] ?? 'Some people'}
-                              </span>
-                            </Clip>
-                          ) : (
-                            <None />
-                          )}
-                        </td>
-                      )}
-                    </Fragment>
-                  ))}
-                  <td className="col-more">
-                    <RowMore
-                      doc={d}
-                      scope={scope}
-                      onSay={sayRow}
-                      onChanged={rowChanged}
-                      onTrashed={(title) => sayRow(trashedWords(title))}
-                    />
-                  </td>
-                </tr>
-              );
-            })}
+                  </tr>
+                );
+              })}
             {pages.items.length === 0 && (
               <tr className="empty-row">
                 <td colSpan={shown.length + (selectable ? 1 : 0) + extraCols}>
@@ -1542,6 +1558,7 @@ function Clip({
 
 function Cell(props: { column: Column; doc: DocumentView; known: Known; offset: number }) {
   const { column, doc, known } = props;
+  const openAside = useFlyouts();
   switch (column.key) {
     case 'title':
       return (
@@ -1549,7 +1566,22 @@ function Cell(props: { column: Column; doc: DocumentView; known: Known; offset: 
           <Link
             className="cell-title"
             to={`/documents/${doc.id}`}
-            onClick={() => rememberOpened(doc.id)}
+            onClick={(e) => {
+              // A plain click opens it beside the list; Ctrl, ⌘, Shift or
+              // the middle button are the link's own: its page, elsewhere.
+              // Back from its own page finds its row (remembered only on
+              // the way there).
+              if (!openAside || !plainClick(e)) {
+                rememberOpened(doc.id);
+                return;
+              }
+              e.preventDefault();
+              openAside.open(doc.id, {
+                title: titleOf(doc),
+                from: e.currentTarget,
+                toPage: () => rememberOpened(doc.id),
+              });
+            }}
           >
             <Clip text={titleOf(doc)} />
           </Link>
@@ -2905,8 +2937,11 @@ function PhoneDocuments(props: {
   scope?: TableScope | undefined;
 }) {
   const { view, pages, known, scope } = props;
+  // Changed beside the list: loaded again, and one moved to the Trash there gone at once.
+  const gone = useChangesBeside(pages.reload);
   const { withToken } = useApp();
-  const navigate = useNavigate();
+  // A row opens its document beside the list (flyouts).
+  const openDocument = useOpenDocument();
   // Out of this collection, as the table's bar takes them out: each by the
   // vault's call for one; what went is said by the page, with Undo.
   const [removeError, setRemoveError] = useState<string | null>(null);
@@ -3014,31 +3049,36 @@ function PhoneDocuments(props: {
                 : (scope?.empty ?? 'Nothing here yet.')}
           </li>
         )}
-        {pages.items.map((d) => (
-          <DocRow
-            key={d.id}
-            doc={d}
-            types={known.types}
-            pick={select.pick(d.id)}
-            hint={hintOf(scope, d)}
-            collection={
-              scope
-                ? {
-                    id: scope.collection.id,
-                    name: scope.collection.name,
-                    mayChange: scope.mayRemove,
-                  }
-                : undefined
-            }
-            onOpen={() => {
-              rememberOpened(d.id);
-              void navigate(`/documents/${d.id}`);
-            }}
-            onChanged={changed}
-            onTrashed={trashed.onTrashed}
-            onRemoved={scope ? (removed) => scope.onRemoved([removed], 'row') : undefined}
-          />
-        ))}
+        {pages.items
+          .filter((d) => !gone.has(d.id))
+          .map((d) => (
+            <DocRow
+              key={d.id}
+              doc={d}
+              types={known.types}
+              pick={select.pick(d.id)}
+              hint={hintOf(scope, d)}
+              collection={
+                scope
+                  ? {
+                      id: scope.collection.id,
+                      name: scope.collection.name,
+                      mayChange: scope.mayRemove,
+                    }
+                  : undefined
+              }
+              onOpen={(e) =>
+                openDocument(d.id, {
+                  title: titleOf(d),
+                  event: e,
+                  toPage: () => rememberOpened(d.id),
+                })
+              }
+              onChanged={changed}
+              onTrashed={trashed.onTrashed}
+              onRemoved={scope ? (removed) => scope.onRemoved([removed], 'row') : undefined}
+            />
+          ))}
       </ul>
       {pages.hasMore && (
         <Button kind="quiet" disabled={pages.loadingMore} onClick={() => void pages.more()}>

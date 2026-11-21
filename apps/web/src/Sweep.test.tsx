@@ -291,6 +291,16 @@ describe('a page that could not be loaded says so, and nothing it does not know 
   });
 });
 
+/**
+ * A row opens its document beside the list (flyouts); from there, Open as
+ * a page goes to its own page, which these paths are about.
+ */
+async function asPage(name: string) {
+  const aside = await screen.findByRole('dialog', { name });
+  fireEvent.click(within(aside).getByRole('link', { name: 'Open as a page' }));
+  await screen.findByRole('heading', { level: 1, name });
+}
+
 describe('back from a document to the table as it was (R5’s keyboard paths)', () => {
   it('Back on the document goes back, as the browser’s does, and the row has the focus', async () => {
     atWidth(1280);
@@ -304,7 +314,7 @@ describe('back from a document to the table as it was (R5’s keyboard paths)', 
     const row = await within(grid).findByRole('link', { name: "Mansoor's passport" });
     row.focus();
     fireEvent.click(row);
-    await screen.findByRole('heading', { level: 1, name: "Mansoor's passport" });
+    await asPage("Mansoor's passport");
     // The Back link names where it goes when opened afresh: Home.
     const back = screen.getByRole('link', { name: 'Back' });
     expect(back).toHaveAttribute('href', '/');
@@ -332,7 +342,7 @@ describe('back from a document to the table as it was (R5’s keyboard paths)', 
     });
     const row = await screen.findByRole('button', { name: /^Mansoor's passport/ });
     press(row);
-    await screen.findByRole('heading', { level: 1, name: "Mansoor's passport" });
+    await asPage("Mansoor's passport");
     fireEvent.click(screen.getByRole('link', { name: 'Back' }));
     await waitFor(() => expect(window.location.search).toBe('?sort=title&dir=desc'));
     await waitFor(() =>
@@ -449,7 +459,7 @@ describe('the review round (R5)', () => {
     at('/documents', { documents: TWO.documents.map((d) => ({ ...d })) });
     const grid = await screen.findByRole('grid', { name: /^Documents, sorted by/ });
     fireEvent.click(await within(grid).findByRole('link', { name: "Mansoor's passport" }));
-    await screen.findByRole('heading', { level: 1, name: "Mansoor's passport" });
+    await asPage("Mansoor's passport");
   }
 
   it('R5-1: Edit, the card’s Back, then the document’s Back: the table, not the card again', async () => {
@@ -520,7 +530,7 @@ describe('the review round (R5)', () => {
     // Taken out of the entry, which keeps its place.
     await waitFor(() => expect((window.history.state as { usr: unknown }).usr ?? null).toBeNull());
     fireEvent.click(await screen.findByRole('button', { name: /^Council tax bill/ }));
-    await screen.findByRole('heading', { level: 1, name: 'Council tax bill' });
+    await asPage('Council tax bill');
     fireEvent.click(screen.getByRole('link', { name: 'Back' }));
     await waitFor(() => expect(window.location.pathname).toBe('/'));
     await screen.findByRole('heading', { level: 2, name: 'People' });

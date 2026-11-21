@@ -5,7 +5,7 @@ import {
   type OwnLinkToEnd,
   type Visibility,
 } from '@fdv/shared';
-import { useEffect, useRef, useState, type RefObject } from 'react';
+import { useEffect, useId, useRef, useState, type RefObject } from 'react';
 import { api, ApiRequestError } from '../api.js';
 import { describeError, useApp } from '../app-context.js';
 import { storedRole } from '../session.js';
@@ -90,6 +90,7 @@ export function VisibilityControl(props: {
   note?: boolean;
 }) {
   const { guarded, withToken } = useApp();
+  const noticeId = `${useId()}-h`;
   const [open, setOpen] = useState(Boolean(props.onClose));
   // Into Only me with links of one's own (5.41): which, and whether they
   // may be kept, as the vault said.
@@ -115,9 +116,9 @@ export function VisibilityControl(props: {
     const target =
       to === 'button'
         ? change.current
-        : box.current?.querySelector<HTMLElement>(
-            to === 'notice' ? '#private-notice-h' : '[aria-pressed="true"]',
-          );
+        : to === 'notice'
+          ? document.getElementById(noticeId)
+          : box.current?.querySelector<HTMLElement>('[aria-pressed="true"]');
     if (!target) return;
     moved.current = null;
     target.focus();
@@ -170,8 +171,8 @@ export function VisibilityControl(props: {
 
   if (notice) {
     return (
-      <section ref={box} className="card stack" role="alert" aria-labelledby="private-notice-h">
-        <h2 id="private-notice-h" tabIndex={-1} style={{ fontSize: 18 }}>
+      <section ref={box} className="card stack" role="alert" aria-labelledby={noticeId}>
+        <h2 id={noticeId} tabIndex={-1} style={{ fontSize: 18 }}>
           {notice.title}
         </h2>
         <p>{notice.body}</p>

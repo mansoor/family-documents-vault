@@ -12,8 +12,8 @@ import {
   type ResetNotice,
   type SuggestionView,
 } from '@fdv/shared';
-import { useEffect, useRef, useState, type ReactNode } from 'react';
-import { Link, useNavigate } from 'react-router';
+import { useEffect, useRef, useState, type MouseEvent, type ReactNode } from 'react';
+import { Link } from 'react-router';
 import { api, type Member } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
 import { collectionsOffered, CollectionsOnHome } from '../collections.js';
@@ -23,6 +23,7 @@ import { IdentityNotice } from '../identity.js';
 import { PersonAvatar } from '../person-avatar.js';
 import { storedRole } from '../session.js';
 import { useShellMode } from '../shell.js';
+import { useChangesBeside, useOpenDocument } from '../flyout-context.js';
 import {
   Button,
   categoryLabel,
@@ -46,7 +47,8 @@ import { dayWordsOf, familyZoneNow } from '../family-time.js';
  */
 export function HomeScreen() {
   const { caps, authVersion, session } = useApp();
-  const navigate = useNavigate();
+  // A row opens its document beside the list (flyouts).
+  const openDocument = useOpenDocument();
   // What a page that sent somebody here did — a document moved to the Trash
   // from its own page (R5) — said where the focus is, as the Inbox says what
   // was filed.
@@ -123,6 +125,8 @@ export function HomeScreen() {
   // Bumped when a row's ⋯ changed something (5.4): put in a collection, moved to
   // the Trash. The collections' counts are the vault's, so they are asked again.
   const [changes, setChanges] = useState(0);
+  // Changed beside the list: loaded again, and one moved to the Trash there gone at once.
+  const gone = useChangesBeside(reload);
   const changed = () => {
     setChanges((n) => n + 1);
     return reload();
@@ -254,16 +258,18 @@ export function HomeScreen() {
       <>
         {trashed.note}
         <ul className="list">
-          {(data?.recent ?? []).map((d) => (
-            <DocRow
-              key={d.id}
-              doc={d}
-              types={data?.types}
-              onOpen={() => void navigate(`/documents/${d.id}`)}
-              onChanged={changed}
-              onTrashed={trashed.onTrashed}
-            />
-          ))}
+          {(data?.recent ?? [])
+            .filter((d) => !gone.has(d.id))
+            .map((d) => (
+              <DocRow
+                key={d.id}
+                doc={d}
+                types={data?.types}
+                onOpen={(e) => openDocument(d.id, { title: d.title, event: e })}
+                onChanged={changed}
+                onTrashed={trashed.onTrashed}
+              />
+            ))}
         </ul>
       </>
     ),
@@ -755,7 +761,8 @@ export function DocRow({
   doc: DocumentView;
   /** The vault's types, for the type's short name; the category until they arrive. */
   types?: ReadonlyArray<DocumentTypeView> | null | undefined;
-  onOpen: () => void;
+  /** Pressed: with the click, which says beside the list or elsewhere (useOpenDocument). */
+  onOpen: (e: MouseEvent<HTMLElement>) => void;
   /** Its ⋯ changed something (5.4): the list is loaded again. */
   onChanged: () => void | Promise<unknown>;
   /** On a collection's page, for its maker only: who in its audience is not given it (5.14). */
@@ -834,12 +841,20 @@ export interface RowPick {
 export function RowMain(props: {
   title: string;
   pick: RowPick | undefined;
-  onOpen: () => void;
+  onOpen: (e: MouseEvent<HTMLElement>) => void;
   children: ReactNode;
 }) {
   if (!props.pick) {
     return (
-      <button type="button" className="rowbtn" onClick={props.onOpen}>
+      <button
+        type="button"
+        className="rowbtn"
+        onClick={props.onOpen}
+        // The middle button, as on a link: its own page, elsewhere.
+        onAuxClick={(e) => {
+          if (e.button === 1) props.onOpen(e);
+        }}
+      >
         {props.children}
       </button>
     );

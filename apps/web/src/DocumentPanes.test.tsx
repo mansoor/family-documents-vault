@@ -218,6 +218,9 @@ describe('a document in two panes (R3)', () => {
     at('/documents', WIDE);
     const table = await screen.findByRole('grid', { name: /^Documents, sorted by/ });
     fireEvent.click(await within(table).findByRole('link', { name: "Mansoor's passport" }));
+    // Beside the list first; its own page from there.
+    const aside = await screen.findByRole('dialog', { name: "Mansoor's passport" });
+    fireEvent.click(within(aside).getByRole('link', { name: 'Open as a page' }));
     await details();
     await waitFor(() =>
       expect(screen.getByRole('heading', { level: 1, name: "Mansoor's passport" })).toHaveFocus(),
@@ -234,6 +237,9 @@ describe('a document in two panes (R3)', () => {
     const table = await screen.findByRole('grid', { name: /^Documents, sorted by/ });
     fireEvent.click(await within(table).findByRole('checkbox', { name: 'Select “House deed”' }));
     fireEvent.click(within(table).getByRole('link', { name: "Mansoor's passport" }));
+    const aside = await screen.findByRole('dialog', { name: "Mansoor's passport" });
+    fireEvent.click(within(aside).getByRole('link', { name: 'Open as a page' }));
+    await screen.findByRole('heading', { level: 1, name: "Mansoor's passport" });
     await within(await pages()).findByRole('img', { name: 'Page 1 of 2' });
     act(() => window.history.back());
     const again = await screen.findByRole('grid', { name: /^Documents, sorted by/ });
