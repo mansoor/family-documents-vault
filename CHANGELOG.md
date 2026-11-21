@@ -6,6 +6,17 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.9.0-dev.80] - 2026-11-21 — small follow-ups
+
+### Added
+
+- **A code from an authenticator app that was used already is said so by a reason, not only in words.** Signing in, confirming it's you, and setting up or turning off two-step sign-in each refuse it as before, now with `error.reason` `code_used`, so an app can tell "wait for the next code" from "that code is wrong" without reading the message. `@fdv/shared`: `CODE_USED_REASON`.
+- **The phone app 0.20.0** is listed among the apps the vault works with, so its client is tested against every change too.
+
+### Fixed
+
+- **Shell scripts keep Unix line endings on Windows checkouts** (`.gitattributes`), so a local stack's database set-up script runs as written.
+
 ## [0.9.0-dev.79] - 2026-11-20 — the phone app and the vault agree on versions
 
 ### Added

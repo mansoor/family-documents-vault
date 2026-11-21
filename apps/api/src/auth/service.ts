@@ -26,7 +26,7 @@ import { sql } from 'kysely';
 import { ApiError } from '../errors.js';
 import type { SetupToken } from './setup-token.js';
 import { KnownDevices, type SignInGuard } from './sign-in-guard.js';
-import { CODE_USED_MESSAGE, type CodeCheck } from './totp.js';
+import { CODE_USED_MESSAGE, CODE_USED_REASON, type CodeCheck } from './totp.js';
 import {
   ACCESS_TTL_SECONDS,
   hashRefreshToken,
@@ -752,6 +752,7 @@ export class AuthService {
         401,
         'totp_invalid',
         found === 'used' ? CODE_USED_MESSAGE : "That code didn't match. Try the current one.",
+        found === 'used' ? { reason: CODE_USED_REASON } : {},
       );
     }
     // A token from before 5.29 carries no proof: it is no longer than five
