@@ -1279,6 +1279,16 @@ own lines aren't shown for the document; what was downloaded or looked at of the
 document through it still is. A chip at the top names the document; its **×**
 shows the whole log again.
 
+**Download CSV**, beside Print, saves the lines the page's filters keep — who,
+what happened, which days, and the document of its chip — as a spreadsheet:
+every such line the log shows you, not only those loaded, newest first, in the
+same words, with when (on the family's clock, and in UTC), who, what sort of
+thing and the document each is about (a sensitive one "a sensitive document").
+It holds at most 50,000 lines, and reads at most a minute's worth of the log;
+past that, the newest, and the page and the file's last row say so. Downloading it is a line in the log itself. The file
+opens in a spreadsheet as it is (UTF-8), and no cell of it is ever read as a
+formula.
+
 ### Reading a document
 
 A document's page shows its pages beside its details on a wider screen (from 768

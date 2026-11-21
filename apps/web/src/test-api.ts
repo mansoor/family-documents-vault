@@ -419,6 +419,13 @@ export interface FakeState {
    * given for that id, paged as GET /audit is, and 404 for an id not here.
    */
   documentActivity?: Record<string, FakeState['activity']>;
+  /**
+   * The activity log as CSV (0.9.0-dev.82): `features.activity_export`,
+   * said when a test gives this; GET /audit/export answers it as the file,
+   * and each query it was asked with is kept in `activityCsvAsks`.
+   */
+  activityCsv?: string;
+  activityCsvAsks?: string[];
   /** True: every document has had its "only you can open this" moment already. */
   privateNoticeShown: boolean;
   /**
@@ -1631,6 +1638,8 @@ export function installFakeApi(state: FakeState) {
           ...(state.endedSharing ? { ended_sharing: true } : {}),
           // One document's activity (0.9.0, DA): said when a test gives it.
           ...(state.documentActivity ? { document_activity: true } : {}),
+          // The activity log as CSV (0.9.0-dev.82): said when a test gives it.
+          ...(state.activityCsv !== undefined ? { activity_export: true } : {}),
           // Who opened a link; health records kept as they are (0.9.0, H5).
           ...(state.linkOpenings ? { share_opens: true, record_formats: true } : {}),
           // Caregivers and turning 18 (0.9.0, H1b): said when a test asks.
@@ -4167,6 +4176,22 @@ export function installFakeApi(state: FakeState) {
         text_code_to: state.resetTextTo ?? null,
         expires_at: new Date(Date.now() + 36e5).toISOString(),
       });
+    }
+    // The activity log as CSV (0.9.0-dev.82): the file given, as the vault names it.
+    if (path === '/api/v1/audit/export' && method === 'GET') {
+      if (storedRole() === 'viewer') {
+        return refuse(403, 'forbidden', 'A viewer cannot read the activity log.');
+      }
+      (state.activityCsvAsks ??= []).push(query.toString());
+      return Promise.resolve(
+        new Response(`\uFEFF${state.activityCsv ?? ''}`, {
+          status: 200,
+          headers: {
+            'content-type': 'text/csv; charset=utf-8',
+            'content-disposition': "attachment; filename*=UTF-8''activity-vault-2026-11-21.csv",
+          },
+        }),
+      );
     }
     if (path.startsWith('/api/v1/audit')) {
       // Pages of `activityPage` lines, older ones `before` an id (R4).

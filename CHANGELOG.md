@@ -6,6 +6,15 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.9.0-dev.82] - 2026-11-21 — the activity log as a spreadsheet
+
+### Added
+
+- **Download CSV on the Activity page**, beside Print: the lines its filters keep — who, what happened, which days, and the document of its chip — as a spreadsheet, every one the log shows you rather than only those loaded, newest first and in the same words. Each row says when (on the family's clock, its time zone, and in UTC), who did it, what happened, what sort of thing it was, the document it is about (a sensitive one is "a sensitive document", as the line says it) and whether the page marks it. Nothing is in it that your own copy of the log doesn't show: another person's Only me documents, a teen's Adults only ones, another household's anything — and no link, code, PIN or address.
+- **Up to 50,000 lines in one file**, and as much of the log as a minute's reading (or a quarter of a million of its entries) reaches: past either, the newest, and both the page and the file's last row say so — choose fewer days or a narrower filter for the rest. A day is the family's, counted as the page counts it, the day of a sitting's last look; a download stops part-way if you're signed out or your role changes meanwhile. The file opens in a spreadsheet as it is (UTF-8 with a byte-order mark), and a cell that would be read as a formula is written as text.
+- **Downloading it is in the activity log**, once a download: "Sam downloaded the activity log as a spreadsheet" for whoever reads the log, or, for one document's lines, "… the activity of “Passport” …" for whoever may see the document. Which filters were used and how many lines it held are kept, never shown.
+- **The client:** `activityCsv`; `@fdv/shared`: the file's columns, rows and name, `activityLineKept` (the page's filters, now the vault's too) and `ACTIVITY_CSV_MAX_LINES`.
+
 ## [0.9.0-dev.81] - 2026-11-21 — printing
 
 ### Added

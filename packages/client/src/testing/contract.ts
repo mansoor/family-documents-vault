@@ -1,4 +1,6 @@
 import {
+  ACTIVITY_CSV_COLUMNS,
+  activityCsvCapped,
   APP_BASIC_DEPRECATION,
   APP_KEYS_MAX,
   CATEGORY_LABELS,
@@ -3765,6 +3767,52 @@ export const contractScenarios: Scenario[] = [
         api.documentActivity(token, '00000000-0000-4000-8000-000000000000'),
       );
       expect([missing.status, missing.code]).toEqual([404, 'not_found']);
+    },
+  },
+  {
+    name: 'the activity log as CSV: the lines the log gives, through its filters, named for the vault and the day; 404 for a document not there, 422 for a filter that is not one (0.9.0-dev.82)',
+    run: async (api, ctx) => {
+      const { access_token: token } = await signIn(api, ctx);
+      expect((await api.capabilities()).features.activity_export).toBe(true);
+      const doc = await api.createDocument(token, {
+        title: 'Contract csv bill, the first',
+        sensitive: false,
+      });
+      // Its lines as its activity says them, before the download is one of them.
+      const said = (await api.documentActivity(token, doc.id)).items.map((l) => l.text);
+      const res = await api.activityCsv(token, { document: doc.id });
+      expect(res.headers.get('content-type')).toBe('text/csv; charset=utf-8');
+      expect(res.headers.get('content-disposition')).toMatch(
+        /^attachment; filename\*=UTF-8''activity-vault-\d{4}-\d{2}-\d{2}\.csv$/,
+      );
+      const bytes = new Uint8Array(await res.arrayBuffer());
+      // UTF-8 with a byte-order mark, rows ending CRLF.
+      expect([...bytes.slice(0, 3)]).toEqual([0xef, 0xbb, 0xbf]);
+      const text = new TextDecoder().decode(bytes.slice(3));
+      const rows = text.split('\r\n');
+      expect(rows[0]).toBe(ACTIVITY_CSV_COLUMNS.join(','));
+      // A comma in a title is quoted, and the line is the log's.
+      expect(text).toContain('added “Contract csv bill, the first”"');
+      expect(said.length).toBeGreaterThan(0);
+      expect(said.every((t) => text.includes(t))).toBe(true);
+      // And the download itself is a line about the document now.
+      expect(
+        (await api.documentActivity(token, doc.id)).items.some((l) =>
+          l.text.endsWith(
+            'downloaded the activity of “Contract csv bill, the first” as a spreadsheet',
+          ),
+        ),
+      ).toBe(true);
+      expect(activityCsvCapped(text)).toBe(false);
+      // A filter that keeps none of them: the columns alone.
+      const none = await api.activityCsv(token, { document: doc.id, kind: 'shared' });
+      expect(new TextDecoder().decode(new Uint8Array(await none.arrayBuffer()).slice(3))).toBe(
+        `${ACTIVITY_CSV_COLUMNS.join(',')}\r\n`,
+      );
+      const missing = await refusal(api.activityCsv(token, { document: NEVER_USED }));
+      expect([missing.status, missing.code]).toEqual([404, 'not_found']);
+      const odd = await refusal(api.activityCsv(token, { kind: 'everything' }));
+      expect([odd.status, odd.code]).toEqual([422, 'validation_failed']);
     },
   },
   {

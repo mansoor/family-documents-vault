@@ -1,8 +1,10 @@
 import { createApi, createHttp, type ResponseLike, type UploadBody } from '@fdv/client';
 import { heardFamilyZone } from './family-zone-store.js';
 import {
+  activityCsvCapped,
   REFRESH_COOKIE_HEADER,
   REFRESH_COOKIE_MODE,
+  type ActivityExportAsk,
   type CaptureMetadata,
   type PhotoCrop,
 } from '@fdv/shared';
@@ -85,6 +87,17 @@ function fileForm(file: File): UploadBody {
 const blobOf = async (res: Promise<ResponseLike>): Promise<Blob> =>
   ((await res) as unknown as Response).blob();
 
+/** The name a download's Content-Disposition gives (`filename*=UTF-8''…`), or null. */
+export function dispositionName(header: string | null): string | null {
+  const m = /filename\*=UTF-8''([^;]+)/i.exec(header ?? '');
+  if (!m?.[1]) return null;
+  try {
+    return decodeURIComponent(m[1]);
+  } catch {
+    return null;
+  }
+}
+
 /** An answer that says the family's zone, heard on its way past (family-zone-store.ts). */
 const hearZone = async <T extends { timezone?: string | null }>(answer: Promise<T>): Promise<T> => {
   const got = await answer;
@@ -119,6 +132,21 @@ export const api = {
   /** One page as the vault drew it (0.4.12). */
   page: (token: string, versionId: string, n: number) => blobOf(client.page(token, versionId, n)),
   exportContent: (token: string, id: string) => blobOf(client.exportContent(token, id)),
+  /**
+   * The activity log as CSV (0.9.0-dev.82): the file as the vault wrote it,
+   * byte-order mark and all, the name it gives it, and whether it stopped at
+   * its cap (its last row says so).
+   */
+  activityCsv: async (token: string, ask: ActivityExportAsk) => {
+    const res = await client.activityCsv(token, ask);
+    const bytes = await res.arrayBuffer();
+    return {
+      blob: new Blob([bytes], { type: 'text/csv;charset=utf-8' }),
+      filename: dispositionName(res.headers.get('content-disposition')),
+      // Read whole: only its last record, alone, says it stopped short.
+      capped: activityCsvCapped(new TextDecoder().decode(bytes)),
+    };
+  },
   /** A page the vault drew of a file sent in (5.23), and a copy of the file itself. */
   incomingPage: (token: string, id: string, n: number) => blobOf(client.incomingPage(token, id, n)),
   incomingContent: (token: string, id: string) => blobOf(client.incomingContent(token, id)),

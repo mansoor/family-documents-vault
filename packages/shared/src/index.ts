@@ -1,5 +1,6 @@
 export * from './version.js';
 export * from './activity.js';
+export * from './activity-csv.js';
 export * from './capabilities.js';
 export * from './capture.js';
 export * from './collections.js';
