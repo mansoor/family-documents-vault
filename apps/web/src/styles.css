@@ -6274,6 +6274,107 @@ html:has(.shell-phone):has(.has-toast) {
   padding: 0 14px 96px;
 }
 
+/* Side by side, from 1,100 px: two (three where each of three would be
+   300 px wide, flyout-store.ts) panes of equal width next to each other
+   over the list, the list's start still in sight at their left
+   (--list-peek), under a bar with Add a third, Scroll together and One at
+   a time. The pane used last has a green line on top, between the bar
+   (--surface) and the pane (--bg): --ok is 7.7:1 and 7.3:1 against them
+   in light, 5.6:1 and 6.5:1 in dark; 3:1 is asked of a mark. */
+.flyout-side,
+.flyout-side-bar {
+  --list-peek: 240px;
+  --side-room: calc(100vw - var(--side-w, 216px) - var(--tray-now, 0px) - var(--list-peek));
+  --side-bar-h: 52px;
+}
+
+.flyout-of-2 {
+  --of: 2;
+}
+
+.flyout-of-3 {
+  --of: 3;
+}
+
+.flyout-at-0 {
+  --at: 0;
+}
+
+.flyout-at-1 {
+  --at: 1;
+}
+
+.flyout-at-2 {
+  --at: 2;
+}
+
+.flyout-side-bar {
+  position: fixed;
+  top: var(--shell-top, 0px);
+  right: var(--tray-now, 0px);
+  z-index: 37;
+  width: var(--side-room);
+  height: var(--side-bar-h);
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  padding: 0 12px;
+  background: var(--surface);
+  border-left: 1px solid var(--border-strong);
+  border-bottom: 1px solid var(--border);
+}
+
+.flyout-side-bar [aria-pressed='true'] {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.flyout.flyout-side {
+  top: calc(var(--shell-top, 0px) + var(--side-bar-h));
+  right: calc(var(--tray-now, 0px) + var(--side-room) / var(--of) * (var(--of) - 1 - var(--at)));
+  width: calc(var(--side-room) / var(--of));
+  padding: 0 14px 32px;
+  border-top: 4px solid transparent;
+  box-shadow: none;
+}
+
+.flyout.flyout-side.flyout-last {
+  border-top-color: var(--ok);
+}
+
+.flyout-side .doc-fit-two .doc-pages,
+.flyout-side .doc-fit-content .doc-pages {
+  max-height: calc(100dvh - var(--shell-top, 0px) - var(--side-bar-h) - 100px);
+}
+
+.flyout-side .doc-fit-two .doc-pages:has(> .viewer-bar),
+.flyout-side .doc-fit-content .doc-pages:has(> .viewer-bar) {
+  height: calc(100dvh - var(--shell-top, 0px) - var(--side-bar-h) - 100px);
+}
+
+/* Waiting for a document from the list, to show beside the one in front:
+   said under its heading, in its own head, over none of the list's rows. */
+.doc-flyout-notice {
+  flex: 1 0 100%;
+}
+
+.flyout-pick {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 6px 6px 12px;
+  border-radius: var(--radius-m);
+  border: 1px solid var(--accent);
+  background: var(--accent-soft);
+  color: var(--ink);
+}
+
+.flyout-pick p {
+  margin: 0;
+}
+
 .flyout .doc-flyout-head {
   position: sticky;
   top: 0;

@@ -16,6 +16,9 @@ import { Button, Check, ErrorNote, LoadFailed } from './ui.js';
 import { useWorkerCheck } from './worker-check.js';
 import { dayWordsOf, familyZoneNow, shortWhenWords } from './family-time.js';
 
+/** What a form was last started from: nothing yet. */
+const UNSEEN = Symbol('unseen');
+
 /**
  * Email in (0.8.0, S4): an owner's, the second part of Settings → Server
  * and reading → Email, in and out (a page of its own until 0.9.0), and the
@@ -234,9 +237,12 @@ function MailboxForm(props: { view: MailInView; onSaved: () => Promise<void> }) 
   const test = useWorkerCheck();
   const tested = useRef<HTMLDivElement>(null);
   const line = useRef<HTMLParagraphElement>(null);
-  useEffect(() => {
-    // The form starts from what the vault has, each time it is loaded.
-    /* eslint-disable react-hooks/set-state-in-effect */
+  // The form starts from what the vault has, each time it is loaded: set
+  // while drawing, never in an effect after it, so nothing typed before an
+  // effect would have run is put back.
+  const [from, setFrom] = useState<unknown>(UNSEEN);
+  if (from !== box) {
+    setFrom(box);
     setHost(box?.host ?? '');
     setPort(String(box?.port ?? MAIL_IN_PORT_DEFAULT));
     setUser(box?.username ?? '');
@@ -245,8 +251,7 @@ function MailboxForm(props: { view: MailInView; onSaved: () => Promise<void> }) 
     setAfter(box?.after ?? 'move');
     setAuthserv(box?.authserv_id ?? '');
     setPoll(box?.poll_seconds ?? 300);
-    /* eslint-enable react-hooks/set-state-in-effect */
-  }, [box]);
+  }
   useEffect(() => {
     if (said) line.current?.focus();
   }, [said]);

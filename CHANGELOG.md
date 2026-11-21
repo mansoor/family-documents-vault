@@ -6,6 +6,28 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.9.0-dev.85] - 2026-11-21 — documents side by side
+
+### Added
+
+- **Side by side.** In a window at least 1,100 px wide, two or three open documents can be shown next to each other over the list, each the same width, with the start of the list still in sight at their left. Side by side, on the document showing, opens a list of the other open documents to choose the second from; or press Choose from the list there and click a document in the list (Esc cancels); while you choose, the document showing says so under its name. Above them, Add a third adds a third the same way, Scroll together scrolls their pages together (each as far down its own pages), and One at a time goes back to one at a time, keeping the one you used last and putting the others in the tray.
+- **A third.** Add a third is offered only when each of three would be at least 300 px wide: a window about 1,430 px wide with the sidebar open, less with it folded. As the window narrows, three go back to two, the one you used last staying.
+- **The one used last.** The document you were last in has a green line along its top; its own Minimise and × do not count as being in it. A document clicked in the list takes its place; the one it replaces goes to the tray, minimised, and nothing else changes. At the 11th, closing one of those side by side puts the new one beside the rest.
+- **Keys and focus.** Esc minimises only the document you are in; the others stay side by side. ] and [ go through the open documents as before, each taking the place of the one used last unless it is already showing. Each document keeps its own Hide details / Show details.
+- **Kept for this tab.** After a reload, the documents that were side by side come back side by side, in the same order and loaded; the others come back freed, as before.
+
+### Changed
+
+- Every open document still counts towards the 10, those side by side too; the warning from the 8th and the question at the 11th are as before. Those showing are never freed: one leaving side by side for the tray starts its 15 minutes then.
+- Below 1,100 px, Side by side is not offered, and documents side by side go back to one at a time as the window narrows.
+- Moving to another page puts every document showing in the tray.
+- The README no longer describes documents beside the list: this changelog and the keys list (?) do.
+- Beside the list, a document's sections (Notes, History, Collections, Other details, an older version's) are named with the document too, so a screen reader's list of places tells two open documents apart.
+
+### Fixed
+
+- Settings → Backups, Text messages, Email in and AI readers: what you typed into the form as it first appeared could be put back to the saved values a moment later. The form now starts from what the vault has as it is drawn.
+
 ## [0.9.0-dev.84] - 2026-11-21 — documents open beside the list
 
 ### Added

@@ -1,21 +1,35 @@
+import { existsSync, readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
+  besideIn,
+  closedIn,
   EMPTY_FLYOUTS,
+  fewerIn,
   flyoutsKey,
   forgetFlyouts,
   FREE_AFTER_MS,
   frontOf,
   fromStored,
+  isSideBySide,
+  itemOf,
   keepFlyouts,
+  LIST_PEEK,
   MAX_OPEN,
   minimisedIn,
+  mostSideBySide,
   neighbourIn,
+  oneAtATimeIn,
   openedIn,
   readFlyouts,
   shownIn,
+  SIDE_PANE_MIN,
   suggestions,
   sweptIn,
   toStored,
+  TRAY_WIDTH,
+  trayedIn,
+  usedIn,
   withView,
   type FlyoutSet,
 } from './flyout-store.js';
@@ -23,7 +37,8 @@ import {
 /**
  * The documents open beside the list, as plain data: opening, the front,
  * minimising, the limit of 10 and what to close first, freeing after 15
- * minutes minimised, and what is kept for a reload.
+ * minutes minimised, what is kept for a reload, and two or three side by
+ * side.
  */
 
 const MIN = 60_000;
@@ -204,5 +219,197 @@ describe('kept for a reload', () => {
     expect(readFlyouts('m-2')).toEqual(EMPTY_FLYOUTS);
     // Only its own.
     expect(sessionStorage.getItem('fdv.note-draft.x')).toBe('kept');
+  });
+});
+
+describe('side by side', () => {
+  /** a, b and c opened a minute apart, then b beside c at 10 min: [c, b], b used last. */
+  function pair(): FlyoutSet {
+    const done = besideIn(opened(['a', 'b', 'c']), 'b', 10 * MIN);
+    if ('full' in done) throw new Error('full');
+    return done.set;
+  }
+
+  it('the second beside the one in front, at its right, the pane used last', () => {
+    const set = pair();
+    expect(set.side).toEqual(['c', 'b']);
+    expect(set.last).toBe('b');
+    expect(frontOf(set)).toBe('b');
+    expect(isSideBySide(set)).toBe(true);
+    expect(states(set)).toEqual(['a:min', 'b:shown', 'c:shown']);
+    expect(set.items[1]?.minimisedAt).toBeNull();
+    // A third from the list: opened, at the right.
+    const third = besideIn(set, 'n', 11 * MIN);
+    if ('full' in third) throw new Error('full');
+    expect(third.added).toBe(true);
+    expect(third.set.side).toEqual(['c', 'b', 'n']);
+    expect(third.set.last).toBe('n');
+  });
+
+  it('a document opened from the list replaces the pane used last; it goes to the tray, nothing else', () => {
+    let set = usedIn(pair(), 'c');
+    expect(set.last).toBe('c');
+    // With nothing to change: the same set.
+    expect(usedIn(set, 'c')).toBe(set);
+    expect(usedIn(set, 'a')).toBe(set);
+    const done = openedIn(set, 'n', 12 * MIN);
+    if ('full' in done) throw new Error('full');
+    set = done.set;
+    expect(done.added).toBe(true);
+    expect(set.side).toEqual(['n', 'b']);
+    expect(set.last).toBe('n');
+    expect(states(set)).toEqual(['a:min', 'b:shown', 'c:min', 'n:shown']);
+    // Its 15 minutes start as it leaves.
+    expect(itemOf(set, 'c')?.minimisedAt).toBe(12 * MIN);
+    // One from the tray (the keys, its icon) does the same.
+    set = shownIn(set, 'a', 13 * MIN);
+    expect(set.side).toEqual(['a', 'b']);
+    expect(states(set)).toEqual(['a:shown', 'b:shown', 'c:min', 'n:min']);
+    // One side by side already only becomes the pane used last.
+    expect(shownIn(set, 'b', 14 * MIN).side).toEqual(['a', 'b']);
+    expect(shownIn(set, 'b', 14 * MIN).last).toBe('b');
+  });
+
+  it('minimised or closed, the others stay; one left is one at a time', () => {
+    const three = besideIn(pair(), 'a', 11 * MIN);
+    if ('full' in three) throw new Error('full');
+    let set = three.set;
+    expect(set.side).toEqual(['c', 'b', 'a']);
+    set = minimisedIn(set, 'a', 12 * MIN);
+    expect(set.side).toEqual(['c', 'b']);
+    expect(set.last).toBe('b');
+    expect(itemOf(set, 'a')).toMatchObject({ state: 'min', minimisedAt: 12 * MIN });
+    set = closedIn(set, 'c');
+    expect(set.side).toEqual([]);
+    expect(isSideBySide(set)).toBe(false);
+    expect(states(set)).toEqual(['a:min', 'b:shown']);
+    expect(frontOf(set)).toBe('b');
+  });
+
+  it('One at a time keeps the pane used last; the others start their 15 minutes then', () => {
+    const set = usedIn(pair(), 'c');
+    const one = oneAtATimeIn(set, 20 * MIN);
+    expect(one.side).toEqual([]);
+    expect(states(one)).toEqual(['a:min', 'b:min', 'c:shown']);
+    expect(itemOf(one, 'b')?.minimisedAt).toBe(20 * MIN);
+    // Never freed while shown, side by side or not.
+    expect(sweptIn(set, 99 * MIN).set.side).toEqual(['c', 'b']);
+    expect(states(sweptIn(set, 99 * MIN).set)).toEqual(['a:freed', 'b:shown', 'c:shown']);
+    expect(sweptIn(one, 20 * MIN + FREE_AFTER_MS - 1).freed).toEqual(['a']);
+    expect(oneAtATimeIn(one, 0)).toBe(one);
+  });
+
+  it('moving to another page puts every one shown in the tray', () => {
+    const set = trayedIn(pair(), 30 * MIN);
+    expect(set.side).toEqual([]);
+    expect(states(set)).toEqual(['a:min', 'b:min', 'c:min']);
+  });
+
+  it('the limit counts every tray icon, those side by side too', () => {
+    const nine = opened(Array.from({ length: 9 }, (_, i) => `d${i}`));
+    const two = besideIn(nine, 'd9', 20 * MIN);
+    if ('full' in two) throw new Error('full');
+    expect(two.set.items).toHaveLength(MAX_OPEN);
+    expect(two.set.side).toEqual(['d8', 'd9']);
+    // An 11th, from the list or as a third, is not opened.
+    expect(openedIn(two.set, 'd10', 21 * MIN)).toEqual({ full: true });
+    expect(besideIn(two.set, 'd10', 21 * MIN)).toEqual({ full: true });
+    // One open already can still be a third.
+    expect('full' in besideIn(two.set, 'd0', 21 * MIN)).toBe(false);
+    // Those side by side are suggested last.
+    expect(
+      suggestions(two.set)
+        .slice(-2)
+        .map((it) => it.id)
+        .sort(),
+    ).toEqual(['d8', 'd9']);
+  });
+
+  it('kept for a reload: which, in their order, the pane used last; ids and views only', () => {
+    const set = withView(usedIn(pair(), 'c'), 'b', 'content');
+    expect(toStored(set)).toEqual({
+      items: [
+        { id: 'a', view: 'both' },
+        { id: 'b', view: 'content' },
+        { id: 'c', view: 'both' },
+      ],
+      front: 'c',
+      side: ['c', 'b'],
+    });
+    keepFlyouts('me', set);
+    const back = readFlyouts('me');
+    expect(back.side).toEqual(['c', 'b']);
+    expect(back.last).toBe('c');
+    // Those side by side come back loaded, the rest freed.
+    expect(states(back)).toEqual(['a:freed', 'b:shown', 'c:shown']);
+    expect(itemOf(back, 'b')?.view).toBe('content');
+  });
+
+  it('narrower than 1,100 px, a set side by side falls back to one at a time', () => {
+    keepFlyouts('me', usedIn(pair(), 'c'));
+    // After a reload: the pane used last alone, the rest freed.
+    const back = readFlyouts('me', 0);
+    expect(back.side).toEqual([]);
+    expect(states(back)).toEqual(['a:freed', 'b:freed', 'c:shown']);
+    // As the window narrows: the others minimised.
+    const narrowed = oneAtATimeIn(usedIn(pair(), 'b'), 40 * MIN);
+    expect(states(narrowed)).toEqual(['a:min', 'b:shown', 'c:min']);
+  });
+
+  it('with none in front, beside is a plain open', () => {
+    const none = minimisedIn(opened(['a']), 'a', 0);
+    const done = besideIn(none, 'b', MIN);
+    if ('full' in done) throw new Error('full');
+    expect(done.added).toBe(true);
+    expect(done.set.side).toEqual([]);
+    expect(states(done.set)).toEqual(['a:min', 'b:shown']);
+  });
+
+  it('a third only where each of three has its 300 px; fewer as the window narrows', () => {
+    expect(mostSideBySide(3 * SIDE_PANE_MIN)).toBe(3);
+    expect(mostSideBySide(3 * SIDE_PANE_MIN - 1)).toBe(2);
+    const three = besideIn(usedIn(pair(), 'b'), 'a', 11 * MIN);
+    if ('full' in three) throw new Error('full');
+    // [c, b, a], a used last; then b used last.
+    const set = usedIn(three.set, 'b');
+    const two = fewerIn(set, 2, 20 * MIN);
+    // The leftmost not used last goes to the tray, its clock started.
+    expect(two.side).toEqual(['b', 'a']);
+    expect(two.last).toBe('b');
+    expect(itemOf(two, 'c')).toMatchObject({ state: 'min', minimisedAt: 20 * MIN });
+    expect(fewerIn(two, 2, 0)).toBe(two);
+    expect(fewerIn(two, 0, 30 * MIN).side).toEqual([]);
+    expect(states(fewerIn(two, 0, 30 * MIN))).toEqual(['a:min', 'b:shown', 'c:min']);
+    // Kept three, back with room for two: the one used last among them.
+    keepFlyouts('me', set);
+    const back = readFlyouts('me', 2);
+    expect(back.side).toEqual(['b', 'a']);
+    expect(back.last).toBe('b');
+    expect(states(back)).toEqual(['a:shown', 'b:shown', 'c:freed']);
+  });
+
+  it('the stylesheet works out the room with the same numbers', () => {
+    const file = ['src/styles.css', 'apps/web/src/styles.css']
+      .map((p) => resolve(process.cwd(), p))
+      .find((p) => existsSync(p));
+    const css = file ? readFileSync(file, 'utf8') : '';
+    expect(css).toContain(`--list-peek: ${LIST_PEEK}px;`);
+    expect(css).toContain(`--tray-now: ${TRAY_WIDTH}px;`);
+    expect(css).toMatch(
+      /--side-room: calc\(\s*100vw - var\(--side-w, 216px\) - var\(--tray-now, 0px\) - var\(--list-peek\)\s*\)/,
+    );
+  });
+
+  it('takes back no side by side it would not have kept', () => {
+    const items = [{ id: 'a' }, { id: 'b' }, { id: 'c' }, { id: 'd' }];
+    for (const side of [['a'], ['a', 'a'], ['a', 'zz'], ['a', 'b', 'c', 'd'], 'ab', [1, 2]]) {
+      const back = fromStored({ items, front: 'a', side });
+      expect(back.side).toEqual([]);
+      expect(states(back)).toEqual(['a:shown', 'b:freed', 'c:freed', 'd:freed']);
+    }
+    // The front not among them: the last of them is the pane used last.
+    const back = fromStored({ items, front: 'd', side: ['b', 'c'] });
+    expect(back.last).toBe('c');
+    expect(states(back)).toEqual(['a:freed', 'b:shown', 'c:shown', 'd:freed']);
   });
 });

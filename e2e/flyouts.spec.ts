@@ -1,4 +1,4 @@
-import { expect, test, type APIRequestContext, type Page } from '@playwright/test';
+import { expect, test, type APIRequestContext, type Locator, type Page } from '@playwright/test';
 import { finishSignIn, setupCode } from './vault.js';
 
 /**
@@ -7,7 +7,9 @@ import { finishSignIn, setupCode } from './vault.js';
  * minimises it to the tray; three open, one in front at a time, switched
  * from the tray; minimised 15 minutes (the page's clock, mocked), freed —
  * its icon kept; and a reload puts the tray back, the one in front opened
- * again and the rest freed.
+ * again and the rest freed. Then two side by side (from 1,100 px; the
+ * window is 1280): one chosen from the list, replaced by a list click, and
+ * back to one at a time.
  *
  * Signed in once, as desktop.spec.ts is, and loaded afresh once (the
  * reload): each load renews the sign-in, ten a minute for the address the
@@ -187,4 +189,83 @@ test('three open beside the list, minimised and switched, freed after 15 minutes
       `sessionStorage.getItem('fdv.flyouts.' + JSON.parse(localStorage.getItem('fdv.session')).member_id)`,
     ),
   ).toBeNull();
+});
+
+/**
+ * A title in the list clicked at its start: those side by side cover the
+ * list but for its first 240 px, where every title begins, whatever its
+ * length. Playwright still checks that nothing covers that point.
+ */
+async function atItsStart(link: Locator) {
+  await link.scrollIntoViewIfNeeded();
+  await link.click({ position: { x: 4, y: 6 } });
+}
+
+test('two side by side: the second from the list, the one used last replaced by a list click, then one at a time', async () => {
+  await visit(page, `/documents?tag=fly${run}`);
+  const grid = page.getByRole('grid', { name: /^Documents, sorted by/ });
+  await expect(grid.locator('tbody .cell-title')).toHaveCount(3);
+  await grid.getByRole('link', { name: A }).click();
+  await expect(flyout(A)).toBeVisible();
+
+  // Side by side, the second chosen from the list.
+  await flyout(A).getByRole('button', { name: 'Side by side' }).click();
+  const picker = page.getByRole('dialog', { name: 'Side by side' });
+  await expect(picker).toContainText('No other documents are open.');
+  await picker.getByRole('button', { name: 'Choose from the list' }).click();
+  await expect(flyout(A).locator('.flyout-pick')).toContainText(
+    'Choose a document in the list to show beside this one.',
+  );
+  await atItsStart(grid.getByRole('link', { name: B }));
+  await expect(flyout(A)).toBeVisible();
+  await expect(flyout(B)).toBeVisible();
+  await expect(flyout(B).getByRole('heading', { name: B, level: 2 })).toBeFocused();
+  await expect(page.locator('.flyout-pick')).toHaveCount(0);
+  await expect(page).toHaveURL(new RegExp(`/documents\\?tag=fly${run}$`));
+
+  // Next to each other, A at the left, of equal widths; B, used last, has the green line.
+  const panes = page.locator('.flyout-side');
+  await expect(panes).toHaveCount(2);
+  const [left, right] = [await flyout(A).boundingBox(), await flyout(B).boundingBox()];
+  expect(left && right && left.x < right.x).toBe(true);
+  expect(Math.abs((left?.width ?? 0) - (right?.width ?? 1))).toBeLessThanOrEqual(1);
+  expect(Math.abs((left?.x ?? 0) + (left?.width ?? 0) - (right?.x ?? 1))).toBeLessThanOrEqual(1);
+  await expect(page.locator('.flyout-last')).toHaveAttribute('data-flyout', made[1] as string);
+  // Its line is the theme's green (--ok).
+  const [line, ok] = await page.evaluate<[string, string]>(`(() => {
+    const probe = document.createElement('span');
+    probe.style.color = 'var(--ok)';
+    document.body.append(probe);
+    const green = getComputedStyle(probe).color;
+    probe.remove();
+    return [getComputedStyle(document.querySelector('.flyout-last')).borderTopColor, green];
+  })()`);
+  expect(line).toBe(ok);
+
+  // A document clicked in the list takes the place of the one used last.
+  await atItsStart(grid.getByRole('link', { name: C }));
+  await expect(flyout(C)).toBeVisible();
+  await expect(flyout(B)).toHaveCount(0);
+  await expect(flyout(A)).toBeVisible();
+  await expect(tray().getByRole('button', { name: `${B}, minimised` })).toBeVisible();
+  await expect(panes).toHaveCount(2);
+  expect([
+    await panes.nth(0).getAttribute('data-flyout'),
+    await panes.nth(1).getAttribute('data-flyout'),
+  ]).toEqual([made[0], made[2]]);
+  await expect(page.locator('.flyout-last')).toHaveAttribute('data-flyout', made[2] as string);
+
+  // One at a time: the one used last stays, the other to the tray.
+  await page
+    .getByRole('region', { name: 'Side by side' })
+    .getByRole('button', { name: 'One at a time' })
+    .click();
+  await expect(flyout(C)).toBeVisible();
+  await expect(flyout(A)).toHaveCount(0);
+  await expect(panes).toHaveCount(0);
+  await expect(tray().getByRole('button', { name: `${A}, minimised` })).toBeVisible();
+  await expect(flyout(C).getByRole('button', { name: 'Side by side' })).toBeVisible();
+
+  await tray().getByRole('button', { name: 'Close all' }).click();
+  await expect(tray()).toHaveCount(0);
 });

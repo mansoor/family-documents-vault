@@ -55,6 +55,8 @@ import {
   ConfirmDialog,
   ErrorNote,
   IdScope,
+  NamedWithin,
+  useNamedWithin,
   MoveToTrashDialog,
   Sheet,
   StatusBadge,
@@ -138,7 +140,9 @@ function BesideTheList(props: DocumentViewProps & { host: 'flyout' }) {
   const scope = useId();
   return (
     <IdScope id={scope}>
-      <OneDocumentView key={props.id} {...props} />
+      <NamedWithin by={props.headingId}>
+        <OneDocumentView key={props.id} {...props} />
+      </NamedWithin>
     </IdScope>
   );
 }
@@ -163,6 +167,8 @@ export type DocumentViewProps =
       controls?: ReactNode;
       /** The heading's id, for the host's dialog to be named by. */
       headingId?: string;
+      /** The host's word under its heading, across the whole width (choosing from the list). */
+      notice?: ReactNode;
       /** Told what the host needs of it once it is loaded, and whenever that changes. */
       onLoaded?: (loaded: DocumentViewLoaded) => void;
     };
@@ -257,6 +263,8 @@ function OneDocumentView(props: DocumentViewProps) {
   // Every id inside it likewise: as on the page, there; beside the list,
   // its own, as more than one document may be open there at once.
   const own = (name: string) => (onPage ? name : `${name}-${ownId}`);
+  // A section's name, the document's too beside the list (side by side).
+  const named = useNamedWithin();
   // Told to the host beside the list: the latest it gave.
   const closed = useRef(flyout?.onClosed);
   const toldLoaded = useRef(flyout?.onLoaded);
@@ -419,6 +427,7 @@ function OneDocumentView(props: DocumentViewProps) {
         tools={flyout?.tools}
         controls={flyout?.controls}
         headingId={flyout?.headingId}
+        notice={flyout?.notice}
       >
         <ErrorNote message={error} />
       </FlyoutView>
@@ -435,6 +444,7 @@ function OneDocumentView(props: DocumentViewProps) {
         tools={flyout?.tools}
         controls={flyout?.controls}
         headingId={flyout?.headingId}
+        notice={flyout?.notice}
       />
     );
 
@@ -693,7 +703,7 @@ function OneDocumentView(props: DocumentViewProps) {
       )}
 
       {others.length > 0 && (
-        <section aria-labelledby={own('other-h')}>
+        <section aria-labelledby={named(own('other-h'))}>
           <h2 id={own('other-h')} className="section-h">
             Other details
           </h2>
@@ -959,6 +969,7 @@ function OneDocumentView(props: DocumentViewProps) {
         }
         controls={flyout?.controls}
         headingId={flyout?.headingId}
+        notice={flyout?.notice}
       >
         <DocPanes
           fit="own"
@@ -993,6 +1004,7 @@ function FlyoutView(props: {
   tools?: ReactNode;
   controls?: ReactNode;
   headingId?: string | undefined;
+  notice?: ReactNode;
   children?: ReactNode;
 }) {
   return (
@@ -1003,6 +1015,7 @@ function FlyoutView(props: {
         </h2>
         <div className="row doc-flyout-tools">{props.tools}</div>
         {props.controls && <div className="row doc-flyout-controls">{props.controls}</div>}
+        {props.notice && <div className="doc-flyout-notice">{props.notice}</div>}
       </div>
       {props.children}
     </div>
@@ -1050,8 +1063,9 @@ function HistorySection({
   onAdd: ((file: File | undefined) => void) | null;
 }) {
   const { versions, onAdd } = props;
+  const named = useNamedWithin();
   return (
-    <section aria-labelledby={props.headingId}>
+    <section aria-labelledby={named(props.headingId)}>
       <h2 id={props.headingId} className="section-h">
         History
       </h2>
@@ -1219,6 +1233,7 @@ export function DocumentCollections(props: {
   onCount?: (n: number) => void;
 }) {
   const { authVersion } = useApp();
+  const named = useNamedWithin();
   const { data, error, reload } = useLoad(
     async (t) => (await api.documentCollections(t, props.documentId)).items,
     [props.documentId, authVersion],
@@ -1242,7 +1257,7 @@ export function DocumentCollections(props: {
   };
 
   return (
-    <section aria-labelledby={props.headingId ?? 'doc-collections-h'}>
+    <section aria-labelledby={named(props.headingId ?? 'doc-collections-h')}>
       <h2 id={props.headingId ?? 'doc-collections-h'} className="section-h">
         Collections
       </h2>
