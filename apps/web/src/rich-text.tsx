@@ -129,12 +129,29 @@ const BLOCKS = new Set([
 
 type MarkName = 'strong' | 'em' | 'underline' | 'strike';
 
+/**
+ * An element's own style, read from its `style` attribute's text through
+ * the style object of an element of this page — never from `el.style`.
+ * The app's policy allows no inline style (`style-src 'self'`,
+ * docker/nginx.conf), and in Chromium a pasted page parsed by DOMParser
+ * runs under it: its `style` attributes are blocked, so `el.style` reads
+ * empty. Setting `cssText` is the style object's own (CSSOM), which the
+ * policy allows.
+ */
+function ownStyle(el: HTMLElement): CSSStyleDeclaration | null {
+  const text = el.getAttribute('style');
+  if (!text) return null;
+  const style = document.createElement('div').style;
+  style.cssText = text;
+  return style;
+}
+
 /** The marks an element makes, by its name or its own style. */
 function marksOf(el: HTMLElement): { add: MarkName[]; drop: MarkName[] } {
   const add: MarkName[] = [];
   const drop: MarkName[] = [];
   const tag = el.tagName;
-  const style = el.style;
+  const style = ownStyle(el);
   const weight = style?.fontWeight ?? '';
   const bold =
     weight === 'bold' || weight === 'bolder' || (/^\d+$/.test(weight) && Number(weight) >= 600);

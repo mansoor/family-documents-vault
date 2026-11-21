@@ -2,6 +2,8 @@ import {
   LINK_TEXT_KINDS,
   LINK_TEXTS_CAP_SHARE,
   phoneTail,
+  smsGateLocalRefused,
+  smsGatePortWords,
   type SmsKind,
   type SmsMode,
   type SmsProviderKind,
@@ -182,6 +184,7 @@ function twilioProblemWords(problem: SmsProblem, status?: number, code?: number)
       return 'Twilio didn’t answer within 10 seconds. Check the vault can reach the internet, then try again.';
     case 'unreachable':
     case 'address_refused':
+    case 'port_refused':
       return 'The vault couldn’t reach Twilio. Check the vault can reach the internet (api.twilio.com).';
     case 'not_found':
       return 'Twilio no longer knows the text it was sent.';
@@ -199,6 +202,10 @@ function twilioProblemWords(problem: SmsProblem, status?: number, code?: number)
   }
 }
 
+/** What any problem reaching SMS Gate's local server is said as (0.9.0-dev.77). */
+export const SMS_GATE_LOCAL_UNREACHABLE =
+  'The vault couldn’t reach SMS Gate on the phone. Check the address the app shows under Local server (its port is usually 8080), the username and password, and that the phone is on the same network as the vault with the app’s local server running.';
+
 /**
  * In plain words, what went wrong with the household's provider: for
  * Settings, and for whoever asked for a text. `code` is the provider's own
@@ -212,6 +219,16 @@ export function smsProblemWords(
 ): string {
   if (via === 'twilio') return twilioProblemWords(problem, status, code);
   const mode = via;
+  // A port the vault does not reach the local server on: said, with the
+  // setting that allows others — the vault asked nothing of the network.
+  if (problem === 'port_refused') return smsGatePortWords(code);
+  // The local server (0.9.0-dev.77): one problem, whichever way it failed —
+  // no answer, no connection, an address refused, a password refused, or
+  // some other answer. Which it was would tell an owner what else listens
+  // on the home network; it is in the server's log alone.
+  if (mode === 'local' && problem !== 'unconfirmed' && problem !== 'not_found') {
+    return SMS_GATE_LOCAL_UNREACHABLE;
+  }
   switch (problem) {
     case 'unauthorised':
       return 'SMS Gate refused the username or password. Check them in the SMS Gate app, and type them again.';
@@ -253,6 +270,33 @@ export async function smsMonthCount(
     trx,
   );
   return r.rows[0]?.n ?? 0;
+}
+
+/**
+ * The household's SMS Gate settings failed, with why, while they are still
+ * the local server at this address: an address the vault does not reach as
+ * it is saved. The vault's to write, as a test's outcome is; no text but a
+ * test goes until the address is changed and a test passes.
+ */
+export async function smsSettingsUnusable(
+  asVault: AsVault,
+  baseUrl: string,
+  words: string,
+): Promise<boolean> {
+  const changed = await asVault((trx) =>
+    trx
+      .updateTable('sms_settings')
+      .set({ status: 'failed', last_error: words })
+      .where('provider', '=', 'sms_gate')
+      .where('mode', '=', 'local')
+      .where('base_url', '=', baseUrl)
+      .where((eb) =>
+        eb.or([eb('status', '<>', 'failed'), eb('last_error', 'is distinct from', words)]),
+      )
+      .returning('household_id')
+      .execute(),
+  );
+  return changed.length > 0;
 }
 
 /** What became of a text, as its provider said: the vault's to write. */
@@ -362,10 +406,21 @@ export async function sendSms(
         unconfirmed: true,
       };
     }
-    await markSms(asVault, held.messageId, {
-      state: 'not_sent',
-      error: smsProblemWords(problem.problem, smsVia(s), problem.status, problem.code),
-    });
+    const words = smsProblemWords(problem.problem, smsVia(s), problem.status, problem.code);
+    await markSms(asVault, held.messageId, { state: 'not_sent', error: words });
+    // A local server the vault no longer reaches as it is saved — a port off
+    // FDV_SMS_GATE_ALLOWED_PORTS, or an address of its own (0.9.0-dev.77; an
+    // older release saved either): no text can go until the address is
+    // changed. The settings say so in Settings, and texts stop being
+    // offered, rather than each failing on its own.
+    if (
+      s.provider === 'sms_gate' &&
+      s.mode === 'local' &&
+      s.base_url !== null &&
+      (problem.problem === 'port_refused' || smsGateLocalRefused(s.base_url) === 'own')
+    ) {
+      await smsSettingsUnusable(asVault, s.base_url, words);
+    }
     return { problem, messageId: held.messageId, settings: s };
   }
 }

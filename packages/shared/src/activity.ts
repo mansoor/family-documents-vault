@@ -178,7 +178,7 @@ export function activityKind(action: string): ActivityKind {
     case 'app':
       return action === 'app.sent' || action === 'app.withdrawn'
         ? 'added'
-        : action === 'app.read' || action === 'app.looked_up'
+        : action === 'app.read' || action === 'app.looked_up' || action === 'app.link_made'
           ? 'opened'
           : // A document it sent let go of (APP3): the document changed hands.
             action === 'app.unlinked'
@@ -792,6 +792,14 @@ export function eventWords(e: ActivityEvent): (ActivityLine & { named: boolean }
       return byApp(`read the details of ${doc}`);
     case 'app.looked_up':
       return byApp('looked up documents');
+    // A link it made to one document (0.9.0-dev.77): that document's line,
+    // so its people see it whether or not the link is ever opened.
+    case 'app.link_made':
+      return byApp(
+        detail.link === 'download'
+          ? `made a link to download ${doc}`
+          : `made a link to view ${doc}`,
+      );
     case 'app.withdrawn':
       return byApp(`took back a file it sent to ${inboxOf(e)}`);
     // A document it sent, let go of (APP3): it stays in the vault.

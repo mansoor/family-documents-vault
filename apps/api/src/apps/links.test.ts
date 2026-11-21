@@ -603,6 +603,46 @@ describe.skipIf(!testAdminUrl())('connected apps: links and deletes (0.9.0, APP3
     expect([ended.statusCode, ended.headers.location]).toEqual([303, '/a#ended']);
   });
 
+  it('the document’s own people see on its Activity what an app read of it, by the app’s name; its list reads stay one line for the owners (0.9.0-dev.77)', async () => {
+    const a = await connect({ scopes: [...ALL, 'documents.download'] }, 'Acme Money');
+    const teen = await h.join(owner, {
+      name: 'Tamsin',
+      email: `tamsin-${randomUUID().slice(0, 8)}@example.test`,
+      role: 'teen',
+    });
+    const doc = await make({ title: 'Tamsin’s phone bill', owner_member_id: teen.member_id });
+    await fileAsOwn(a.appId, 'read-tamsin', doc);
+    // Its list, its details, a link to view (opened), a link to download.
+    expect((await call(a, '/api/v1/apps/documents')).statusCode).toBe(200);
+    expect((await call(a, `/api/v1/apps/documents/${doc}`)).statusCode).toBe(200);
+    const view = await minted(a, doc, 'view');
+    await open(view, browser());
+    await minted(a, doc, 'download');
+    // Each a line on the document's own Activity, for whoever may see it:
+    // the teen whose bill it is, who is neither an owner nor the app's person.
+    const activity = (await send(teen, 'GET', `/api/v1/documents/${doc}/activity?limit=50`))
+      .json<{ items: ActivityLine[] }>()
+      .items.map((l) => l.text);
+    expect(activity).toEqual(
+      expect.arrayContaining([
+        'Owner via Acme Money read the details of “Tamsin’s phone bill”',
+        'Owner via Acme Money made a link to view “Tamsin’s phone bill”',
+        'Owner via Acme Money opened “Tamsin’s phone bill”',
+        'Owner via Acme Money made a link to download “Tamsin’s phone bill”',
+      ]),
+    );
+    // The list: one line an hour for the owners and the app's person, never
+    // a line on every document it listed.
+    expect(activity.join('\n')).not.toContain('looked up documents');
+    expect(await lines()).toContain('Owner via Acme Money looked up documents');
+    const made = await admin.query<{ n: string }>(
+      `select count(*) as n from audit_event
+        where action = 'app.link_made' and object_id = $1 and detail->>'app_id' = $2`,
+      [doc, a.appId],
+    );
+    expect(Number(made.rows[0]?.n)).toBe(2);
+  });
+
   it('links an hour are capped as the owner sets; without the scope, none', async () => {
     const a = await connect({ links_per_hour: 2 }, 'Capped');
     const doc = await make({ title: 'Linked bill five' });

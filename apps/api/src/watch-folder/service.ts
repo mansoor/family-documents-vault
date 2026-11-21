@@ -500,13 +500,13 @@ export class WatchFolderService {
   async notices(p: Principal): Promise<WatchNoticeView[]> {
     if (!can(p.role, 'document.add'))
       throw new ApiError(403, 'forbidden', refusalFor('document.add'));
-    // What is done with an email once it is dealt with: as the household's
-    // own mailbox is set up (O1), else as the worker says of the server's.
-    const server = await this.db.selectFrom('mail_in_server').select('after').executeTakeFirst();
     return withPrincipal(this.db, p, async (trx) => {
+      // What is done with an email once it is dealt with: as the household's
+      // own mailbox is set up (O1), else as the worker says of the server's.
       const { rows: own } = await sql<{ after: 'move' | 'delete' }>`
         select after from mail_in_box()`.execute(trx);
-      const mailbox = own[0] ?? server;
+      const mailbox =
+        own[0] ?? (await trx.selectFrom('mail_in_server').select('after').executeTakeFirst());
       const rows = await trx
         .selectFrom('watch_notice')
         .select(['id', 'source', 'file_name', 'reason', 'left_in_place', 'skipped', 'created_at'])

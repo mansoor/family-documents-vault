@@ -1,6 +1,6 @@
 import { folderLabelUrl, type CabinetLayout } from '@fdv/shared';
 import QRCode from 'qrcode';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Link, useSearchParams } from 'react-router';
 import { api } from '../api.js';
 import { useApp, useLoad } from '../app-context.js';
@@ -28,6 +28,31 @@ type Size = keyof typeof SIZES;
 
 const PAPERS = { a4: 'A4', letter: 'Letter' } as const;
 type Paper = keyof typeof PAPERS;
+
+/**
+ * The printed page's size, while there are labels to print: a stylesheet
+ * built in script and adopted by the document, since the app's policy
+ * allows no inline style element (docker/nginx.conf). Where a browser cannot
+ * adopt one, its own paper size is used.
+ */
+function usePageSize(paper: Paper, printing: boolean): void {
+  useEffect(() => {
+    if (!printing || typeof CSSStyleSheet === 'undefined' || !('adoptedStyleSheets' in document)) {
+      return;
+    }
+    let sheet: CSSStyleSheet;
+    try {
+      sheet = new CSSStyleSheet();
+      sheet.replaceSync(`@page { size: ${PAPERS[paper]}; margin: 10mm; }`);
+    } catch {
+      return;
+    }
+    document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
+    return () => {
+      document.adoptedStyleSheets = document.adoptedStyleSheets.filter((s) => s !== sheet);
+    };
+  }, [paper, printing]);
+}
 
 interface LabelFolder {
   id: string;
@@ -95,6 +120,7 @@ export function FolderLabelsScreen() {
   const [paper, setPaper] = useState<Paper>('a4');
   const [withWhere, setWithWhere] = useState(false);
   const labels = folders.filter((f) => ticked.has(f.id));
+  usePageSize(paper, labels.length > 0);
   const s = SIZES[size];
   const toggle = (id: string, on: boolean) => {
     const next = new Set(ticked);
@@ -242,7 +268,6 @@ export function FolderLabelsScreen() {
       {labels.length > 0 && (
         <OnTop>
           <div className="label-print-root" aria-hidden="true">
-            <style>{`@page { size: ${PAPERS[paper]}; margin: 10mm; }`}</style>
             {sheet}
           </div>
         </OnTop>

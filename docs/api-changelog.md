@@ -242,6 +242,12 @@ needs a vault of 0.4.10 or later.
 
 ## Unreleased
 
+- **Hygiene before launch** (0.9.0-dev.77). Migration 0124. **Additive**, but for the answers below marked **changed**.
+  - **Changed answer:** `GET /readyz` when the database does not answer is `503 not_ready` with no `error.detail`; the reason is in the server's log.
+  - **SMS Gate's local server** (`PUT /api/v1/sms/settings` with `mode: "local"`): an address that is loopback (by name or address), link-local or cloud metadata, `host.docker.internal` and the like, or one of the vault's own compose services by name (with or without a domain after it), is `422 sms_address_refused` (until now only the cloud relay and a server of your own could be), and so is a port other than 8080, 80, 443, 8000, 8443 or 8888 (`SMS_GATE_LOCAL_PORTS` in `@fdv/shared`; the operator's `FDV_SMS_GATE_ALLOWED_PORTS` changes it). **Changed:** for the local server, the words of a failed test or send (`words`, `last_error`, `503 sms_not_sent`) are one "couldn't reach SMS Gate on the phone" sentence whatever failed, a refused password included — but a port the vault doesn't reach is said as such, with the setting; the cloud relay, a server of your own and Twilio are unchanged. **Changed:** a local server saved before (or since the operator narrowed the ports) that is now refused shows `status: "failed"` with `last_error` saying why as `GET /api/v1/sms/settings` is read or a text meets it, and `GET /api/v1/sms/status` answers `ready: false` until a test passes.
+  - **Activity:** **new** `app.link_made` (`object_type: "document"`; `detail.app_id`, `detail.app`, `detail.link`: `view` or `download`), a connected app making a link to one document — that document's line, for whoever may see it, as `app.read` is ("… via Acme Money made a link to view …"). A client that shows the server's `text` needs nothing new.
+  - **The web app's CSP**, and the stricter one of the pages people outside the family open, allow stylesheets and fonts from the vault alone: `style-src 'self'; font-src 'self'`. The fonts are the vault's own.
+
 - **An off-site copy of the backups** (0.9.0-dev.76). Migration 0123. Everything is **additive**; owners only.
   - **New `features.backup_offsite`** (`true` on a self-hosted vault; absent from older vaults and from the hosted edition).
   - **New routes**, each `403 forbidden` to anybody but an owner, before their body is read:

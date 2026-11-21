@@ -403,6 +403,9 @@ const RULES: ReadonlyMap<string, Audience | typeof BY_TYPE> = new Map<
   // for whoever may see it, as a download's is.
   ['app.looked_up', ownersThePersonAndTheActor],
   ['app.read', BY_TYPE],
+  // 0.9.0-dev.77: a link it made to one document, to view or download —
+  // that document's line, for whoever may see it, as a read's is.
+  ['app.link_made', BY_TYPE],
   // 0.9.0 (APP3): a document it sent let go of — that document's line, for
   // whoever may see it. (Its links opened, and its moves to the Trash, are
   // document.viewed, document.downloaded and document.deleted lines.)

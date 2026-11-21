@@ -2,7 +2,7 @@ import { openSmsSecret } from '@fdv/crypto';
 import {
   householdZone,
   sendSms,
-  smsProviders,
+  smsProvidersWith,
   withSystem,
   type Db,
   type SmsProviderFactory,
@@ -101,6 +101,8 @@ export interface TextDeps {
   baseUrl: string;
   /** Whatever sends a text: SMS Gate or Twilio, unless a test stands in. */
   provider?: SmsProviderFactory;
+  /** FDV_SMS_GATE_ALLOWED_PORTS: the ports SMS Gate's local server may be on. */
+  smsGatePorts?: readonly number[];
   /** Puts a text back on the queue until `at`: pg-boss's startAfter. */
   later: (job: TextJob, at: Date) => Promise<void>;
   log: (level: string, msg: string, extra?: Record<string, unknown>) => void;
@@ -198,7 +200,7 @@ export function createTexter(deps: TextDeps): Texter {
   const now = () => deps.now?.() ?? new Date();
   const way: SmsWay = {
     open: (sealed, householdId, to) => openSmsSecret(deps.smsKey, sealed, householdId, to),
-    provider: deps.provider ?? smsProviders,
+    provider: deps.provider ?? smsProvidersWith({ localPorts: deps.smsGatePorts }),
   };
 
   /**
@@ -238,6 +240,11 @@ export function createTexter(deps: TextDeps): Texter {
       household: householdId,
       kind,
       why: 'refused' in outcome ? outcome.refused : outcome.problem.problem,
+      // The provider's own detail, for the operator: the household is told
+      // less of the local server (smsProblemWords).
+      ...('problem' in outcome
+        ? { detail: outcome.problem.message, status: outcome.problem.status }
+        : {}),
     });
     return 'failed';
   };

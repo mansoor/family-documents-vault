@@ -65,8 +65,11 @@ export class ApiError extends Error {
 export const notFound = (what = 'That page') =>
   new ApiError(404, 'not_found', `${what} does not exist.`);
 
-export const notReady = (detail: string) =>
+/**
+ * Not ready. Never with the reason: what the database said (a host, a role
+ * name, an SSL error) is for the server log, not for whoever asks /readyz.
+ */
+export const notReady = () =>
   new ApiError(503, 'not_ready', 'The vault is starting up or cannot reach its database.', {
-    detail,
     retriable: true,
   });

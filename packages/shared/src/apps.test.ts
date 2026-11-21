@@ -720,6 +720,17 @@ describe('an app’s lines in the activity log (0.9.0, APP2)', () => {
       ['Ahmed via Acme Money looked up documents', 'opened'],
       ['Ahmed via Acme Money downloaded a sensitive document', 'opened'],
     ]);
+    // A link it made to one document (0.9.0-dev.77): that document's line.
+    const app = { app_id: 'app-1', app: 'Acme Money' };
+    expect(
+      describeEvents([
+        ev('app.link_made', 0, { ...doc, detail: { ...app, link: 'view' } }),
+        ev('app.link_made', 1, { ...doc, detail: { ...app, link: 'download' } }),
+      ]).map((l) => [l.text, l.kind]),
+    ).toEqual([
+      ['Ahmed via Acme Money made a link to view “Northgate, October”', 'opened'],
+      ['Ahmed via Acme Money made a link to download “Northgate, October”', 'opened'],
+    ]);
     // A family download is said as it always was, and never folded with an app's.
     expect(
       describeEvents([ev('document.downloaded', 0, { ...doc, detail: {} })]).map((l) => l.text),

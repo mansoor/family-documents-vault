@@ -3,6 +3,8 @@ import {
   parsePhoneNumberFromString,
   type CountryCode,
 } from 'libphonenumber-js/min';
+import { namesService } from './ai-reader.js';
+import { isLinkLocalAddress, isLoopbackAddress, isLoopbackName } from './push.js';
 
 /**
  * Text messages (0.9.0, SMS1): the household's own SMS Gate for Android
@@ -53,6 +55,108 @@ export const SMS_MODES: readonly SmsMode[] = ['local', 'cloud', 'private'];
 
 /** How a text goes: SMS Gate's way of being reached, or Twilio. For the words said of a problem. */
 export type SmsVia = SmsMode | 'twilio';
+
+/**
+ * The ports SMS Gate's local server may be reached on unless the operator
+ * says others (FDV_SMS_GATE_ALLOWED_PORTS, 0.9.0-dev.77): the app's own
+ * 8080, the usual web ports, and the few a phone's server or a proxy in
+ * front of it commonly uses — so a test is no port scanner of the home
+ * network. This, not the names below, is what keeps the vault's own
+ * services out: their ports (5432, 3000) are not on it.
+ */
+export const SMS_GATE_LOCAL_PORTS: readonly number[] = [8080, 80, 443, 8000, 8443, 8888];
+
+/**
+ * The vault's own services, as its compose files name them: never SMS
+ * Gate, whose requests carry its username and password. Best effort, by
+ * name alone — the name, its first label (`api.fdv_default`), or compose's
+ * container name (`fdv-api-1`, `fdv-api-1.lan`); an address that happens
+ * to be a container's is not found out (the port list above is what
+ * holds).
+ */
+export const SMS_GATE_REFUSED_NAMES: readonly string[] = [
+  'postgres',
+  'migrate',
+  'api',
+  'worker',
+  'web',
+  'ollama',
+  'caddy',
+  'caddy-public',
+];
+
+/** Names Docker and Podman give the machine a container runs on: never SMS Gate. */
+const HOST_NAMES = /(^|\.)(docker|containers)\.internal$/;
+
+/** The WHATWG URL parser, as Node and the browsers have it (this package names no runtime). */
+declare const URL: new (input: string) => { protocol: string; hostname: string; port: string };
+
+/**
+ * Why the local server's address is refused, without DNS; null when it may
+ * be tried. The home network is its purpose, so a private address is fine;
+ * but never this machine (loopback, by name or address), a link-local or
+ * cloud-metadata address, the machine a container runs on
+ * (`host.docker.internal`), the vault's own services by name (`own`), or a
+ * port not on `ports` (`port`; SMS_GATE_LOCAL_PORTS unless the operator
+ * said others). An address that is not a URL is refused as `own`.
+ */
+export function smsGateLocalRefused(
+  baseUrl: string,
+  ports: readonly number[] = SMS_GATE_LOCAL_PORTS,
+): 'own' | 'port' | null {
+  let url: InstanceType<typeof URL>;
+  try {
+    url = new URL(baseUrl);
+  } catch {
+    return 'own';
+  }
+  const host = url.hostname
+    .toLowerCase()
+    .replace(/^\[|\]$/g, '')
+    .replace(/\.$/, '');
+  const first = host.split('.')[0] ?? '';
+  if (
+    !host ||
+    isLoopbackName(host) ||
+    HOST_NAMES.test(host) ||
+    namesService(host, SMS_GATE_REFUSED_NAMES) ||
+    namesService(first, SMS_GATE_REFUSED_NAMES)
+  ) {
+    return 'own';
+  }
+  if (smsGateLocalAddressRefused(host)) return 'own';
+  return ports.includes(smsGatePort(baseUrl) ?? 0) ? null : 'port';
+}
+
+/** The port an address is reached on, said or by its scheme; null when it is not a URL. */
+export function smsGatePort(baseUrl: string): number | null {
+  try {
+    const url = new URL(baseUrl);
+    return url.port ? Number(url.port) : url.protocol === 'https:' ? 443 : 80;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * What an owner is told of a local server on a port the vault does not
+ * reach it on: the port, and the setting that allows others. Not a probe's
+ * answer (nothing was asked of the network), so it is said as it is.
+ */
+export function smsGatePortWords(port: number | null | undefined): string {
+  return `The vault doesn’t reach SMS Gate’s local server on port ${port ?? 'that'}. Use port 8080, SMS Gate’s own, in the app’s Local server settings, and type the address again; or whoever runs this server can allow the port with FDV_SMS_GATE_ALLOWED_PORTS.`;
+}
+
+/**
+ * Whether the local server may not be reached at this address, as typed or
+ * as DNS gave it: loopback, link-local and cloud metadata, "this network",
+ * multicast. A name (not an address) is judged elsewhere: false.
+ */
+export function smsGateLocalAddressRefused(address: string): boolean {
+  const a = address.toLowerCase().replace(/^\[|\]$/g, '');
+  const literal = /^\d{1,3}(\.\d{1,3}){3}$/.test(a) || a.includes(':');
+  return literal && (isLoopbackAddress(a) || isLinkLocalAddress(a));
+}
 
 /** A Twilio Account SID: AC and 32 hex digits. */
 export const TWILIO_ACCOUNT_SID = /^AC[0-9a-fA-F]{32}$/;

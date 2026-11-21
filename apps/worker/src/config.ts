@@ -307,6 +307,31 @@ const schema = z.object({
         'refused, so Test is no port scanner. FDV_LOCAL_AI_URL is yours, and not limited. The ' +
         'API and the worker have the same setting.',
     ),
+  FDV_SMS_GATE_ALLOWED_PORTS: z
+    .string()
+    .min(1)
+    .max(200)
+    .default('8080,80,443,8000,8443,8888')
+    .transform((s) =>
+      s
+        .split(',')
+        .map((p) => p.trim())
+        .filter((p) => p.length > 0)
+        .map(Number),
+    )
+    .refine(
+      (ports) =>
+        ports.length > 0 &&
+        ports.length <= 20 &&
+        ports.every((p) => Number.isInteger(p) && p >= 1 && p <= 65535),
+      'one to twenty port numbers',
+    )
+    .describe(
+      "The ports SMS Gate's local server set in Settings may be on (0.9.0-dev.77), " +
+        "comma-separated: SMS Gate's own 8080, and 80, 443, 8000, 8443 and 8888 by default. " +
+        'Any other is refused, so a test is no port scanner of the home network. The API and ' +
+        'the worker have the same setting.',
+    ),
   FDV_EDITION: z
     .enum(['self_hosted', 'hosted'])
     .default('self_hosted')

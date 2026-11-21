@@ -1070,6 +1070,18 @@ describe.skipIf(!testAdminUrl())('checking a restored vault', { timeout: 60_000 
     await sql(vault.adminUrl, 'alter table public.member enable row level security');
   });
 
+  it('notices a table that never had a privacy wall, and is not one the vault keeps without', async () => {
+    // No policies and no row-level security: the other direction.
+    await sql(vault.adminUrl, 'create table public.stray_without_walls (id int)');
+    try {
+      await expect(checkRestored(target())).rejects.toThrow(
+        /row-level security is off on stray_without_walls/,
+      );
+    } finally {
+      await sql(vault.adminUrl, 'drop table public.stray_without_walls');
+    }
+  });
+
   it('notices a table a stranger could read', async () => {
     // A policy that lets everybody in is still a policy; the check looks at
     // what a household that is not this one actually sees.

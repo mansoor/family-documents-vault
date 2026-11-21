@@ -188,7 +188,10 @@ describe('no flash: index.html tells the page its theme before anything is drawn
     const at = shell.indexOf('<script>');
     expect(at).toBeGreaterThan(-1);
     expect(at).toBeLessThan(shell.indexOf('</head>'));
-    expect(at).toBeLessThan(shell.indexOf('rel="stylesheet"'));
+    // No stylesheet of the page's own by hand (0.9.0-dev.77: the fonts are
+    // the vault's, built in): the build adds its one at the end of <head>,
+    // after these lines.
+    expect(shell).not.toContain('rel="stylesheet"');
     expect(at).toBeLessThan(shell.indexOf('type="module"'));
     // The browser's own controls may be either, as the page says.
     expect(shell).toMatch(/<meta name="color-scheme" content="light dark" \/>/);

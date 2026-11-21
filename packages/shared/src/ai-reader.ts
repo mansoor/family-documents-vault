@@ -384,12 +384,18 @@ export function aiReaderPort(url: string): number {
  */
 export const AI_READER_SERVICE_NAMES: readonly string[] = ['postgres', 'api', 'web', 'worker'];
 
+/**
+ * Whether a host is one of these services, by name: `api`, or compose's
+ * container name for it, `fdv-api-1`.
+ */
+export function namesService(hostname: string, names: readonly string[]): boolean {
+  const h = hostname.toLowerCase().replace(/\.$/, '');
+  return names.some((n) => h === n || new RegExp(`^[a-z0-9_.-]+[-_]${n}[-_]\\d+$`).test(h));
+}
+
 /** Whether a host is one of the vault's own services, by name: `api`, or compose's `fdv-api-1`. */
 export function aiReaderNameRefused(hostname: string): boolean {
-  const h = hostname.toLowerCase().replace(/\.$/, '');
-  return AI_READER_SERVICE_NAMES.some(
-    (n) => h === n || new RegExp(`^[a-z0-9_.-]+[-_]${n}[-_]\\d+$`).test(h),
-  );
+  return namesService(hostname, AI_READER_SERVICE_NAMES);
 }
 
 /**

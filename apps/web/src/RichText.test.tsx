@@ -516,6 +516,43 @@ describe('what is pasted is read into a note first', () => {
     expect((window as unknown as { __fdvPaste?: number }).__fdvPaste).toBeUndefined();
   });
 
+  it('marks set by style are read from the attribute, as the app’s policy leaves a pasted page’s el.style empty (0.9.0-dev.77)', () => {
+    // In Chromium, under style-src 'self', a page parsed by DOMParser keeps
+    // its style attributes but its elements' style objects read empty: so
+    // here, as there.
+    const own = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'style');
+    // The accessor itself, called below with the element as `this`.
+    // eslint-disable-next-line @typescript-eslint/unbound-method
+    const real = own?.get;
+    expect(real).toBeDefined();
+    Object.defineProperty(HTMLElement.prototype, 'style', {
+      configurable: true,
+      get(this: HTMLElement) {
+        const style = real?.call(this) as CSSStyleDeclaration;
+        // An element of the page itself (what reads the attribute) keeps its
+        // own; a parsed page's are blocked.
+        return this.ownerDocument === document ? style : document.createElement('i').style;
+      },
+    });
+    try {
+      const tree = readPasted(
+        '<p><b style="font-weight:normal" id="docs-internal-guid-1"><span>plain</span> ' +
+          '<span style="font-weight:700">bold</span> <span style="font-style:italic">slanted</span> ' +
+          '<span style="text-decoration:underline">under</span> ' +
+          '<span style="text-decoration-line:line-through">struck</span></b></p>',
+      );
+      // Whatever the parsed elements' own style objects say.
+      const parsed = new DOMParser().parseFromString(
+        '<b style="font-weight:normal">x</b>',
+        'text/html',
+      );
+      expect(parsed.body.querySelector('b')?.style.fontWeight).toBe('');
+      expect(noteTreeToMarkdown(tree)).toBe('plain **bold** *slanted* ++under++ ~~struck~~');
+    } finally {
+      if (own) Object.defineProperty(HTMLElement.prototype, 'style', own);
+    }
+  });
+
   it('a page pasted into the editor puts in only its words and a note’s marks', () => {
     render(<Editor initial="Before" />);
     const text = words().querySelector('p')?.firstChild as Node;

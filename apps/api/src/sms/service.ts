@@ -7,7 +7,8 @@ import {
   sendSms,
   smsMonthCount,
   smsProblemWords,
-  smsProviders,
+  smsProvidersWith,
+  smsSettingsUnusable,
   SmsProviderError,
   smsVia,
   withPrincipal,
@@ -31,7 +32,11 @@ import {
   SMS_CLOUD_URL,
   SMS_DEFAULT_CAP,
   SMS_DEFAULT_COUNTRY,
+  SMS_GATE_LOCAL_PORTS,
   SMS_TEST_TEXT,
+  smsGateLocalRefused,
+  smsGatePort,
+  smsGatePortWords,
   SMS_TEST_WAIT_SECONDS,
   TWILIO_ACCOUNT_SID,
   TWILIO_MESSAGING_SERVICE_SID,
@@ -91,6 +96,10 @@ export const notSetUp = () =>
     'Text messages aren’t set up for this household yet. An owner can set them up in Settings, under Text messages.',
   );
 
+/** What an owner is told of a local server's address that is the vault's own (0.9.0-dev.77). */
+const OWN_ADDRESS =
+  'That address is the vault’s own, not a phone on your network. Type the address the SMS Gate app shows under Local server, such as http://192.168.1.20:8080.';
+
 /** A control character: never in a sign-in. */
 const CONTROL = /\p{Cc}/u;
 
@@ -113,6 +122,9 @@ const notSent = (words: string) =>
     retryAfter: 60,
   });
 
+/** Where the provider's own detail goes: the API's log (server.ts), never the owner. */
+export type SmsLog = (fields: Record<string, unknown>, message: string) => void;
+
 export interface SmsOptions {
   /**
    * The key SMS Gate's password is sealed under (deriveKey(master,
@@ -123,6 +135,8 @@ export interface SmsOptions {
   provider?: SmsProviderFactory;
   /** Tests: DNS of their own, for a private server's name. */
   resolve?: Resolve;
+  /** FDV_SMS_GATE_ALLOWED_PORTS: the ports SMS Gate's local server may be on. */
+  localPorts?: readonly number[];
   /** Other owners told when the settings change. */
   alert?: (a: AlertRequest) => Promise<void>;
   /** How long a test waits for SMS Gate to send it, and how often it asks. */
@@ -137,17 +151,45 @@ export class SmsService {
   private readonly alert: (a: AlertRequest) => Promise<void>;
   private readonly testWaitMs: number;
   private readonly pollMs: number;
+  private log: SmsLog = () => undefined;
+  private readonly localPorts: readonly number[];
 
   constructor(
     private readonly db: Db,
     opts: SmsOptions = {},
   ) {
     this.key = opts.key ?? null;
-    this.provider = opts.provider ?? smsProviders;
+    this.localPorts = opts.localPorts ?? SMS_GATE_LOCAL_PORTS;
+    this.provider = opts.provider ?? smsProvidersWith({ localPorts: this.localPorts });
     this.resolve = opts.resolve ?? resolveHost;
     this.alert = opts.alert ?? (async () => undefined);
     this.testWaitMs = opts.testWaitMs ?? SMS_TEST_WAIT_SECONDS * 1000;
     this.pollMs = opts.pollMs ?? 2000;
+  }
+
+  /** Where the provider's own detail goes: the API's log, once it has one (server.ts). */
+  useLog(log: SmsLog): void {
+    this.log = log;
+  }
+
+  /**
+   * What a provider said, for the operator: the household is told less of
+   * the local server (one "couldn't reach the phone", smsProblemWords).
+   * Never a number, a password or a text's words.
+   */
+  private logProblem(householdId: string, via: SmsVia, problem: SmsProviderError): void {
+    this.log(
+      {
+        event: 'sms_problem',
+        household: householdId,
+        via,
+        problem: problem.problem,
+        detail: problem.message,
+        ...(problem.status !== undefined ? { status: problem.status } : {}),
+        ...(problem.code !== undefined ? { code: problem.code } : {}),
+      },
+      'text message provider problem',
+    );
   }
 
   // ------------------------------------------------------------ reading
@@ -171,6 +213,7 @@ export class SmsService {
   /** GET /sms/settings: an owner's. Never the password, only whether one is set. */
   async get(p: Principal): Promise<SmsSettingsView> {
     if (p.role !== 'owner') throw ownersOnly();
+    await this.stillUsable(p);
     return withPrincipal(this.db, p, async (trx) => {
       const row = await trx
         .selectFrom('sms_settings')
@@ -230,6 +273,27 @@ export class SmsService {
 
   // ------------------------------------------------------------ setting
 
+  /**
+   * A local server saved by an older release, or before the operator
+   * narrowed FDV_SMS_GATE_ALLOWED_PORTS, that the vault no longer reaches
+   * as it is saved (0.9.0-dev.77): its settings failed, with why — the
+   * port and the setting, or that the address is the vault's own — so the
+   * owners see it in Settings, and texts stop being offered, rather than
+   * each failing unsaid. Asked as the settings are read; a send that meets
+   * it does the same (sendSms).
+   */
+  private async stillUsable(p: Principal): Promise<void> {
+    // Read as the owner asking; written, if it must be, as the vault.
+    const row = await withPrincipal(this.db, p, (trx) =>
+      trx.selectFrom('sms_settings').select(['provider', 'mode', 'base_url']).executeTakeFirst(),
+    );
+    if (row?.provider !== 'sms_gate' || row.mode !== 'local' || !row.base_url) return;
+    const refused = smsGateLocalRefused(row.base_url, this.localPorts);
+    if (!refused) return;
+    const words = refused === 'port' ? smsGatePortWords(smsGatePort(row.base_url)) : OWN_ADDRESS;
+    await smsSettingsUnusable(this.vault(p.householdId), row.base_url, words);
+  }
+
   /** An address as the vault will keep it, or why not. */
   private async address(mode: SmsMode, typed: string | null | undefined): Promise<string> {
     if (mode === 'cloud') return SMS_CLOUD_URL;
@@ -254,6 +318,23 @@ export class SmsService {
     }
     if (url.username || url.password || url.search || url.hash || !url.hostname) {
       throw bad('Type only the address: the username and password go in their own boxes.');
+    }
+    if (mode === 'local') {
+      // The home network, but never this machine, a link-local or metadata
+      // address, the vault's own services, or a port off the list (checked
+      // again on every connection, on the address DNS gives then).
+      const refused = smsGateLocalRefused(url.href, this.localPorts);
+      if (refused === 'port') {
+        const ports = this.localPorts;
+        throw new ApiError(
+          422,
+          'sms_address_refused',
+          `The vault reaches SMS Gate’s local server on port ${ports.length > 1 ? `${ports.slice(0, -1).join(', ')} or ${ports.at(-1)}` : ports.join('')} only. Use port 8080, SMS Gate’s own, in the app’s Local server settings; or whoever runs this server can allow another with FDV_SMS_GATE_ALLOWED_PORTS.`,
+        );
+      }
+      if (refused) {
+        throw new ApiError(422, 'sms_address_refused', OWN_ADDRESS);
+      }
     }
     if (mode === 'private') {
       // A server of the family's own on the internet, never one inside the
@@ -659,6 +740,7 @@ export class SmsService {
   async send(householdId: string, r: SmsRequest): Promise<SmsDone> {
     const d = await this.dispatch(householdId, r);
     if ('problem' in d) {
+      this.logProblem(householdId, smsVia(d.settings), d.problem);
       throw notSent(
         smsProblemWords(d.problem.problem, smsVia(d.settings), d.problem.status, d.problem.code),
       );
@@ -691,6 +773,7 @@ export class SmsService {
         : { failed: 'not_set_up', words: notSetUp().message };
     }
     if ('problem' in d) {
+      this.logProblem(householdId, smsVia(d.settings), d.problem);
       return {
         failed: 'not_sent',
         words: smsProblemWords(
@@ -729,6 +812,7 @@ export class SmsService {
     let ok = false;
     if ('problem' in d) {
       state = 'not_sent';
+      this.logProblem(p.householdId, via, d.problem);
       words = smsProblemWords(d.problem.problem, via, d.problem.status, d.problem.code);
     } else if (d.unconfirmed === true || d.sent.providerId === null) {
       // The provider did not say whether it took it: it may still arrive, and
@@ -767,6 +851,7 @@ export class SmsService {
         ok = true;
         words = 'The test text went. The vault can send texts now.';
       } else if (problem) {
+        this.logProblem(p.householdId, via, problem);
         words = smsProblemWords(problem.problem, via, problem.status, problem.code);
       } else if (state === 'failed') {
         words = failedWords(via, cleanWords(error, 200));

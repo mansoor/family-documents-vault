@@ -1335,11 +1335,12 @@ describe.skipIf(!testAdminUrl())(
           ).rows,
       );
       const pinned = ['search_path=pg_catalog, public, pg_temp'];
+      // A trigger's function is nobody's to call (0124): its trigger fires all the same.
       expect(defined).toEqual([
         { name: 'app_session', definer: false, config: pinned, granted: true },
         { name: 'handover_links_end', definer: true, config: pinned, granted: true },
         { name: 'member_holds_private', definer: true, config: pinned, granted: true },
-        { name: 'member_private_gained', definer: true, config: pinned, granted: true },
+        { name: 'member_private_gained', definer: true, config: pinned, granted: false },
         { name: 'password_reset_expire_exports', definer: true, config: pinned, granted: true },
       ]);
     });

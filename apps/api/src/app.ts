@@ -440,11 +440,13 @@ export async function buildApp(config: ApiConfig, deps: AppDeps): Promise<Fastif
   app.get('/healthz', async () => ({ ok: true }));
 
   // Readiness: the process can do useful work.
-  app.get('/readyz', async () => {
+  app.get('/readyz', async (req) => {
     try {
       await deps.pingDatabase();
     } catch (err) {
-      throw notReady((err as Error).message);
+      // Why, in the log alone: the answer says only "not ready".
+      req.log.warn({ err: (err as Error).message }, 'readyz: the database did not answer');
+      throw notReady();
     }
     return { ok: true };
   });

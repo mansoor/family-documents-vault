@@ -975,12 +975,13 @@ describe.skipIf(!testAdminUrl())('locking a sign-in (5.28)', () => {
         ).rows,
     );
     const pinned = ['search_path=pg_catalog, public, pg_temp'];
+    // A trigger's function is nobody's to call (0124): its trigger fires all the same.
     expect(defined).toEqual([
       { name: 'account_household_suspension', definer: false, config: pinned, granted: true },
       { name: 'app_live_share', definer: true, config: pinned, granted: true },
       { name: 'app_live_upload_request', definer: true, config: pinned, granted: true },
       { name: 'app_shared_document', definer: true, config: pinned, granted: true },
-      { name: 'assert_owner_remains', definer: true, config: pinned, granted: true },
+      { name: 'assert_owner_remains', definer: true, config: pinned, granted: false },
       { name: 'suspension_in_effect', definer: false, config: pinned, granted: true },
       { name: 'upload_requests_end_for_lock', definer: true, config: pinned, granted: true },
     ]);

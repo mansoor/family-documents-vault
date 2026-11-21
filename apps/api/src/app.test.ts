@@ -106,7 +106,9 @@ describe('health', () => {
     const body = res.json<{ error: Record<string, unknown> }>();
     expect(body.error.code).toBe('not_ready');
     expect(body.error.retriable).toBe(true);
-    expect(body.error.detail).toBe('connection refused');
+    // What the database said stays in the server's log.
+    expect(body.error.detail).toBeUndefined();
+    expect(res.body).not.toContain('connection refused');
     expect(body.error.request_id).toBe(res.headers['x-request-id']);
   });
 });
