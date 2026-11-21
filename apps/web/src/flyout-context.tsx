@@ -12,18 +12,27 @@ import {
 import { useLocation, useNavigate } from 'react-router';
 import { useApp } from './app-context.js';
 import {
+  besideIn,
   closedIn,
   EMPTY_FLYOUTS,
+  fewerIn,
   frontOf,
+  isSideBySide,
   itemOf,
   keepFlyouts,
   minimisedIn,
+  mostSideBySide,
   neighbourIn,
+  oneAtATimeIn,
   openedIn,
   readFlyouts,
   shownIn,
+  SIDE_BY_SIDE_FROM,
+  sideRoom,
   sweptIn,
   SWEEP_EVERY_MS,
+  trayedIn,
+  usedIn,
   WARN_FROM,
   withView,
   type FlyoutSet,
@@ -42,6 +51,10 @@ import type { DocumentViewLoaded } from './screens/Document.js';
  * in, so a reload puts the tray back: the one in front opens again, the
  * rest come back freed. A sign-out, a session's end and anybody else
  * signing in forget them (session.ts).
+ *
+ * From 1,100 px wide two or three can be shown side by side; a document
+ * opened from the list then replaces the pane used last. Narrower, side by
+ * side is not offered, and a set side by side goes back to one at a time.
  */
 
 /** What a list's row tells, opening a document. */
@@ -56,6 +69,8 @@ export interface OpenAsk {
    * its row.
    */
   toPage?: (() => void) | undefined;
+  /** Shown beside the one in front, rather than in its place (Side by side). */
+  beside?: boolean | undefined;
 }
 
 /** How a document was closed, which says where the focus goes. */
@@ -73,7 +88,21 @@ export interface Flyouts {
   titles: ReadonlyMap<string, string>;
   /** Narrower than 700 px: one at a time across the screen, and "N open" for the tray. */
   narrow: boolean;
+  /** From 1,100 px wide: two can be shown side by side. */
+  sideOk: boolean;
+  /** And a third, where each of three would be at least SIDE_PANE_MIN wide. */
+  thirdOk: boolean;
   open: (id: string, ask?: OpenAsk) => void;
+  /** Shown beside the one in front: the second, or a third (one open, or from the list). */
+  beside: (id: string) => void;
+  /** Side by side no more: the pane used last stays, the others go to the tray. */
+  oneAtATime: () => void;
+  /** Side by side, the focus went into this pane: it is the one used last. */
+  use: (id: string) => void;
+  /** Waiting for a document clicked in the list, to show beside the one in front. */
+  picking: boolean;
+  pickFromList: () => void;
+  cancelPick: () => void;
   /** To the front: from the tray, or the keys. A freed one opens again. */
   show: (id: string) => void;
   minimise: (id: string) => void;
@@ -119,12 +148,50 @@ export function useFlyouts(): Flyouts | null {
 
 /** Below this wide, a document beside the list covers the screen. */
 const WIDE_ENOUGH = '(min-width: 700px)';
+/** From this wide, two or three side by side. */
+const SIDE_BY_SIDE = `(min-width: ${SIDE_BY_SIDE_FROM}px)`;
 
-function watchWidth(changed: () => void): () => void {
+function watchQuery(query: string, changed: () => void): () => void {
   if (typeof window.matchMedia !== 'function') return () => undefined;
-  const list = window.matchMedia(WIDE_ENOUGH);
+  const list = window.matchMedia(query);
   list.addEventListener('change', changed);
   return () => list.removeEventListener('change', changed);
+}
+
+const watchWidth = (changed: () => void) => watchQuery(WIDE_ENOUGH, changed);
+const watchSideWidth = (changed: () => void) => watchQuery(SIDE_BY_SIDE, changed);
+
+/** At least 1,100 px wide (with no media queries, as in jsdom, never). */
+function readSideBySide(): boolean {
+  if (typeof window.matchMedia !== 'function') return false;
+  return window.matchMedia(SIDE_BY_SIDE).matches;
+}
+
+/** Wide enough for two or three side by side. */
+export function useSideBySideWidth(): boolean {
+  return useSyncExternalStore(watchSideWidth, readSideBySide, () => false);
+}
+
+/**
+ * The room side by side changes with the window, and with the sidebar
+ * (dragged or folded), which the shell says in its own --side-w.
+ */
+function watchRoom(changed: () => void): () => void {
+  window.addEventListener('resize', changed);
+  const shell = document.querySelector('.shell');
+  const watching = shell ? new MutationObserver(() => changed()) : null;
+  if (shell) watching?.observe(shell, { attributes: true, attributeFilter: ['style'] });
+  return () => {
+    window.removeEventListener('resize', changed);
+    watching?.disconnect();
+  };
+}
+
+const readMost = () => mostSideBySide(sideRoom());
+
+/** How many side by side the room takes: three when each of three has SIDE_PANE_MIN, else two. */
+function useMostSideBySide(): 2 | 3 {
+  return useSyncExternalStore(watchRoom, readMost, () => 2);
 }
 
 /** Narrower than 700 px (with no media queries, as in jsdom, a phone's). */
@@ -173,8 +240,22 @@ export function FlyoutProvider(props: { memberId: string | null; children: React
   const { memberId } = props;
   const { session } = useApp();
   const narrow = useNarrowFlyouts();
-  const [set, setSet] = useState<FlyoutSet>(() => readFlyouts(memberId));
+  const sideOk = useSideBySideWidth() && !narrow;
+  // How many side by side: none below 1,100 px, then two, and three where
+  // each of three has room enough.
+  const room = useMostSideBySide();
+  const most = sideOk ? room : 0;
+  // Side by side comes back only as far as it is offered: narrower, the one
+  // in front alone, the others freed, as one at a time.
+  const [set, setSet] = useState<FlyoutSet>(() => readFlyouts(memberId, most));
   const [titles, setTitles] = useState<ReadonlyMap<string, string>>(() => new Map());
+  // Waiting for a document clicked in the list, to show beside the one in front.
+  const [pickingNow, setPickingNow] = useState(false);
+  const picking = useRef(false);
+  const setPicking = useCallback((on: boolean) => {
+    picking.current = on;
+    setPickingNow(on);
+  }, []);
   const [said, setSaid] = useState<{ text: string; n: number } | null>(null);
   const [limit, setLimit] = useState<{ want: string; title: string | null } | null>(null);
   const [warning, setWarning] = useState(false);
@@ -199,16 +280,34 @@ export function FlyoutProvider(props: { memberId: string | null; children: React
   const [who, setWho] = useState(memberId);
   if (who !== memberId) {
     setWho(memberId);
-    setSet(readFlyouts(memberId));
+    setSet(readFlyouts(memberId, most));
     setTitles(new Map());
+    setPickingNow(false);
     setLimit(null);
     setWarning(false);
     // Nothing of the last person's is said to the next.
     setSaid(null);
     setChanges({ n: 0, gone: new Set() });
   }
+  // The window narrowed: three side by side go back to two, and below
+  // 1,100 px a set side by side goes back to one at a time, the pane used
+  // last staying.
+  const [mostWas, setMostWas] = useState(most);
+  if (mostWas !== most) {
+    setMostWas(most);
+    if (most < mostWas) {
+      if (most < 2) setPickingNow(false);
+      setSet((was) => fewerIn(was, most, Date.now()));
+    }
+  }
+  // The names, for what is said between renders; and how many side by side.
+  const named = useRef(titles);
+  const mostNow = useRef(most);
   useLayoutEffect(() => {
     current.current = set;
+    named.current = titles;
+    picking.current = pickingNow;
+    mostNow.current = most;
   });
   useEffect(() => {
     const kept = [openers.current, pageHooks.current, stamps.current];
@@ -225,6 +324,12 @@ export function FlyoutProvider(props: { memberId: string | null; children: React
   const commit = useCallback((next: FlyoutSet) => {
     current.current = next;
     setSet(next);
+    // Nothing in front (minimised, closed, in the Trash): nothing to choose
+    // a document from the list to go beside.
+    if (frontOf(next) === null && picking.current) {
+      picking.current = false;
+      setPickingNow(false);
+    }
   }, []);
 
   const say = useCallback((text: string) => {
@@ -277,17 +382,38 @@ export function FlyoutProvider(props: { memberId: string | null; children: React
   const open = useCallback(
     (id: string, ask: OpenAsk = {}) => {
       name(id, ask.title);
-      const done = openedIn(current.current, id, Date.now());
+      const before = current.current;
+      // Chosen from the list for Side by side: beside the one in front, if
+      // one is, and as long as there is room for one more.
+      const beside =
+        (ask.beside === true || picking.current) &&
+        frontOf(before) !== null &&
+        (isSideBySide(before) ? before.side.length : 1) < mostNow.current;
+      const done = beside ? besideIn(before, id, Date.now()) : openedIn(before, id, Date.now());
       if ('full' in done) {
-        wanted.current = { from: ask.from ?? null, toPage: ask.toPage };
+        wanted.current = { from: ask.from ?? null, toPage: ask.toPage, beside };
         setLimit({ want: id, title: ask.title ?? null });
         return;
       }
+      // The one showing chosen again: still waiting for another.
+      if (picking.current && (!beside || isSideBySide(done.set))) setPicking(false);
       if (ask.from) openers.current.set(id, ask.from);
       if (ask.toPage) pageHooks.current.set(id, ask.toPage);
       else pageHooks.current.delete(id);
       commit(done.set);
       focusNext.current = () => focusFirst(headingOf(id));
+      const title = ask.title ?? named.current.get(id);
+      const out = frontOf(before);
+      if (beside && !isSideBySide(done.set)) {
+        say(`${quoted(title ?? undefined)} is the one showing: choose another to go beside it.`);
+      } else if (beside && !before.side.includes(id)) {
+        say(`${quoted(title ?? undefined)} shown side by side.`);
+      } else if (isSideBySide(before) && out && !before.side.includes(id)) {
+        // In the place of the pane used last, which goes to the tray.
+        say(
+          `${quoted(title ?? undefined)} replaced ${quoted(named.current.get(out))}, which is minimised to the tray.`,
+        );
+      }
       const n = done.set.items.length;
       if (done.added && n >= WARN_FROM) {
         setWarning(true);
@@ -296,25 +422,78 @@ export function FlyoutProvider(props: { memberId: string | null; children: React
         );
       }
     },
-    [commit, name, say],
+    [commit, name, say, setPicking],
+  );
+
+  const beside = useCallback((id: string) => open(id, { beside: true }), [open]);
+
+  const oneAtATime = useCallback(() => {
+    const before = current.current;
+    if (!isSideBySide(before)) return;
+    const keep = frontOf(before);
+    commit(oneAtATimeIn(before, Date.now()));
+    setPicking(false);
+    say('One at a time: the others are minimised to the tray.');
+    if (keep) focusNext.current = () => focusFirst(headingOf(keep));
+  }, [commit, say, setPicking]);
+
+  const use = useCallback(
+    (id: string) => {
+      const next = usedIn(current.current, id);
+      if (next !== current.current) commit(next);
+    },
+    [commit],
+  );
+
+  const pickFromList = useCallback(() => {
+    const front = frontOf(current.current);
+    if (!front) return;
+    setPicking(true);
+    say(
+      `Choose a document in the list to show beside ${quoted(named.current.get(front))}. Esc cancels.`,
+    );
+    focusNext.current = () => focusFirst(pageHeading());
+  }, [say, setPicking]);
+
+  const cancelPick = useCallback(() => {
+    if (!picking.current) return;
+    setPicking(false);
+    const front = frontOf(current.current);
+    say('Side by side cancelled.');
+    if (front) focusNext.current = () => focusFirst(headingOf(front));
+  }, [say, setPicking]);
+
+  /**
+   * After one left side by side (minimised or closed), the focus goes to
+   * the pane used last now, still in sight; else `otherwise`.
+   */
+  const afterLeaving = useCallback(
+    (before: FlyoutSet, id: string, otherwise: () => void): (() => void) => {
+      const still = frontOf(current.current);
+      if (before.side.includes(id) && still) return () => focusFirst(headingOf(still));
+      return otherwise;
+    },
+    [],
   );
 
   const minimise = useCallback(
     (id: string) => {
-      if (itemOf(current.current, id)?.state !== 'shown') return;
-      commit(minimisedIn(current.current, id, Date.now()));
+      const before = current.current;
+      if (itemOf(before, id)?.state !== 'shown') return;
+      commit(minimisedIn(before, id, Date.now()));
       say(`${quoted(titles.get(id))} minimised to the tray.`);
-      focusNext.current = () => backFrom(id, true);
+      focusNext.current = afterLeaving(before, id, () => backFrom(id, true));
     },
-    [backFrom, commit, say, titles],
+    [afterLeaving, backFrom, commit, say, titles],
   );
 
   const close = useCallback(
     (id: string, how: CloseHow = 'pane') => {
-      const before = current.current.items.map((it) => it.id);
+      const was = current.current;
+      const before = was.items.map((it) => it.id);
       const at = before.indexOf(id);
       if (at < 0) return;
-      commit(closedIn(current.current, id));
+      commit(closedIn(was, id));
       if (how !== 'quiet') say(`${quoted(titles.get(id))} closed.`);
       const opener = openers.current.get(id);
       openers.current.delete(id);
@@ -328,14 +507,14 @@ export function FlyoutProvider(props: { memberId: string | null; children: React
             pageHeading(),
           );
       } else if (how === 'pane') {
-        focusNext.current = () => {
+        focusNext.current = afterLeaving(was, id, () => {
           if (opener) openers.current.set(id, opener);
           backFrom(id, false);
           openers.current.delete(id);
-        };
+        });
       }
     },
-    [backFrom, commit, say, titles],
+    [afterLeaving, backFrom, commit, say, titles],
   );
 
   const closeAll = useCallback(() => {
@@ -344,9 +523,10 @@ export function FlyoutProvider(props: { memberId: string | null; children: React
     commit(EMPTY_FLYOUTS);
     openers.current.clear();
     setWarning(false);
+    setPicking(false);
     say(n === 1 ? 'Closed 1 document.' : `Closed ${n} documents.`);
     focusNext.current = () => focusFirst(pageHeading());
-  }, [commit, say]);
+  }, [commit, say, setPicking]);
 
   const setView = useCallback(
     (id: string, view: FlyoutView) => commit(withView(current.current, id, view)),
@@ -365,11 +545,18 @@ export function FlyoutProvider(props: { memberId: string | null; children: React
     (id: string) => {
       const ask = limit;
       if (!ask) return;
-      commit(closedIn(current.current, id));
+      const before = current.current;
+      commit(closedIn(before, id));
       openers.current.delete(id);
       say(`${quoted(titles.get(id))} closed.`);
       setLimit(null);
-      open(ask.want, { ...wanted.current, title: ask.title });
+      // One of those side by side closed: the new one goes beside the rest.
+      const besideRest = isSideBySide(before) && before.side.includes(id);
+      open(ask.want, {
+        ...wanted.current,
+        beside: wanted.current.beside === true || besideRest,
+        title: ask.title,
+      });
       wanted.current = {};
     },
     [commit, limit, open, say, titles],
@@ -378,7 +565,8 @@ export function FlyoutProvider(props: { memberId: string | null; children: React
   const cancelLimit = useCallback(() => {
     setLimit(null);
     wanted.current = {};
-  }, []);
+    setPicking(false);
+  }, [setPicking]);
 
   const asPage = useCallback(
     (id: string) => {
@@ -434,6 +622,7 @@ export function FlyoutProvider(props: { memberId: string | null; children: React
           : `${freed.length} documents minimised for 15 minutes were freed to save memory. Their icons stay in the tray and each opens again when you choose it.`,
       );
     };
+    // Those shown, side by side too, are never freed: only the minimised.
     const timer = window.setInterval(sweep, SWEEP_EVERY_MS);
     document.addEventListener('visibilitychange', sweep);
     return () => {
@@ -442,26 +631,26 @@ export function FlyoutProvider(props: { memberId: string | null; children: React
     };
   }, [commit, say]);
 
-  // Moving to another page puts the one in front in the tray: nothing of it
-  // over the page moved to (a link inside it, a section). Moving to one of
-  // an open document's own pages (Edit, its page) closes that one, as Open
-  // as a page does: the tray never keeps a copy of it from before a save.
-  // What was moved to the Trash here is the lists' own business again.
+  // Moving to another page puts those shown in the tray: nothing of them
+  // over the page moved to (a link inside one, a section), and none side by
+  // side. Moving to one of an open document's own pages (Edit, its page)
+  // closes that one, as Open as a page does: the tray never keeps a copy of
+  // it from before a save. What was moved to the Trash here is the lists'
+  // own business again.
   const { pathname } = useLocation();
   const at = useRef(pathname);
   useLayoutEffect(() => {
     if (at.current === pathname) return;
     at.current = pathname;
     setChanges((was) => (was.gone.size === 0 ? was : { n: was.n, gone: new Set() }));
+    setPicking(false);
     const own = /^\/documents\/([^/]+)/.exec(pathname)?.[1];
     if (own && itemOf(current.current, own)) {
       pageHooks.current.delete(own);
       close(own, 'quiet');
-      return;
     }
-    const front = frontOf(current.current);
-    if (front) commit(minimisedIn(current.current, front, Date.now()));
-  }, [pathname, commit, close]);
+    commit(trayedIn(current.current, Date.now()));
+  }, [pathname, commit, close, setPicking]);
 
   // Those put back after a reload, freed, are not named until chosen: a
   // document's record read only to name its icon would be a look at it (a
@@ -471,7 +660,15 @@ export function FlyoutProvider(props: { memberId: string | null; children: React
     set,
     titles,
     narrow,
+    sideOk,
+    thirdOk: most >= 3,
     open,
+    beside,
+    oneAtATime,
+    use,
+    picking: pickingNow && sideOk && frontOf(set) !== null,
+    pickFromList,
+    cancelPick,
     show,
     minimise,
     close,

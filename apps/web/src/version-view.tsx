@@ -9,6 +9,7 @@ import {
 import { Fragment, useEffect, useId, useRef } from 'react';
 import { asksFor, coreRule, detailText } from './details.js';
 import { familyZoneNow } from './family-time.js';
+import { useNamedWithin } from './ui.js';
 
 /**
  * An older version of a document, looked at (0.9.0; the owner's word: "once
@@ -45,13 +46,14 @@ export function OlderVersionBanner(props: {
   const heading = useRef<HTMLHeadingElement>(null);
   // Its own, as more than one document may be open beside the list.
   const headingId = `${useId()}-h`;
+  const named = useNamedWithin();
   // Said and given the focus as it is shown: the page changed under the person.
   useEffect(() => {
     heading.current?.focus();
   }, [version.id]);
   const when = replacedOn(props.next);
   return (
-    <section className="version-banner" aria-labelledby={headingId}>
+    <section className="version-banner" aria-labelledby={named(headingId)}>
       <h2 id={headingId} className="version-banner-h" tabIndex={-1} ref={heading}>
         Version {version.version_no} of {props.of}
         {when ? `: replaced on ${when}` : ''} — not the current version
@@ -77,6 +79,7 @@ export function OlderVersionDetails(props: {
 }) {
   const { version, type } = props;
   const headingId = `${useId()}-h`;
+  const named = useNamedWithin();
   const d = version.details ?? null;
   const word = (key: CoreField, fallback: string) => coreRule(type, key).label ?? fallback;
   const typeFields = (type?.fields ?? []).filter(asksFor);
@@ -89,7 +92,7 @@ export function OlderVersionDetails(props: {
     ([key, value]) => value !== null && value !== '' && !typeFields.some((f) => f.key === key),
   );
   return (
-    <section aria-labelledby={headingId} className="version-details">
+    <section aria-labelledby={named(headingId)} className="version-details">
       <h2 id={headingId} className="section-h">
         This version’s details
       </h2>

@@ -452,6 +452,28 @@ export function useIdScope(): (name: string) => string {
 }
 
 /**
+ * Side by side, two or three documents are in sight at once, each with its
+ * Notes, History and the rest: inside a NamedWithin, a section named by its
+ * heading is named by the document's heading too ("Notes Passport"), so no
+ * two places on the page are called the same. Elsewhere, its heading alone.
+ */
+const NamedWithinContext = createContext<string | null>(null);
+
+export function NamedWithin(props: { by: string | undefined; children: ReactNode }) {
+  return (
+    <NamedWithinContext.Provider value={props.by ?? null}>
+      {props.children}
+    </NamedWithinContext.Provider>
+  );
+}
+
+/** The ids a section is named by: its heading's, and inside a NamedWithin its document's too. */
+export function useNamedWithin(): (headingId: string) => string {
+  const by = useContext(NamedWithinContext);
+  return (headingId) => (by ? `${headingId} ${by}` : headingId);
+}
+
+/**
  * What the page that sent somebody here said it did (`state.said`): read as
  * the screen opens, kept while it is open, and taken out of the history
  * entry, so that coming back to the entry later — Back, Forward, a reload —

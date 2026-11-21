@@ -24,6 +24,9 @@ import { dateTimeWords } from './family-time.js';
 import { Button, Check, ConfirmDialog, ErrorNote, Field, LoadFailed } from './ui.js';
 import { useWorkerCheck } from './worker-check.js';
 
+/** What a form was last started from: nothing yet. */
+const UNSEEN = Symbol('unseen');
+
 /**
  * Settings → Reading → AI reader (0.9.0, AIR1), an owner's: which reader
  * reads the family's papers' words when the household's local AI is on —
@@ -260,9 +263,12 @@ function AiReaderForm(props: { view: AiReaderView; onSaved: () => Promise<void> 
   const [asking, setAsking] = useState(false);
   const models = useWorkerCheck();
   const line = useRef<HTMLParagraphElement>(null);
-  useEffect(() => {
-    // The form starts from what the vault has, each time it is loaded.
-    /* eslint-disable react-hooks/set-state-in-effect */
+  // The form starts from what the vault has, each time it is loaded: set
+  // while drawing, never in an effect after it, so nothing typed before an
+  // effect would have run is put back.
+  const [from, setFrom] = useState<readonly unknown[]>([UNSEEN, UNSEEN]);
+  if (from[0] !== r || from[1] !== kinds) {
+    setFrom([r, kinds]);
     setKind(r?.kind ?? kinds[0] ?? 'ollama');
     setBaseUrl(r?.base_url ?? '');
     setModel(r?.model ?? '');
@@ -271,8 +277,7 @@ function AiReaderForm(props: { view: AiReaderView; onSaved: () => Promise<void> 
     setOwnNetwork(r?.own_network === true);
     setTimeoutSecs(String(r?.timeout_seconds ?? AI_READER_TIMEOUT_DEFAULT));
     setCap(String(r?.monthly_cap ?? AI_READER_CAP_DEFAULT));
-    /* eslint-enable react-hooks/set-state-in-effect */
-  }, [r, kinds]);
+  }
   useEffect(() => {
     if (said) line.current?.focus();
   }, [said]);

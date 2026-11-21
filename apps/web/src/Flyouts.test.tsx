@@ -14,15 +14,23 @@ import { fresh, installFakeApi, ME, PASSPORT, signedIn, type FakeState } from '.
  * its document over the list, which stays; the tray at the right edge
  * holds every one open; Esc minimises, × closes; ten at most, a warning
  * from the 8th; minimised 15 minutes, freed; kept for a reload in this
- * tab; and below 700 px, across the screen with "N open" for the tray.
+ * tab; below 700 px, across the screen with "N open" for the tray; and
+ * from 1,100 px, two or three side by side.
  */
 
 const WIDE = 1280;
+/** Room for three side by side, each at least 300 px (1,600 less the sidebar, tray and list). */
+const ROOMY = 1600;
+/** Wide enough for one beside the list, not for side by side. */
+const LAPTOP = 1000;
 const PHONE = 375;
 
+const innerWidthWas = Object.getOwnPropertyDescriptor(window, 'innerWidth');
 let width = WIDE;
 function atWidth(px: number) {
   width = px;
+  // The room side by side is worked out from the window's width.
+  Object.defineProperty(window, 'innerWidth', { configurable: true, value: px });
   Object.defineProperty(window, 'matchMedia', {
     configurable: true,
     writable: true,
@@ -59,6 +67,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   Reflect.deleteProperty(window, 'matchMedia');
+  if (innerWidthWas) Object.defineProperty(window, 'innerWidth', innerWidthWas);
   vi.useRealTimers();
   vi.restoreAllMocks();
 });
@@ -207,8 +216,9 @@ describe('a document beside the list', () => {
     expect(twice).toEqual([]);
     // And what is named by an id is in the same document.
     for (const el of second.querySelectorAll('[aria-labelledby]')) {
-      const named = document.getElementById(el.getAttribute('aria-labelledby') ?? '');
-      expect(second.contains(named)).toBe(true);
+      for (const id of (el.getAttribute('aria-labelledby') ?? '').split(/\s+/)) {
+        expect(second.contains(document.getElementById(id))).toBe(true);
+      }
     }
     // The page's own open section is not the flyout's.
     expect(localStorage.getItem('fdv.actions.document.me')).toBeNull();
@@ -606,6 +616,390 @@ describe('narrower than 700 px', () => {
     fireEvent.click(within(aside).getByRole('button', { name: 'Minimise Paper 01' }));
     await waitFor(() => expect(entry()).toBeUndefined());
     expect(window.location.pathname).toBe('/documents');
+  });
+});
+
+describe('side by side', () => {
+  /** The panes side by side, left to right. */
+  const panes = () =>
+    [...document.querySelectorAll('.flyout-side')].map((el) => el.getAttribute('data-flyout'));
+  /** The one with the green line: the pane used last. */
+  const greenLine = () =>
+    [...document.querySelectorAll('.flyout-last')].map((el) => el.getAttribute('data-flyout'));
+  const bar = () => screen.getByRole('region', { name: 'Side by side' });
+  const heading = (name: string) =>
+    within(screen.getByRole('dialog', { name })).getByRole('heading', { level: 2, name });
+  const nameOf = (id: string) => `Paper ${id.replace('doc-', '').padStart(2, '0')}`;
+
+  /** Opens `a` then `b` from the list, then `a` beside `b` from the picker. */
+  async function pair(a: number, b: number) {
+    await open(a);
+    const front = await open(b);
+    fireEvent.click(within(front).getByRole('button', { name: 'Side by side' }));
+    const picker = await screen.findByRole('dialog', { name: 'Side by side' });
+    const name = `Paper ${String(a).padStart(2, '0')}`;
+    fireEvent.click(within(picker).getByRole('button', { name: new RegExp(`^${name}`) }));
+    await waitFor(() => expect(heading(name)).toHaveFocus());
+  }
+
+  it('the picker offers the open ones; the one chosen goes beside the one in front', async () => {
+    at();
+    await open(1);
+    const front = await open(2);
+    const button = within(front).getByRole('button', { name: 'Side by side' });
+    expect(button).toHaveAttribute('aria-haspopup', 'dialog');
+    fireEvent.click(button);
+    const picker = await screen.findByRole('dialog', { name: 'Side by side' });
+    expect(picker).toHaveTextContent('Choose a document to show beside “Paper 02”');
+    expect(within(picker).getByRole('button', { name: 'Choose from the list' })).toBeVisible();
+    // Only the others: Paper 02 is the one showing.
+    expect(within(picker).queryByRole('button', { name: /^Paper 02/ })).toBeNull();
+    fireEvent.click(within(picker).getByRole('button', { name: /^Paper 01minimised/ }));
+    await waitFor(() => expect(heading('Paper 01')).toHaveFocus());
+    // Both shown, each a dialog that is not modal, named by its heading.
+    for (const name of ['Paper 01', 'Paper 02']) {
+      const pane = screen.getByRole('dialog', { name });
+      expect(pane).toBeVisible();
+      expect(pane).toHaveAttribute('aria-modal', 'false');
+    }
+    expect(panes()).toEqual(['doc-2', 'doc-1']);
+    // The one chosen is the pane used last: the green line, and said so.
+    expect(greenLine()).toEqual(['doc-1']);
+    expect(screen.getByRole('dialog', { name: 'Paper 01' })).toHaveAccessibleDescription(
+      'Used last: a document opened from the list takes its place.',
+    );
+    expect(within(tray()).getByRole('button', { name: 'Paper 02, showing' })).toBeInTheDocument();
+    expect(within(tray()).getByRole('button', { name: 'Paper 01, showing' })).toBeInTheDocument();
+    // No Side by side on either now: the bar above them has the rest.
+    expect(screen.queryByRole('button', { name: 'Side by side' })).toBeNull();
+    // At 1,280 px three would each be under 300 px: no third offered.
+    expect(within(bar()).queryByRole('button', { name: 'Add a third' })).toBeNull();
+    expect(within(bar()).getByRole('button', { name: 'Scroll together' })).toHaveAttribute(
+      'aria-pressed',
+      'false',
+    );
+    // The focus in the other pane makes it the one used last.
+    act(() => heading('Paper 02').focus());
+    expect(greenLine()).toEqual(['doc-2']);
+  });
+
+  it('Add a third from the list; a document clicked in the list then replaces the pane with the green line', async () => {
+    at(5, ROOMY);
+    await pair(1, 2);
+    fireEvent.click(within(bar()).getByRole('button', { name: 'Add a third' }));
+    const picker = await screen.findByRole('dialog', { name: 'Add a third' });
+    expect(within(picker).getByText('No other documents are open.')).toBeInTheDocument();
+    fireEvent.click(within(picker).getByRole('button', { name: 'Choose from the list' }));
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Add a third' })).toBeNull());
+    // Said in the one it goes beside, over none of the list's rows.
+    expect(
+      screen.getByRole('dialog', { name: 'Paper 01' }).querySelector('.flyout-pick'),
+    ).toHaveTextContent('Choose a document in the list to show beside this one.');
+    expect(document.querySelectorAll('.flyout-pick')).toHaveLength(1);
+    // Paper 03 from the list: the third, at the right, the pane used last.
+    const third = await open(3);
+    await waitFor(() => expect(heading('Paper 03')).toHaveFocus());
+    expect(third).toBeVisible();
+    expect(document.querySelector('.flyout-pick')).toBeNull();
+    expect(panes()).toEqual(['doc-2', 'doc-1', 'doc-3']);
+    expect(greenLine()).toEqual(['doc-3']);
+    // Three side by side: no fourth offered.
+    expect(within(bar()).queryByRole('button', { name: 'Add a third' })).toBeNull();
+
+    // Paper 02 used last, then Paper 04 clicked in the list: in its place.
+    act(() => heading('Paper 02').focus());
+    expect(greenLine()).toEqual(['doc-2']);
+    await open(4);
+    expect(panes()).toEqual(['doc-4', 'doc-1', 'doc-3']);
+    expect(greenLine()).toEqual(['doc-4']);
+    // Nothing else set aside: Paper 02 in the tray, minimised; four open.
+    expect(screen.queryByRole('dialog', { name: 'Paper 02' })).toBeNull();
+    expect(within(tray()).getByRole('button', { name: 'Paper 02, minimised' })).toBeInTheDocument();
+    expect(within(tray()).getAllByRole('listitem')).toHaveLength(4);
+    expect(document.querySelector('[data-flyouts-said]')).toHaveTextContent(
+      '“Paper 04” replaced “Paper 02”, which is minimised to the tray.',
+    );
+    // Kept for a reload: which, in their order, ids and views only.
+    const kept = JSON.parse(sessionStorage.getItem(flyoutsKey('me')) ?? '{}') as {
+      side?: string[];
+      front?: string;
+    };
+    expect(kept.side).toEqual(['doc-4', 'doc-1', 'doc-3']);
+    expect(kept.front).toBe('doc-4');
+    expect(sessionStorage.getItem(flyoutsKey('me'))).not.toMatch(/Paper/);
+
+    // Every id is its own with three open, and what each names is its own.
+    const ids = [...document.querySelectorAll('[id]')].map((el) => el.id);
+    expect(ids.filter((id, i) => ids.indexOf(id) !== i)).toEqual([]);
+    for (const id of ['doc-4', 'doc-1', 'doc-3']) {
+      const pane = document.querySelector(`[data-flyout="${id}"]`) as HTMLElement;
+      for (const el of pane.querySelectorAll('[aria-labelledby]')) {
+        for (const named of (el.getAttribute('aria-labelledby') ?? '').split(/\s+/)) {
+          expect(pane.contains(document.getElementById(named))).toBe(true);
+        }
+      }
+      // Its sections are named with its document: no two Notes alike.
+      const notes = within(pane).queryByRole('region', { name: /^Notes / });
+      if (notes) expect(notes).toHaveAccessibleName(`Notes ${nameOf(id)}`);
+    }
+    await expectAccessible();
+  });
+
+  it('Esc minimises the pane it is in, the others stay; One at a time keeps the one used last', async () => {
+    at(3, ROOMY);
+    await open(3);
+    await pair(1, 2);
+    fireEvent.click(within(bar()).getByRole('button', { name: 'Add a third' }));
+    const picker = await screen.findByRole('dialog', { name: 'Add a third' });
+    fireEvent.click(within(picker).getByRole('button', { name: /^Paper 03/ }));
+    await waitFor(() => expect(heading('Paper 03')).toHaveFocus());
+    expect(panes()).toEqual(['doc-2', 'doc-1', 'doc-3']);
+
+    // Esc in the middle one: that one alone to the tray.
+    act(() => heading('Paper 01').focus());
+    fireEvent.keyDown(heading('Paper 01'), { key: 'Escape' });
+    expect(screen.queryByRole('dialog', { name: 'Paper 01' })).toBeNull();
+    expect(within(tray()).getByRole('button', { name: 'Paper 01, minimised' })).toBeInTheDocument();
+    expect(panes()).toEqual(['doc-2', 'doc-3']);
+    // The one now in its place is the pane used last, and has the focus.
+    expect(greenLine()).toEqual(['doc-3']);
+    await waitFor(() => expect(heading('Paper 03')).toHaveFocus());
+
+    // One at a time: the one used last stays, the other to the tray.
+    act(() => heading('Paper 02').focus());
+    fireEvent.click(within(bar()).getByRole('button', { name: 'One at a time' }));
+    expect(screen.queryByRole('region', { name: 'Side by side' })).toBeNull();
+    expect(panes()).toEqual([]);
+    expect(screen.getByRole('dialog', { name: 'Paper 02' })).toBeVisible();
+    expect(screen.queryByRole('dialog', { name: 'Paper 03' })).toBeNull();
+    expect(within(tray()).getByRole('button', { name: 'Paper 03, minimised' })).toBeInTheDocument();
+    await waitFor(() => expect(heading('Paper 02')).toHaveFocus());
+    expect(
+      within(screen.getByRole('dialog', { name: 'Paper 02' })).getByRole('button', {
+        name: 'Side by side',
+      }),
+    ).toBeInTheDocument();
+  });
+
+  it('Scroll together: one page view scrolled, the other follows by its share', async () => {
+    at();
+    await pair(1, 2);
+    const viewOf = (id: string) =>
+      document.querySelector<HTMLElement>(`[data-flyout="${id}"] .viewer:not(.viewer-none)`);
+    await waitFor(() => expect(viewOf('doc-1')).not.toBeNull());
+    await waitFor(() => expect(viewOf('doc-2')).not.toBeNull());
+    // jsdom lays nothing out: each view as tall as said, scrolled as set.
+    const sized = (el: HTMLElement, scrollHeight: number) => {
+      let top = 0;
+      Object.defineProperties(el, {
+        scrollHeight: { configurable: true, get: () => scrollHeight },
+        clientHeight: { configurable: true, get: () => 500 },
+        scrollTop: {
+          configurable: true,
+          get: () => top,
+          set: (v: number) => {
+            top = v;
+          },
+        },
+      });
+      return el;
+    };
+    const one = sized(viewOf('doc-1') as HTMLElement, 2000); // 1,500 to scroll
+    const two = sized(viewOf('doc-2') as HTMLElement, 1000); // 500 to scroll
+
+    // Off: each scrolls on its own.
+    one.scrollTop = 300;
+    fireEvent.scroll(one);
+    expect(two.scrollTop).toBe(0);
+
+    const toggle = within(bar()).getByRole('button', { name: 'Scroll together' });
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute('aria-pressed', 'true');
+    // Half of one is half of the other.
+    one.scrollTop = 750;
+    fireEvent.scroll(one);
+    expect(two.scrollTop).toBe(250);
+    // What was set there is not followed back.
+    fireEvent.scroll(two);
+    expect(one.scrollTop).toBe(750);
+    // The other way: all the way down.
+    two.scrollTop = 500;
+    fireEvent.scroll(two);
+    expect(one.scrollTop).toBe(1500);
+    two.scrollTop = 100;
+    fireEvent.scroll(two);
+    expect(one.scrollTop).toBe(300);
+
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute('aria-pressed', 'false');
+    one.scrollTop = 0;
+    fireEvent.scroll(one);
+    expect(two.scrollTop).toBe(100);
+  });
+
+  it('a narrower window takes three back to two, the one used last staying', async () => {
+    at(4, ROOMY);
+    await open(3);
+    await open(4);
+    await pair(1, 2);
+    fireEvent.click(within(bar()).getByRole('button', { name: 'Add a third' }));
+    const picker = await screen.findByRole('dialog', { name: 'Add a third' });
+    fireEvent.click(within(picker).getByRole('button', { name: /^Paper 03/ }));
+    await waitFor(() => expect(panes()).toEqual(['doc-2', 'doc-1', 'doc-3']));
+    act(() => heading('Paper 01').focus());
+    act(() => {
+      Object.defineProperty(window, 'innerWidth', { configurable: true, value: WIDE });
+      window.dispatchEvent(new Event('resize'));
+    });
+    // The leftmost not used last goes to the tray.
+    expect(panes()).toEqual(['doc-1', 'doc-3']);
+    expect(greenLine()).toEqual(['doc-1']);
+    expect(within(tray()).getByRole('button', { name: 'Paper 02, minimised' })).toBeInTheDocument();
+    expect(within(bar()).queryByRole('button', { name: 'Add a third' })).toBeNull();
+  });
+
+  it('a pane replaced leaves the others where they are in the page: the same node, never moved', async () => {
+    at(4);
+    await pair(1, 2);
+    expect(panes()).toEqual(['doc-2', 'doc-1']);
+    const kept = document.querySelector('[data-flyout="doc-2"]') as HTMLElement;
+    const moved: Node[] = [];
+    const watching = new MutationObserver((records) => {
+      for (const r of records) moved.push(...r.removedNodes);
+    });
+    watching.observe(kept.parentElement as HTMLElement, { childList: true });
+    // Paper 01, at the right, is the one used last: Paper 03 takes its place.
+    await open(3);
+    watching.disconnect();
+    expect(panes()).toEqual(['doc-2', 'doc-3']);
+    expect(document.querySelector('[data-flyout="doc-2"]')).toBe(kept);
+    expect(moved).not.toContain(kept);
+  });
+
+  it('its own Minimise or × never makes a pane the one used last', async () => {
+    at(4, ROOMY);
+    await open(3);
+    await pair(1, 2);
+    fireEvent.click(within(bar()).getByRole('button', { name: 'Add a third' }));
+    const picker = await screen.findByRole('dialog', { name: 'Add a third' });
+    fireEvent.click(within(picker).getByRole('button', { name: /^Paper 03/ }));
+    await waitFor(() => expect(greenLine()).toEqual(['doc-3']));
+    // Pressed, focused and clicked: × on the leftmost.
+    const x = within(screen.getByRole('dialog', { name: 'Paper 02' })).getByRole('button', {
+      name: 'Close Paper 02',
+    });
+    fireEvent.pointerDown(x);
+    act(() => x.focus());
+    expect(greenLine()).toEqual(['doc-3']);
+    fireEvent.click(x);
+    expect(panes()).toEqual(['doc-1', 'doc-3']);
+    expect(greenLine()).toEqual(['doc-3']);
+    // Minimise likewise.
+    const min = within(screen.getByRole('dialog', { name: 'Paper 01' })).getByRole('button', {
+      name: 'Minimise Paper 01',
+    });
+    fireEvent.pointerDown(min);
+    act(() => min.focus());
+    expect(greenLine()).toEqual(['doc-3']);
+  });
+
+  it('choosing from the list: the one showing chosen again still waits; once nothing is in front, a click opens as ever', async () => {
+    at(4);
+    const one = await open(1);
+    fireEvent.click(within(one).getByRole('button', { name: 'Side by side' }));
+    const picker = await screen.findByRole('dialog', { name: 'Side by side' });
+    fireEvent.click(within(picker).getByRole('button', { name: 'Choose from the list' }));
+    await waitFor(() => expect(document.querySelector('.flyout-pick')).not.toBeNull());
+    // Paper 01 itself: still waiting for another.
+    await open(1);
+    expect(document.querySelector('.flyout-pick')).not.toBeNull();
+    expect(document.querySelector('[data-flyouts-said]')).toHaveTextContent(
+      '“Paper 01” is the one showing: choose another to go beside it.',
+    );
+    // Minimised by its button: nothing to go beside, so no longer waiting.
+    fireEvent.click(
+      within(screen.getByRole('dialog', { name: 'Paper 01' })).getByRole('button', {
+        name: 'Minimise Paper 01',
+      }),
+    );
+    expect(document.querySelector('.flyout-pick')).toBeNull();
+    // The next click opens as ever, one at a time.
+    const two = await open(2);
+    expect(two).toBeVisible();
+    expect(panes()).toEqual([]);
+    // And after the one showing is closed from the tray while waiting.
+    fireEvent.click(within(two).getByRole('button', { name: 'Side by side' }));
+    fireEvent.click(
+      within(await screen.findByRole('dialog', { name: 'Side by side' })).getByRole('button', {
+        name: 'Choose from the list',
+      }),
+    );
+    await waitFor(() => expect(document.querySelector('.flyout-pick')).not.toBeNull());
+    fireEvent.click(within(tray()).getByRole('button', { name: 'Close Paper 02' }));
+    expect(await open(3)).toBeVisible();
+    expect(panes()).toEqual([]);
+  });
+
+  it('at the 11th, one of those side by side closed: the new one goes beside the other', async () => {
+    at(11);
+    for (let n = 1; n <= 8; n++) await open(n);
+    await pair(9, 10);
+    expect(panes()).toEqual(['doc-10', 'doc-9']);
+    fireEvent.click(within(await grid()).getByRole('link', { name: 'Paper 11' }));
+    const ask = await screen.findByRole('dialog', { name: '10 documents are open' });
+    fireEvent.click(within(ask).getByRole('button', { name: 'Close Paper 09' }));
+    await screen.findByRole('dialog', { name: 'Paper 11' });
+    expect(panes()).toEqual(['doc-10', 'doc-11']);
+    expect(greenLine()).toEqual(['doc-11']);
+    expect(within(tray()).getAllByRole('listitem')).toHaveLength(10);
+  }, 45_000);
+
+  it('a reload puts them back side by side, loaded, the rest freed', async () => {
+    sessionStorage.setItem(
+      flyoutsKey('me'),
+      JSON.stringify({
+        items: [
+          { id: 'doc-1', view: 'both' },
+          { id: 'doc-2', view: 'content' },
+          { id: 'doc-3', view: 'both' },
+        ],
+        front: 'doc-3',
+        side: ['doc-3', 'doc-2'],
+      }),
+    );
+    const state = at();
+    await screen.findByRole('dialog', { name: 'Paper 03' });
+    const two = await screen.findByRole('dialog', { name: 'Paper 02' });
+    expect(within(two).getByRole('button', { name: 'Show details' })).toBeInTheDocument();
+    expect(panes()).toEqual(['doc-3', 'doc-2']);
+    expect(greenLine()).toEqual(['doc-3']);
+    expect(within(tray()).getByRole('button', { name: /^A document, freed/ })).toBeInTheDocument();
+    expect(fetched(state, 'doc-1')).toBe(0);
+  });
+
+  it('not offered below 1,100 px, and a set side by side comes back one at a time', async () => {
+    sessionStorage.setItem(
+      flyoutsKey('me'),
+      JSON.stringify({
+        items: [
+          { id: 'doc-1', view: 'both' },
+          { id: 'doc-2', view: 'both' },
+        ],
+        front: 'doc-2',
+        side: ['doc-1', 'doc-2'],
+      }),
+    );
+    const state = at(3, LAPTOP);
+    const front = await screen.findByRole('dialog', { name: 'Paper 02' });
+    expect(screen.queryByRole('region', { name: 'Side by side' })).toBeNull();
+    expect(panes()).toEqual([]);
+    expect(within(tray()).getByRole('button', { name: /^A document, freed/ })).toBeInTheDocument();
+    expect(fetched(state, 'doc-1')).toBe(0);
+    expect(within(front).queryByRole('button', { name: 'Side by side' })).toBeNull();
+    const other = await open(3);
+    expect(within(other).queryByRole('button', { name: 'Side by side' })).toBeNull();
+    // Kept one at a time from now on.
+    expect(sessionStorage.getItem(flyoutsKey('me'))).not.toMatch(/side/);
   });
 });
 

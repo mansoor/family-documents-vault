@@ -31,6 +31,9 @@ import { dateTimeWords } from './family-time.js';
 import { SettingsPage } from './screens/Settings.js';
 import { Button, Check, ConfirmDialog, ErrorNote, Field, LoadFailed } from './ui.js';
 
+/** What a form was last started from: nothing yet. */
+const UNSEEN = Symbol('unseen');
+
 /**
  * Text messages (0.9.0, SMS1): Settings → Server and reading → Text
  * messages, an owner's; and a person's mobile number on their profile.
@@ -182,9 +185,12 @@ function SmsForm(props: { view: SmsSettingsView; onSaved: () => Promise<void> })
   const [said, setSaid] = useState<string | null>(null);
   const [asking, setAsking] = useState(false);
   const line = useRef<HTMLParagraphElement>(null);
-  useEffect(() => {
-    // The form starts from what the vault has, each time it is loaded.
-    /* eslint-disable react-hooks/set-state-in-effect */
+  // The form starts from what the vault has, each time it is loaded: set
+  // while drawing, never in an effect after it, so nothing typed before an
+  // effect would have run is put back.
+  const [from, setFrom] = useState<unknown>(UNSEEN);
+  if (from !== s) {
+    setFrom(s);
     setProvider(s?.provider ?? 'sms_gate');
     const t = s?.provider === 'twilio' ? (s.twilio ?? null) : null;
     setSid(t?.account_sid ?? '');
@@ -198,8 +204,7 @@ function SmsForm(props: { view: SmsSettingsView; onSaved: () => Promise<void> })
     setPassword('');
     setCountry(s?.country ?? SMS_DEFAULT_COUNTRY);
     setCap(String(s?.monthly_cap ?? SMS_DEFAULT_CAP));
-    /* eslint-enable react-hooks/set-state-in-effect */
-  }, [s]);
+  }
   useEffect(() => {
     if (said) line.current?.focus();
   }, [said]);

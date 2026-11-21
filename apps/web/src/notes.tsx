@@ -24,7 +24,7 @@ import { api, ApiRequestError } from './api.js';
 import { describeError, useApp } from './app-context.js';
 import { draftOf, forgetDraft, keepDraft, type DraftOwner, type NoteDraft } from './note-drafts.js';
 import { RichTextEditor } from './rich-text.js';
-import { Button, ErrorNote } from './ui.js';
+import { Button, ErrorNote, useNamedWithin } from './ui.js';
 import { exactWords } from './family-time.js';
 
 /**
@@ -303,6 +303,7 @@ export function NotesSection(props: {
   const who: DraftOwner | null =
     householdId && memberId ? { household_id: householdId, member_id: memberId } : null;
   const id = useId();
+  const named = useNamedWithin();
   // A draft kept from before a reload opens the editor with it (A32).
   const [editing, setEditing] = useState<Editing | null>(() => {
     const kept = mayEdit && who ? draftOf(doc, who) : null;
@@ -505,7 +506,7 @@ export function NotesSection(props: {
 
   return (
     <section
-      aria-labelledby={own ? props.labelledBy : headingId}
+      aria-labelledby={own ? props.labelledBy : named(headingId)}
       className={own ? 'notes notes-own' : 'notes'}
     >
       {own && props.editSlot

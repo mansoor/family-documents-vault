@@ -122,21 +122,24 @@ function sizeWords(bytes: number): string {
 function OffsiteForm(props: { view: OffsiteView; onSaved: (v: OffsiteView) => void }) {
   const { guarded } = useApp();
   const s = props.view.settings;
-  const [endpoint, setEndpoint] = useState('');
-  const [region, setRegion] = useState('');
-  const [bucket, setBucket] = useState('');
-  const [prefix, setPrefix] = useState('');
-  const [keyId, setKeyId] = useState('');
+  const [endpoint, setEndpoint] = useState(s?.endpoint ?? '');
+  const [region, setRegion] = useState(s?.region ?? '');
+  const [bucket, setBucket] = useState(s?.bucket ?? '');
+  const [prefix, setPrefix] = useState(s?.prefix ?? '');
+  const [keyId, setKeyId] = useState(s?.access_key_id ?? '');
   const [secret, setSecret] = useState('');
-  const [pathStyle, setPathStyle] = useState(true);
-  const [keep, setKeep] = useState(String(OFFSITE_RETAIN_DEFAULT));
+  const [pathStyle, setPathStyle] = useState(s?.path_style ?? true);
+  const [keep, setKeep] = useState(String(s?.retain_count ?? OFFSITE_RETAIN_DEFAULT));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [said, setSaid] = useState<string | null>(null);
   const line = useRef<HTMLParagraphElement>(null);
-  useEffect(() => {
-    // The form starts from what the vault has, each time it is loaded.
-    /* eslint-disable react-hooks/set-state-in-effect */
+  // The form starts from what the vault has, each time it is loaded: set
+  // while drawing, never in an effect after it, so nothing typed before an
+  // effect would have run is put back.
+  const [from, setFrom] = useState(s);
+  if (from !== s) {
+    setFrom(s);
     setEndpoint(s?.endpoint ?? '');
     setRegion(s?.region ?? '');
     setBucket(s?.bucket ?? '');
@@ -145,8 +148,7 @@ function OffsiteForm(props: { view: OffsiteView; onSaved: (v: OffsiteView) => vo
     setSecret('');
     setPathStyle(s?.path_style ?? true);
     setKeep(String(s?.retain_count ?? OFFSITE_RETAIN_DEFAULT));
-    /* eslint-enable react-hooks/set-state-in-effect */
-  }, [s]);
+  }
   useEffect(() => {
     if (said) line.current?.focus();
   }, [said]);
