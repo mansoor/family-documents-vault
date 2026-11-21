@@ -2,7 +2,15 @@ import { lookup as dnsLookup, type LookupAllOptions } from 'node:dns';
 import http from 'node:http';
 import https from 'node:https';
 import { isIP, type LookupFunction } from 'node:net';
-import { isLoopbackName, isPrivateAddress, type SmsMode, type SmsState } from '@fdv/shared';
+import {
+  isLoopbackName,
+  isPrivateAddress,
+  smsGateLocalAddressRefused,
+  smsGateLocalRefused,
+  smsGatePort,
+  type SmsMode,
+  type SmsState,
+} from '@fdv/shared';
 
 /**
  * Sending a text (0.9.0, SMS1): what the vault asks of whatever sends it,
@@ -16,11 +24,14 @@ import { isLoopbackName, isPrivateAddress, type SmsMode, type SmsState } from '@
  * Basic, the username and password the app shows.
  *
  * Where it may go: the local server is on the home network by design, so
- * any address is allowed for it. The cloud and a private server never reach
- * an address inside the vault's own network — loopback, private,
- * link-local (cloud metadata) and the like — checked when the connection is
- * made, on the address DNS gives then (a blind-SSRF guard, as a push's is).
- * Every request waits ten seconds at most, and a redirect is never followed.
+ * a private address is allowed for it — but never this machine (loopback),
+ * a link-local or cloud-metadata address, one of the vault's own services
+ * by name, or a port not on SMS_GATE_LOCAL_PORTS (0.9.0-dev.77). The cloud
+ * and a private server never reach an address inside the vault's own
+ * network — loopback, private, link-local (cloud metadata) and the like.
+ * Both are checked when the connection is made, on the address DNS gives
+ * then (a blind-SSRF guard, as a push's is). Every request waits ten
+ * seconds at most, and a redirect is never followed.
  *
  * Here, beside the database, since notifications by text (0.9.0, SMS2):
  * the API sends a test and the codes, the worker the reminders, the alerts
@@ -93,7 +104,10 @@ export type SmsProviderFactory = (c: SmsConnection) => SmsProvider;
  *  - `timeout`: no answer within ten seconds.
  *  - `unreachable`: no connection at all (refused, no such name).
  *  - `address_refused`: the address is inside the vault's own network, and
- *    only the local server may be.
+ *    only the local server may be; or, for the local server, it is this
+ *    machine, link-local, or one of the vault's own services.
+ *  - `port_refused`: the local server's port is not one the vault reaches
+ *    it on (FDV_SMS_GATE_ALLOWED_PORTS, 0.9.0-dev.77); `code` is the port.
  *  - `refused`: any other answer than the one asked for (`status` says which).
  *  - `not_found`: it does not know that text (404 to a state).
  *  - `unconfirmed`: a send may have reached the provider, and it did not
@@ -109,6 +123,7 @@ export type SmsProblem =
   | 'timeout'
   | 'unreachable'
   | 'address_refused'
+  | 'port_refused'
   | 'refused'
   | 'not_found'
   | 'unconfirmed';
@@ -131,7 +146,11 @@ export const SMS_TIMEOUT_MS = 10_000;
 /** The most of an answer read: SMS Gate's are a few hundred bytes. */
 const MAX_ANSWER_BYTES = 64 * 1024;
 
-/** DNS as usual, but for the cloud and a private server no address inside the vault's own network. */
+/**
+ * DNS as usual, but for the cloud and a private server no address inside
+ * the vault's own network; for the local server (`allowPrivate`), still no
+ * loopback, link-local or metadata address.
+ */
 export function smsLookup(
   allowPrivate: boolean,
   base: typeof dnsLookup = dnsLookup,
@@ -145,7 +164,11 @@ export function smsLookup(
       if (err) return callback(err, '', 0);
       const [first] = addresses;
       if (!first) return callback(new Error(`${hostname} has no address`), '', 0);
-      if (!allowPrivate && addresses.some((a) => isPrivateAddress(a.address))) {
+      if (
+        allowPrivate
+          ? addresses.some((a) => smsGateLocalAddressRefused(a.address))
+          : addresses.some((a) => isPrivateAddress(a.address))
+      ) {
         return callback(
           new SmsProviderError('address_refused', `${hostname} is inside the vault's own network`),
           '',
@@ -191,6 +214,13 @@ export interface SmsGateOptions {
   lookup?: typeof dnsLookup;
   /** Tests: a shorter wait than SMS_TIMEOUT_MS. */
   timeoutMs?: number;
+  /**
+   * Tests: a server on this machine, on any port, stands in for the phone
+   * on the home network — the local server's address checks are skipped.
+   */
+  ownMachine?: boolean;
+  /** The ports the local server may be on: FDV_SMS_GATE_ALLOWED_PORTS, else SMS_GATE_LOCAL_PORTS. */
+  localPorts?: readonly number[];
 }
 
 /** SMS Gate for Android's API: `POST {base}/messages`, `GET {base}/messages/{id}`. */
@@ -198,6 +228,8 @@ export class SmsGateProvider implements SmsProvider {
   private readonly base: URL;
   private readonly timeoutMs: number;
   private readonly lookup: LookupFunction;
+  private readonly ownMachine: boolean;
+  private readonly localPorts: readonly number[] | undefined;
 
   constructor(
     private readonly c: SmsGateConnection,
@@ -206,6 +238,8 @@ export class SmsGateProvider implements SmsProvider {
     this.base = new URL(c.baseUrl.replace(/\/+$/, ''));
     this.timeoutMs = opts.timeoutMs ?? SMS_TIMEOUT_MS;
     this.lookup = smsLookup(c.mode === 'local', opts.lookup);
+    this.ownMachine = opts.ownMachine === true;
+    this.localPorts = opts.localPorts;
   }
 
   async send(to: string, text: string): Promise<SmsSent> {
@@ -257,6 +291,33 @@ export class SmsGateProvider implements SmsProvider {
     ) {
       return Promise.reject(
         new SmsProviderError('address_refused', `${host} is inside the vault's own network`),
+      );
+    }
+    // The local server: the home network, but not this machine, a
+    // link-local or metadata address, the vault's own services, or a port
+    // not on the list — refused before anything is sent, an address saved
+    // by an older release included.
+    const local =
+      this.c.mode === 'local' && !this.ownMachine
+        ? smsGateLocalRefused(url.href, this.localPorts)
+        : null;
+    if (local === 'port') {
+      const port = smsGatePort(url.href) ?? 0;
+      return Promise.reject(
+        new SmsProviderError(
+          'port_refused',
+          `port ${port} is not one SMS Gate's local server may be on (FDV_SMS_GATE_ALLOWED_PORTS)`,
+          undefined,
+          port,
+        ),
+      );
+    }
+    if (local) {
+      return Promise.reject(
+        new SmsProviderError(
+          'address_refused',
+          `${host} is the vault's own, or not on the home network`,
+        ),
       );
     }
     const payload = body === undefined ? undefined : Buffer.from(JSON.stringify(body), 'utf8');
@@ -370,5 +431,8 @@ export class SmsGateProvider implements SmsProvider {
   }
 }
 
-/** SMS Gate, as the vault reaches it in production. */
-export const smsGate = (c: SmsGateConnection): SmsProvider => new SmsGateProvider(c);
+/** SMS Gate, as the vault reaches it in production; `opts.localPorts` from FDV_SMS_GATE_ALLOWED_PORTS. */
+export const smsGate = (
+  c: SmsGateConnection,
+  opts: Pick<SmsGateOptions, 'localPorts'> = {},
+): SmsProvider => new SmsGateProvider(c, opts);

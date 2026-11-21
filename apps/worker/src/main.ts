@@ -514,6 +514,7 @@ async function main(): Promise<void> {
   // quiet hours waits on the queue until they end.
   const texter = createTexter({
     app: dbs.app,
+    smsGatePorts: config.FDV_SMS_GATE_ALLOWED_PORTS,
     smsKey: deriveKey(masterSecret, SMS_PASSWORD_PURPOSE),
     smtpKey: deriveKey(masterSecret, 'smtp-credentials'),
     baseUrl: config.FDV_BASE_URL,

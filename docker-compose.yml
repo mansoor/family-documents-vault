@@ -138,6 +138,7 @@ services:
       # off), and the ports it may be on. The worker has the same.
       FDV_AI_READER_SETTINGS: ${FDV_AI_READER_SETTINGS:-}
       FDV_AI_READER_ALLOWED_PORTS: ${FDV_AI_READER_ALLOWED_PORTS:-}
+      FDV_SMS_GATE_ALLOWED_PORTS: ${FDV_SMS_GATE_ALLOWED_PORTS:-}
       # self_hosted unless set; the worker must have the same (README).
       FDV_EDITION: ${FDV_EDITION:-}
       LOG_LEVEL: ${LOG_LEVEL:-info}
@@ -228,6 +229,7 @@ services:
       # reader may be on, and the edition, as the API has them.
       FDV_AI_READER_SETTINGS: ${FDV_AI_READER_SETTINGS:-}
       FDV_AI_READER_ALLOWED_PORTS: ${FDV_AI_READER_ALLOWED_PORTS:-}
+      FDV_SMS_GATE_ALLOWED_PORTS: ${FDV_SMS_GATE_ALLOWED_PORTS:-}
       FDV_EDITION: ${FDV_EDITION:-}
       LOG_LEVEL: ${LOG_LEVEL:-info}
       # Where ImageMagick keeps a large picture's pixels while it works, when

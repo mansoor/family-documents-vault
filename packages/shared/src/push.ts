@@ -209,6 +209,31 @@ export function isLinkLocalAddress(ip: string): boolean {
 }
 
 /**
+ * This machine by address: 127.0.0.0/8 and ::1, and an IPv4 loopback
+ * address inside an IPv6 one however it is written (mapped, compatible,
+ * translated, NAT64, 6to4). Not an address at all: false.
+ */
+export function isLoopbackAddress(ip: string): boolean {
+  const addr = ip
+    .trim()
+    .toLowerCase()
+    .replace(/^\[|\]$/g, '');
+  const four = v4(addr);
+  if (four) return four[0] === 127;
+  const g = v6(addr);
+  if (!g) return false;
+  const [a = 0, b = 0, c = 0, d = 0, e = 0, f = 0, hi = 0, lo = 0] = g;
+  const zeros = a === 0 && b === 0 && c === 0 && d === 0;
+  if (zeros && e === 0 && f === 0 && hi === 0 && lo === 1) return true;
+  const inside = (h: number) => h >> 8 === 127;
+  if (zeros && e === 0 && (f === 0 || f === 0xffff)) return inside(hi);
+  if (zeros && e === 0xffff && f === 0) return inside(hi);
+  if (a === 0x64 && b === 0xff9b && c === 0 && d === 0 && e === 0 && f === 0) return inside(hi);
+  if (a === 0x2002) return inside(b);
+  return false;
+}
+
+/**
  * A name that means this machine whatever DNS says (RFC 6761): refused as
  * 127.0.0.1 is, without asking DNS — a resolver that does not know it must
  * not make it look fine.

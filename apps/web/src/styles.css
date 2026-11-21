@@ -35,7 +35,9 @@
   --knob: #ffffff; /* a switch's knob, off */
 
   --font-body: Figtree, system-ui, sans-serif;
-  --font-display: Fraunces, Georgia, serif;
+  /* 'Fraunces Variable' is the vault's own copy (main.tsx): one file with
+     every weight and optical size, named so by its package. */
+  --font-display: Fraunces, 'Fraunces Variable', Georgia, serif;
 
   --radius-s: 10px;
   --radius-m: 12px;

@@ -158,3 +158,30 @@ test('an Only me note is found only through its owner’s private search', async
   await expect(privateHits.getByRole('button', row)).toBeVisible();
   await expect(page.getByRole('button', row)).toHaveCount(1);
 });
+
+test('a page pasted into a note keeps only its own marks, under the app’s own policy', async () => {
+  // A Google Docs paste: one <b> round it all, unbolded by its style, the
+  // marks on spans by style. The app allows no inline style (style-src
+  // 'self', docker/nginx.conf), so the pasted page's style objects read
+  // empty in Chromium; the marks are read from the attributes' text.
+  await page.goto('/notes/new');
+  const notes = page.getByRole('textbox', { name: 'Note', exact: true });
+  await notes.click();
+  const html =
+    '<meta charset="utf-8"><b style="font-weight:normal;" id="docs-internal-guid-e2e">' +
+    '<span style="font-weight:400">plain </span><span style="font-weight:700">bold</span>' +
+    '<span style="font-weight:400"> and </span><span style="font-style:italic">slanted</span></b>';
+  // As the browser pastes it (a string: this project's types have no DOM).
+  await page.evaluate(`(() => {
+    const el = document.querySelector('[role="textbox"][aria-label="Note"]');
+    const data = new DataTransfer();
+    data.setData('text/html', ${JSON.stringify(html)});
+    data.setData('text/plain', 'plain bold and slanted');
+    el.dispatchEvent(
+      new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true }),
+    );
+  })()`);
+  await expect(notes).toContainText('plain bold and slanted');
+  await expect(notes.locator('strong')).toHaveText(['bold']);
+  await expect(notes.locator('em')).toHaveText(['slanted']);
+});

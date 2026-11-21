@@ -27,7 +27,7 @@ import { SmsProviderError, type SmsConnection, type SmsProviderFactory } from '@
 /** What the fake SMS Gate does with the next texts. */
 interface Script {
   /** How it answers a send. */
-  send: 'accept' | 'unauthorised' | 'timeout';
+  send: 'accept' | 'unauthorised' | 'timeout' | 'port';
   /** What it says of a text's state, in turn; the last again once they run out. */
   states: SmsState[];
   error?: string;
@@ -45,6 +45,7 @@ describe.skipIf(!testAdminUrl())('text messages, in the API', () => {
   const PASSWORD = `sms-pw-${randomBytes(9).toString('hex')}`;
   const sent: Array<{ to: string; text: string; c: SmsConnection }> = [];
   let script: Script = { send: 'accept', states: ['delivered'] };
+  const logged: Array<Record<string, unknown>> = [];
 
   const fake: SmsProviderFactory = (c) => ({
     send: async (to, text) => {
@@ -52,6 +53,9 @@ describe.skipIf(!testAdminUrl())('text messages, in the API', () => {
         throw new SmsProviderError('unauthorised', 'SMS Gate refused', 401);
       }
       if (script.send === 'timeout') throw new SmsProviderError('timeout', 'no answer');
+      if (script.send === 'port') {
+        throw new SmsProviderError('port_refused', 'port 9090 is not allowed', undefined, 9090);
+      }
       sent.push({ to, text, c });
       return { id: `gate-${sent.length}`, state: 'pending' };
     },
@@ -68,6 +72,7 @@ describe.skipIf(!testAdminUrl())('text messages, in the API', () => {
       rateLimitPerMinute: 100_000,
       smsProvider: fake,
       smsTestWaitMs: 300,
+      smsLog: (fields) => logged.push(fields),
     });
     owner = await h.setup();
     adult = await h.join(owner, {
@@ -91,6 +96,7 @@ describe.skipIf(!testAdminUrl())('text messages, in the API', () => {
     await admin.query('delete from member_phone');
     await admin.query('delete from sms_settings');
     sent.length = 0;
+    logged.length = 0;
     h.jobs.length = 0;
     script = { send: 'accept', states: ['delivered'] };
     await fresh(owner);
@@ -279,7 +285,36 @@ describe.skipIf(!testAdminUrl())('text messages, in the API', () => {
     }
     expect(await refused({ country: 'ZZ' })).toEqual([422, 'validation_failed']);
     expect(await refused({ monthly_cap: 0 })).toEqual([422, 'validation_failed']);
-    // The local server is on the home network by design.
+    // The local server is on the home network by design — but never this
+    // machine, a link-local or metadata address, the vault's own services,
+    // or a port off the list (0.9.0-dev.77).
+    for (const base of [
+      'http://127.0.0.1:8080',
+      'http://localhost:8080',
+      'http://[::1]:8080',
+      'http://169.254.169.254',
+      'http://[fe80::1]:8080',
+      'http://postgres:5432',
+      'http://api:8080',
+      'http://fdv-web-1:8080',
+      'http://api.fdv_default:8080',
+      'http://host.docker.internal:8080',
+      'http://192.168.1.20:5432',
+      'http://192.168.1.20:22',
+    ]) {
+      expect(await refused({ base_url: base }), base).toEqual([422, 'sms_address_refused']);
+    }
+    // A port refused says which ports, and the setting that allows others.
+    const port = await call(owner, 'PUT', '/api/v1/sms/settings', {
+      ...LOCAL,
+      base_url: 'http://192.168.1.20:9090',
+    });
+    expect(port.json<{ error: { message: string } }>().error.message).toMatch(
+      /port 8080, 80, 443, 8000, 8443 or 8888 only\..*FDV_SMS_GATE_ALLOWED_PORTS/,
+    );
+    for (const base of ['https://10.0.0.7', 'http://phone.lan:8000', 'https://[fd12::7]:8443']) {
+      expect((await save({ base_url: base })).settings?.base_url, base).toBe(base);
+    }
     expect((await save()).settings?.base_url).toBe('http://192.168.1.20:8080');
   });
 
@@ -332,15 +367,34 @@ describe.skipIf(!testAdminUrl())('text messages, in the API', () => {
     expect(t.view.settings?.last_error).toBe(t.words);
     expect(t.view.ready).toBe(false);
 
+    // The local server: one "couldn't reach the phone", whichever way it
+    // failed, so a test tells nothing of what else is on the home network;
+    // which way, in the server's log alone (0.9.0-dev.77).
     script = { send: 'unauthorised', states: ['pending'] };
     t = await test();
     expect(t).toMatchObject({ ok: false, state: 'not_sent' });
-    expect(t.words).toMatch(/refused the username or password/);
-    expect(t.view.settings?.last_error).toMatch(/refused the username or password/);
+    expect(t.words).toMatch(/couldn’t reach SMS Gate on the phone/);
+    expect(t.view.settings?.last_error).toBe(t.words);
+    const unreachable = t.words;
 
     script = { send: 'timeout', states: ['pending'] };
     t = await test();
-    expect(t.words).toMatch(/didn’t answer within 10 seconds/);
+    expect(t.words).toBe(unreachable);
+    expect(t.words).not.toMatch(/10 seconds|answered/);
+    expect(logged).toEqual([
+      expect.objectContaining({
+        event: 'sms_problem',
+        via: 'local',
+        problem: 'unauthorised',
+        status: 401,
+      }),
+      expect.objectContaining({
+        event: 'sms_problem',
+        via: 'local',
+        problem: 'timeout',
+        detail: 'no answer',
+      }),
+    ]);
 
     script = { send: 'accept', states: ['pending'] };
     t = await test();
@@ -349,6 +403,34 @@ describe.skipIf(!testAdminUrl())('text messages, in the API', () => {
     expect((await call(adult, 'GET', '/api/v1/sms/status')).json()).toEqual({ ready: false });
     // A text not taken by SMS Gate is not counted against the month.
     expect(t.view.sent_this_month).toBe(2);
+  });
+
+  it('a local server saved on a port the vault no longer reaches is told in Settings, and texts stop, not silently (0.9.0-dev.77)', async () => {
+    await ready();
+    expect((await call(adult, 'GET', '/api/v1/sms/status')).json()).toEqual({ ready: true });
+    // As an older release, or a wider FDV_SMS_GATE_ALLOWED_PORTS, saved it.
+    await admin.query(`update sms_settings set base_url = 'http://192.168.1.20:9090'`);
+    const v = (await call(owner, 'GET', '/api/v1/sms/settings')).json<SmsSettingsView>();
+    expect(v.settings).toMatchObject({ status: 'failed' });
+    expect(v.settings?.last_error).toMatch(/port 9090\..*FDV_SMS_GATE_ALLOWED_PORTS/);
+    expect(v.ready).toBe(false);
+    expect((await call(adult, 'GET', '/api/v1/sms/status')).json()).toEqual({ ready: false });
+    // An address of the vault's own, the same.
+    await admin.query(
+      `update sms_settings set base_url = 'http://api:8080', status = 'ok', last_error = null`,
+    );
+    const own = (await call(owner, 'GET', '/api/v1/sms/settings')).json<SmsSettingsView>();
+    expect(own.settings).toMatchObject({ status: 'failed' });
+    expect(own.settings?.last_error).toMatch(/the vault’s own/);
+    // Met by a send first (the worker's, or a code): the same.
+    await admin.query(
+      `update sms_settings set base_url = 'http://192.168.1.20:8080', status = 'ok', last_error = null`,
+    );
+    script = { send: 'port', states: ['pending'] };
+    const t = await test();
+    expect(t.ok).toBe(false);
+    expect(t.words).toMatch(/port 9090\..*FDV_SMS_GATE_ALLOWED_PORTS/);
+    expect(t.view.settings).toMatchObject({ status: 'failed', last_error: t.words });
   });
 
   it('a new address waits for a test of its own; a new limit or country alone does not', async () => {

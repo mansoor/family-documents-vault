@@ -1,7 +1,13 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { SmsGateProvider, SmsProviderError, stateOf, type SmsGateConnection } from './sms-gate.js';
+import {
+  SmsGateProvider,
+  SmsProviderError,
+  stateOf,
+  type SmsGateConnection,
+  type SmsGateOptions,
+} from './sms-gate.js';
 
 /**
  * SMS Gate for Android's API, as the vault speaks it (0.9.0, SMS1): against
@@ -45,7 +51,8 @@ describe('SMS Gate, as the vault speaks to it', () => {
   const local = (over: Partial<SmsGateConnection> = {}) =>
     new SmsGateProvider(
       { mode: 'local', baseUrl: base, username: 'sms', password: 'pa:ss wörd', ...over },
-      { timeoutMs: 300 },
+      // The server on this machine stands in for the phone on the home network.
+      { timeoutMs: 300, ownMachine: true },
     );
   const json = (status: number, body: unknown) => (_: IncomingMessage, res: ServerResponse) => {
     res.writeHead(status, { 'content-type': 'application/json' });
@@ -147,6 +154,67 @@ describe('SMS Gate, as the vault speaks to it', () => {
     await expect(named.send('+447700900123', 'x')).rejects.toMatchObject({
       problem: 'address_refused',
     });
+    expect(seen).toHaveLength(0);
+  });
+
+  it('the local server: the home network, but never this machine, link-local, metadata, the vault’s own services, or another port', async () => {
+    answer = json(202, { id: 'x', state: 'Pending' });
+    const as = (baseUrl: string, lookup?: SmsGateOptions['lookup'], localPorts?: number[]) =>
+      new SmsGateProvider(
+        { mode: 'local', baseUrl, username: 'u', password: 'p' },
+        { timeoutMs: 300, ...(lookup ? { lookup } : {}), ...(localPorts ? { localPorts } : {}) },
+      );
+    for (const baseUrl of [
+      base, // this machine, on a port off the list
+      'http://127.0.0.1:8080',
+      'http://localhost:8080',
+      'http://[::1]:8080',
+      'http://[::ffff:127.0.0.1]:8080',
+      'http://169.254.169.254',
+      'http://[fe80::1]:8080',
+      'http://[fd00:ec2::254]',
+      'http://postgres:5432',
+      'http://postgres:8080',
+      'http://api:8080',
+      'http://fdv-worker-1:8080',
+      // With a domain after them, and the machine a container runs on.
+      'http://api.fdv_default:8080',
+      'http://fdv-api-1.lan:8080',
+      'http://host.docker.internal:8080',
+      'http://gateway.docker.internal:8080',
+      'http://host.containers.internal:8080',
+    ]) {
+      await expect(as(baseUrl).send('+447700900123', 'x'), baseUrl).rejects.toMatchObject({
+        problem: 'address_refused',
+      });
+    }
+    // A port off the list: said as such, the port its code.
+    for (const [baseUrl, port] of [
+      ['http://192.168.1.20:5432', 5432],
+      ['http://192.168.1.20:22', 22],
+      ['http://192.168.1.20:9090', 9090],
+    ] as const) {
+      await expect(as(baseUrl).send('+447700900123', 'x'), baseUrl).rejects.toMatchObject({
+        problem: 'port_refused',
+        code: port,
+      });
+    }
+    // Unless the operator allows it (FDV_SMS_GATE_ALLOWED_PORTS): then it is
+    // tried — here, nobody is there.
+    const allowed = await as('http://192.0.2.1:9090', undefined, [9090])
+      .send('+447700900123', 'x')
+      .catch((e: unknown) => e);
+    expect((allowed as SmsProviderError).problem).not.toMatch(/refused$/);
+    // A name that DNS gives as this machine or link-local, refused as the
+    // connection is made.
+    for (const address of ['127.0.0.1', '169.254.169.254']) {
+      const lookup = ((_host: string, _opts: unknown, cb: (...a: unknown[]) => void) =>
+        cb(null, [{ address, family: 4 }])) as never;
+      await expect(
+        as('http://phone.home.test:8080', lookup).send('+447700900123', 'x'),
+        address,
+      ).rejects.toMatchObject({ problem: 'address_refused' });
+    }
     expect(seen).toHaveLength(0);
   });
 

@@ -6,6 +6,15 @@ import { AppLinkPage } from './screens/AppLinkPage.js';
 import { DropPage } from './screens/DropPage.js';
 import { SharePage } from './screens/SharePage.js';
 import { followTheme } from './theme.js';
+// The fonts are the vault's own (0.9.0-dev.77), built into its assets from
+// their packages under the SIL Open Font License: no page, a share link's
+// included, asks any other site for anything. Figtree in the weights the
+// app uses; Fraunces with its optical sizes and every weight in one file.
+import '@fontsource/figtree/400.css';
+import '@fontsource/figtree/500.css';
+import '@fontsource/figtree/600.css';
+import '@fontsource/figtree/700.css';
+import '@fontsource-variable/fraunces/opsz.css';
 import './styles.css';
 
 // Light, dark or Auto (0.9.0): index.html's script set it before anything

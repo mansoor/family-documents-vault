@@ -6,6 +6,26 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.9.0-dev.77] - 2026-11-20 — hygiene before launch
+
+### Security
+
+- **No page asks another site for anything.** The app's fonts, Figtree and Fraunces (SIL Open Font License), are now part of the vault itself, no longer fetched from Google Fonts: the browser of somebody you send a link to, and your own, ask no other site for a stylesheet or a font. The Content-Security-Policy of the app and of the pages people outside the family open now allows stylesheets and fonts from the vault alone (`style-src 'self'; font-src 'self'`).
+- **A document's people see what an app read of it.** A connected app reading one document's details, downloading its file, or opening a link to view it was already a line on that document's Activity; an app making a link to view or download a document is now one too ("… via Acme Money made a link to view …"), for whoever may see the document, whether or not the link is ever opened. Reading the list or the changes feed stays one line an hour, for the owners and the app's person, so a sync never buries every document's Activity.
+- **SMS Gate's local server is held to the home network.** A private address is still fine, but its port must be one the vault reaches it on — 8080 (SMS Gate's own), 80, 443, 8000, 8443 or 8888, unless whoever runs the server allows others with the new `FDV_SMS_GATE_ALLOWED_PORTS` — and the address can no longer be this machine, a link-local or cloud-metadata address, the machine a container runs on (`host.docker.internal`), or one of the vault's own services by name (`postgres`, `api`, `worker`, `web` and the rest; by name only, so the port list is what really keeps them out). Saving another is refused with the reason, and the same is checked again as each request is made. A test or a text that fails to reach the phone now says one thing, "couldn't reach SMS Gate on the phone", however it failed, but for a port the vault doesn't reach, which is said with the setting; which way it failed is in the API's (or the worker's) log, `"event":"sms_problem"`. The cloud relay and a server of your own say each problem as before.
+- **`/readyz` no longer says why the database could not be reached.** It answers `503 not_ready` and nothing more; the reason is in the API's log.
+- **Functions that run with the database owner's rights are nobody's by default.** Each is now callable only by the application role (and those only triggers call, by nobody), never by PUBLIC, with `pg_temp` last on its search path; the vault puts this right again as it starts on a restored backup, and a test fails the build if a new one is not.
+- **Every table has row-level security, but for an explicit few.** A table without it that is not one of the nine the installation keeps for itself (none of them a household's) now fails the build, and a restore that would bring one back is refused.
+- **Two lookups run inside the signed-in person's own scope:** removing a passkey, and the mailbox setting behind the scanner and email notices.
+
+### Database
+
+- Migration 0124: `setup_complete`, `vault_display_name`, `invitation_household` and `share_link_household` written again (bodies unchanged) with `search_path = pg_catalog, public, pg_temp`; EXECUTE taken from PUBLIC on every SECURITY DEFINER function in `public`, and the four granted to `fdv_app`.
+
+### Upgrading
+
+`docker compose pull && docker compose up -d`. **Check an SMS Gate local server on a port other than 8080, 80, 443, 8000, 8443 or 8888** (the app lets you choose 8081, 9090…): the vault no longer reaches it, so no text goes — sign-in codes by text included — until you either change the app's port to 8080 and the address in Settings → Text messages, or allow the port with `FDV_SMS_GATE_ALLOWED_PORTS` in `.env` (for the api and the worker; keep the defaults in the list, e.g. `8080,80,443,8000,8443,8888,9090`). It isn't silent: as soon as an owner opens Settings → Text messages, or a text is tried, the settings show as failed, saying which port and which setting, and texts stop being offered until a test passes. The same for an address now refused (this machine, `host.docker.internal`, one of the vault's own services). A reverse proxy that rewrites the vault's Content-Security-Policy to allow Google Fonts can drop that now.
+
 ## [0.9.0-dev.76] - 2026-11-20 — backups off the machine, and a checklist for the server
 
 ### Added

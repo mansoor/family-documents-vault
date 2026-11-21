@@ -318,7 +318,6 @@ export class AppLinks {
    * app_links_full`. A view's pages, not drawn yet, are asked for now.
    */
   async mint(c: AppCaller, id: string, mode: unknown, meta: RequestMeta): Promise<AppLinkMinted> {
-    void meta;
     if (mode !== 'view' && mode !== 'download') {
       throw new ApiError(422, 'validation_failed', 'mode is "view" or "download".', {
         detail: 'mode',
@@ -404,6 +403,20 @@ export class AppLinks {
         .executeTakeFirstOrThrow();
       // Its pages asked for now, so they are there when the browser comes.
       if (mode === 'view') await this.opts.documents.appPage(trx, c.householdId, v, 1);
+      // On the document's own Activity, for whoever may see it (0.9.0-dev.77):
+      // its people know an app made a way in to it, whether or not the link
+      // is opened (an open is a line of its own, document.viewed or
+      // document.downloaded). Held while the line is written, as a read is.
+      await holdForReading(trx, docId);
+      await appendAudit(trx, {
+        householdId: c.householdId,
+        actorAccountId: c.accountId,
+        action: 'app.link_made',
+        objectType: 'document',
+        objectId: docId,
+        detail: appLine(c, { link: mode }),
+        ip: meta.ip,
+      });
       return row;
     });
     return {

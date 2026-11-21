@@ -404,6 +404,28 @@ begin
     revoke execute on function
       public.connected_apps_of_creator_end(uuid, uuid, text, uuid) from public;
   end if;
+  -- First-run detection and the sign-in screen's name (0003), asked by the
+  -- API before anybody is signed in.
+  if to_regprocedure('public.setup_complete()') is not null then
+    grant execute on function public.setup_complete() to fdv_app;
+    grant execute on function public.vault_display_name() to fdv_app;
+  end if;
+  -- No function that runs with the owner's rights is anybody's by default
+  -- (0124): a backup loads without privileges, which gives every function
+  -- back to PUBLIC. Those fdv_app calls are granted to it above; trigger
+  -- functions need no grant.
+  declare
+    f regprocedure;
+  begin
+    for f in
+      select p.oid::regprocedure
+        from pg_catalog.pg_proc p
+        join pg_catalog.pg_namespace n on n.oid = p.pronamespace
+       where n.nspname = 'public' and p.prosecdef
+    loop
+      execute format('revoke execute on function %s from public', f);
+    end loop;
+  end;
 end $$;
 
 -- The job queue. pg-boss creates its tables later, as the owner; the

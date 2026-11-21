@@ -239,6 +239,8 @@ export interface HarnessOptions {
   smsProvider?: SmsProviderFactory;
   /** How long a test text is waited for, and how often asked after (SMS1): short, for the tests. */
   smsTestWaitMs?: number;
+  /** Where a text provider's own detail goes (the API's log in server.ts), for a test that reads it. */
+  smsLog?: (fields: Record<string, unknown>, message: string) => void;
   /** FDV_EDITION: self_hosted unless a test says (AIR1's hosted guards). */
   edition?: 'self_hosted' | 'hosted';
   /**
@@ -455,6 +457,7 @@ export async function createHarness(opts: HarnessOptions = {}): Promise<Harness>
       return found;
     },
   });
+  if (opts.smsLog) sms.useLog(opts.smsLog);
   // Codes by text to one's own number (SMS3).
   const textCodes = new TextCodeService(db, sms, {
     codeKey: deriveKey(TEST_MASTER, SMS_CODE_KEY_PURPOSE),

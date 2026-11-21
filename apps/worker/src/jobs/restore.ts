@@ -7,7 +7,7 @@ import { readdir, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { DecryptStream, type ScopeKeys } from '@fdv/crypto';
-import { createDb, createPool, listMigrations, migrateUp } from '@fdv/db';
+import { createDb, createPool, listMigrations, migrateUp, tablesMissingRowSecurity } from '@fdv/db';
 import { adapterFromRow, StorageError, type StorageAdapter, type VaultRowLike } from '@fdv/storage';
 import { libpqConnection, withDatabase } from './libpq.js';
 import { markRemovedFiles, type FileStorage, type RemovedFiles } from './removed-files.js';
@@ -3051,8 +3051,17 @@ export async function checkRestored(
     );
     const t = totals[0];
     if (!t) throw new Error('the restored database has no schema_migration');
-    if (t.unprotected.length) {
-      throw new Error(`row-level security is off on ${t.unprotected.join(', ')}`);
+    // Both directions: a table with policies but row-level security off,
+    // and a table in public with neither that is not one of the few the
+    // vault keeps without (the installation's own, never a household's).
+    const unprotected = [
+      ...new Set([
+        ...t.unprotected.map((name) => name.replace(/^public\./, '')),
+        ...(await tablesMissingRowSecurity(admin)),
+      ]),
+    ];
+    if (unprotected.length) {
+      throw new Error(`row-level security is off on ${unprotected.join(', ')}`);
     }
     // A view reads with its owner's rights unless it says otherwise, and
     // the owner is past every household's wall (0031's types).

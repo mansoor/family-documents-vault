@@ -141,13 +141,14 @@ recorded as that one address.
 **A proxy of your own must pass the vault's headers on as they are.** The web container
 sends a `Content-Security-Policy` with every page: `script-src 'self' 'sha256-…'; object-src 'none';
 base-uri 'none'` for the app (the hash allows the few lines at the top of the page that
-choose light or dark before anything is drawn, and nothing else inline), and a stricter one (no framing, no forms, and nothing loaded
-from anywhere but the vault itself and Google Fonts) with `Referrer-Policy: no-referrer`,
+choose light or dark before anything is drawn, and nothing else inline; stylesheets and fonts from
+the vault alone), and a stricter one (no framing, no forms, and nothing loaded
+from anywhere but the vault itself) with `Referrer-Policy: no-referrer`,
 `X-Content-Type-Options: nosniff` and `X-Frame-Options: DENY` on the pages people outside
 the family open (`/s`, `/shared/…`, `/drop`); the API adds a sandbox policy to everything
 under `/api/v1/shared` and `/api/v1/drop`. Those pages, like the app, load their fonts
-from Google Fonts (`fonts.googleapis.com`, `fonts.gstatic.com`): the browser of somebody
-you send a link to asks Google for them, with no referrer. Do not replace, loosen or drop
+(Figtree and Fraunces, under the SIL Open Font License) from the vault itself: the browser
+of somebody you send a link to asks no other site for anything. Do not replace, loosen or drop
 the headers, and turn off anything in a proxy or a CDN that adds a script to pages
 (analytics, "email address obfuscation", script optimisers): the policy blocks it, and the
 page breaks. A proxy that rewrites the page's HTML (minifies it) changes that hash: the
@@ -825,7 +826,7 @@ npm or pnpm and no token (from CI too):
 ```json
 {
   "dependencies": {
-    "@fdv/client": "https://github.com/mansoor/family-documents-vault/releases/download/v0.9.0-dev.76/fdv-client-0.9.0-dev.76.tgz"
+    "@fdv/client": "https://github.com/mansoor/family-documents-vault/releases/download/v0.9.0-dev.77/fdv-client-0.9.0-dev.77.tgz"
   }
 }
 ```
@@ -869,6 +870,7 @@ All configuration is through environment variables in `.env` (see [`.env.example
 | `FDV_LOCAL_AI_MODEL`                            | unset                                     | The model it asks for, pulled there first, e.g. `qwen2.5:3b-instruct`. Needed with `FDV_LOCAL_AI_URL`.                                                                                                                                                                                                    |
 | `FDV_LOCAL_AI_TIMEOUT_SECONDS`                  | `120`                                     | How long it may take over one paper before the paper is read without it (5 to 300).                                                                                                                                                                                                                       |
 | `FDV_AI_READER_ALLOWED_PORTS`                   | `11434,1234,8000,8080,80,443`             | The ports an AI reader set in Settings may be on, comma-separated. Any other is refused, so its Test is no port scanner. `FDV_LOCAL_AI_URL` is yours, and not limited; Anthropic's fixed address is always 443. API and worker.                                                                           |
+| `FDV_SMS_GATE_ALLOWED_PORTS`                    | `8080,80,443,8000,8443,8888`              | The ports SMS Gate's local server set in Settings may be on, comma-separated. Any other is refused, so its test is no port scanner of your network. Add the one your SMS Gate app uses if it isn't 8080, keeping the rest. API and worker.                                                                |
 | `FDV_AI_READER_SETTINGS`                        | `on`                                      | `off` keeps the AI reader out of Settings: only `FDV_LOCAL_AI_URL` sets one. API and worker. See [A local AI reader](#a-local-ai-reader).                                                                                                                                                                 |
 | `FDV_OFFLINE_MAX_DAYS`                          | `90`                                      | How many days a phone may show the Essentials it keeps without reaching the vault (1 to 365). See [Essentials on a phone](#essentials-on-a-phone).                                                                                                                                                        |
 | `FDV_RATE_LIMIT_PER_MINUTE`                     | `300`                                     | How many requests one address may make in a minute, beyond the tighter limits on signing in and opening links (60 to 100000). Raise it when many devices share one address.                                                                                                                               |
@@ -943,7 +945,7 @@ connection (a reader saved there keeps that rule even on a worker started withou
 only: the port `docker-compose.dev.yml` opens the database on (see
 [Developing](#developing)).
 
-Health endpoints, for your monitoring: `/healthz` (the API process is up) and `/readyz` (it can reach the database).
+Health endpoints, for your monitoring: `/healthz` (the API process is up) and `/readyz` (it can reach the database). `/readyz` never says why it could not: that is in the API's log.
 
 ### Hardened containers
 
@@ -2285,7 +2287,7 @@ Each person chooses what they want: the day's reminders on their devices, the sa
 
 The vault can send texts: the codes that confirm a mobile number, sign-in, step-up and reset codes, the alerts and reminders people ask for by text, and links you send. An owner sets it up in **Settings → Server and reading → Text messages**, choosing who sends them:
 
-- **SMS Gate for Android** — an app on a phone your family owns ([sms-gate.app](https://sms-gate.app)), reached on your home network (recommended), through SMS Gate's cloud relay, or through a server of your own. Texts go out on that phone's own plan.
+- **SMS Gate for Android** — an app on a phone your family owns ([sms-gate.app](https://sms-gate.app)), reached on your home network (recommended), through SMS Gate's cloud relay, or through a server of your own. Texts go out on that phone's own plan. On the home network the address is the one the app shows under Local server: a private address is fine, but the port must be 8080 (SMS Gate's own), 80, 443, 8000, 8443 or 8888 unless you allow others with `FDV_SMS_GATE_ALLOWED_PORTS`, and it is never this server itself (`localhost`, `127.0.0.1`, `host.docker.internal`), a link-local address, or one of the vault's own services (`postgres`, `api`…). The port list is what keeps the vault's own services out; the names are checked too, as a best effort, by name alone. A local server saved on a port the vault no longer reaches shows as failed in Settings → Text messages, saying which port, and texts stop until it is changed and tested. If a test can't reach the phone, Settings says only that; why (no answer, refused, a wrong password) is in the API's log, `"event":"sms_problem"`, and the worker's for the texts it sends.
 - **Twilio** — a paid service on the internet. Sign up at [twilio.com](https://www.twilio.com), buy a number that can send texts (or set up a Messaging Service), and copy the **Account SID** and **Auth Token** from the Twilio Console's front page. In Settings, choose Twilio, paste them, and give either the **From number** (with its country code, such as `+447700900123`) or the **Messaging Service SID** (`MG…`). If your family's numbers are in another country than the Twilio number's, allow that country under the Console's Geo permissions; a trial account texts only the numbers verified in it.
 
 **Twilio's costs are yours.** Twilio charges your own Twilio account for every text, at its prices; the vault adds nothing, pays for nothing and never sees your bill. The **most texts in a month** setting (200 unless you change it) caps what the vault sends, whatever asks — links take half of it at most, so sign-in codes always have room — and the screen shows how many have gone this month.

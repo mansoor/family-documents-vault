@@ -311,3 +311,11 @@ export const twilio = (c: TwilioConnection): SmsProvider => new TwilioProvider(c
 /** Whichever provider the household chose, as the vault reaches it in production. */
 export const smsProviders: SmsProviderFactory = (c) =>
   c.provider === 'twilio' ? twilio(c) : smsGate(c);
+
+/** As `smsProviders`, with the ports SMS Gate's local server may be on (FDV_SMS_GATE_ALLOWED_PORTS). */
+export const smsProvidersWith =
+  (opts: { localPorts?: readonly number[] | undefined }): SmsProviderFactory =>
+  (c) =>
+    c.provider === 'twilio'
+      ? twilio(c)
+      : smsGate(c, opts.localPorts ? { localPorts: opts.localPorts } : {});

@@ -345,22 +345,31 @@ export class PasskeyService {
   // ---------------------------------------------------------------- listing
 
   async list(p: Principal): Promise<PasskeyView[]> {
-    return (await this.credentials(p.accountId)).map(view);
+    return (await withPrincipal(this.db, p, (trx) => this.credentials(p.accountId, trx))).map(view);
   }
 
+  /**
+   * Found, removed and recorded in one transaction as the person signed
+   * in, so the rows' own rules hold it (not only the account id in the
+   * query), and a removal is never left without its line in Activity.
+   */
   async remove(p: Principal, id: string, meta: RequestMeta): Promise<void> {
-    const row = await this.db
-      .selectFrom('credential')
-      .selectAll()
-      .where('id', '=', id)
-      .where('account_id', '=', p.accountId)
-      .where('kind', '=', 'passkey')
-      .executeTakeFirst();
-    if (!row) throw new ApiError(404, 'not_found', 'There is no passkey by that name here.');
+    await withPrincipal(this.db, p, async (trx) => {
+      const row = await trx
+        .selectFrom('credential')
+        .selectAll()
+        .where('id', '=', id)
+        .where('account_id', '=', p.accountId)
+        .where('kind', '=', 'passkey')
+        .executeTakeFirst();
+      if (!row) throw new ApiError(404, 'not_found', 'There is no passkey by that name here.');
 
-    await this.db.deleteFrom('credential').where('id', '=', row.id).execute();
-    await withPrincipal(this.db, p, (trx) =>
-      appendAudit(trx, {
+      await trx
+        .deleteFrom('credential')
+        .where('id', '=', row.id)
+        .where('account_id', '=', p.accountId)
+        .execute();
+      await appendAudit(trx, {
         householdId: p.householdId,
         actorAccountId: p.accountId,
         action: 'credential.passkey_removed',
@@ -368,8 +377,8 @@ export class PasskeyService {
         objectId: row.id,
         detail: { label: row.label },
         ip: meta.ip,
-      }),
-    );
+      });
+    });
   }
 
   /** True when this account holds at least one passkey (SEC-03). */
@@ -379,8 +388,8 @@ export class PasskeyService {
 
   // --------------------------------------------------------------- internals
 
-  private async credentials(accountId: string) {
-    return this.db
+  private async credentials(accountId: string, db: Db = this.db) {
+    return db
       .selectFrom('credential')
       .selectAll()
       .where('account_id', '=', accountId)

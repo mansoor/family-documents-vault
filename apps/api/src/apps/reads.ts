@@ -554,8 +554,14 @@ export class AppReads {
   }
 
   /**
-   * Reading is one line an hour an app — "looked up documents" — so a list
-   * or a feed polled never floods the log.
+   * Reading the list or the feed is one line an hour an app — "looked up
+   * documents" — for the owners and the app's person, so a list or a feed
+   * polled never floods the log. Not a line on each document it lists: an
+   * app syncing a few hundred papers every few minutes would bury every
+   * document's own Activity under its reads. What it reads of one document
+   * is that document's line, for its people: its details (`app.read`, once
+   * an hour), its file (`document.downloaded`), a link made to it
+   * (`app.link_made`, links.ts) and that link opened (`document.viewed`).
    */
   private async lookedUp(trx: Db, c: AppCaller, meta: RequestMeta): Promise<void> {
     const due = await trx

@@ -66,6 +66,13 @@ function expectStrict(csp: string | null, what: string, theme?: string) {
   if (script !== undefined) {
     expect(script.trim(), what).toBe(theme ? `'self' ${theme}` : "'self'");
   }
+  // Stylesheets and fonts, where a page has them, from the vault alone: no
+  // request of a stranger's browser goes anywhere else (0.9.0-dev.77).
+  for (const directive of ['style-src', 'font-src']) {
+    const value = new RegExp(`${directive} ([^;]*)`).exec(policy)?.[1];
+    if (value !== undefined) expect(value.trim(), `${what} ${directive}`).toBe("'self'");
+  }
+  expect(policy, what).not.toMatch(/https?:/);
 }
 
 describe('the pages a link opens', () => {
@@ -108,7 +115,18 @@ describe('the pages a link opens', () => {
     expect(directives.get('connect-src')).toBe("'self'");
     expect(directives.get('img-src')).toBe("'self' data: blob:");
     expect(directives.get('form-action')).toBe("'self'");
-    expect(csp).not.toMatch(/unsafe-inline|unsafe-eval|\*/);
+    // Its stylesheets and fonts are the vault's own, and nothing is styled
+    // inline (0.9.0-dev.77): no other site is asked for anything.
+    expect(directives.get('style-src')).toBe("'self'");
+    expect(directives.get('font-src')).toBe("'self'");
+    expect(csp).not.toMatch(/unsafe-inline|unsafe-eval|\*|https?:/);
+    // Which holds only while the app writes no <style> element and no style
+    // attribute as markup (the style object, as React's style prop, is fine).
+    const sources = await readdir(root('apps/web/src'), { recursive: true });
+    for (const file of sources.filter((f) => /\.tsx?$/.test(f) && !/\.test\./.test(f))) {
+      const text = await readFile(root(`apps/web/src/${file}`), 'utf8');
+      expect(text, file).not.toMatch(/<style[\s>]|setAttribute\(\s*'style'|googleapis|gstatic/);
+    }
     // And the page it serves has no other script of its own to allow: the
     // theme's few lines, and one module by address.
     const shell = await readFile(root('apps/web/index.html'), 'utf8');
@@ -120,8 +138,12 @@ describe('the pages a link opens', () => {
     // The theme's lines read storage and a media query, and set the theme: nothing else.
     expect(theme.body).not.toMatch(/fetch|XMLHttpRequest|eval|Function|import|innerHTML|cookie/);
     expect(shell).not.toMatch(/\son[a-z]+=/i);
-    // Before the stylesheet: a dark page is never drawn light first.
-    expect(shell.indexOf('<script>')).toBeLessThan(shell.indexOf('rel="stylesheet"'));
+    // No stylesheet or font from another site, and none of the page's own
+    // by hand: the build adds its stylesheet at the end of <head>, after the
+    // theme's lines, so a dark page is never drawn light first.
+    expect(shell).not.toMatch(/googleapis|gstatic|https?:\/\//);
+    expect(shell).not.toContain('rel="stylesheet"');
+    expect(shell.indexOf('<script>')).toBeLessThan(shell.indexOf('</head>'));
   });
 
   it('the signed-in app is never framed, sends no referrer beyond itself, and asks for no powers it never uses', async () => {

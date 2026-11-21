@@ -218,12 +218,15 @@ function naturalWidth(cell: HTMLTableCellElement): number | null {
   if (!inner) return null;
   const cs = getComputedStyle(cell);
   const pad = (Number.parseFloat(cs.paddingLeft) || 0) + (Number.parseFloat(cs.paddingRight) || 0);
-  const was = inner.getAttribute('style');
+  // Put back through the style object, never as an attribute: the app's
+  // policy allows no inline style written as markup (docker/nginx.conf).
+  const had = inner.hasAttribute('style');
+  const was = inner.style.cssText;
   inner.style.width = 'max-content';
   inner.style.maxWidth = 'none';
   const w = inner.getBoundingClientRect().width;
-  if (was === null) inner.removeAttribute('style');
-  else inner.setAttribute('style', was);
+  inner.style.cssText = was;
+  if (!had) inner.removeAttribute('style');
   return w + pad;
 }
 

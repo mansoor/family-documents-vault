@@ -221,7 +221,11 @@ async function main(): Promise<void> {
 
   // Text messages (0.9.0, SMS1): SMS Gate's password sealed as it is saved,
   // and the codes that confirm a number HMACed under a key of their own.
-  const sms = new SmsService(db, { key: deriveKey(masterSecret, SMS_PASSWORD_PURPOSE), alert });
+  const sms = new SmsService(db, {
+    key: deriveKey(masterSecret, SMS_PASSWORD_PURPOSE),
+    alert,
+    localPorts: config.FDV_SMS_GATE_ALLOWED_PORTS,
+  });
   // Codes by text to one's own number (SMS3), HMACed under a key of their own.
   const textCodes = new TextCodeService(db, sms, {
     codeKey: deriveKey(masterSecret, SMS_CODE_KEY_PURPOSE),
@@ -471,6 +475,8 @@ async function main(): Promise<void> {
   // A failed sign-in, and signing in made to wait, in the API's own log
   // (README, "Security events"): `"event":"sign_in_failed"`, `"event":"sign_in_throttled"`.
   guard.useLog((fields, message) => app.log.warn(fields, message));
+  // A text provider's own detail (0.9.0-dev.77): the owner is told less.
+  sms.useLog((fields, message) => app.log.warn(fields, message));
 
   const consumers: Array<{ stop: () => Promise<void> }> = [];
   const shutdown = async (signal: string) => {
