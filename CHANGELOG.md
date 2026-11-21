@@ -6,6 +6,12 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.9.0-dev.83] - 2026-11-21 — a document view ready to open beside the list
+
+### Changed
+
+- **Nothing changes for anybody yet.** A document's page was taken apart into the page and the view on it, so that the same view can later open beside a list instead of replacing it. On its own page a document looks and works exactly as before.
+
 ## [0.9.0-dev.82] - 2026-11-21 — the activity log as a spreadsheet
 
 ### Added

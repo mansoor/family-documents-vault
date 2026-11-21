@@ -6188,6 +6188,49 @@ html:has(.shell-phone):has(.has-toast) {
   max-height: none;
 }
 
+/* A document beside the list (flyouts): its own width decides, never the
+   window's (doc-panes.tsx) — the details beside the pages from 700 px, as
+   on its page; narrower, one column, the details first. A container, so
+   what is inside can ask its width too. */
+.doc-view-flyout {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+
+.doc-flyout-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.doc-flyout-title {
+  margin: 0;
+  font-size: 20px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.doc-fit {
+  container: doc-view / inline-size;
+}
+
+.doc-fit-two {
+  grid-template-columns: var(--doc-details-w, 400px) 16px minmax(0, 1fr);
+  column-gap: 8px;
+}
+
+.doc-fit-two .doc-details .action-btn {
+  flex: 1 1 auto;
+  justify-content: center;
+}
+
+.doc-fit-details {
+  min-width: 0;
+}
+
 .viewer-note {
   display: grid;
   gap: 12px;

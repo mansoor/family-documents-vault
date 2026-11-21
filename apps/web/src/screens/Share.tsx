@@ -125,6 +125,13 @@ export function SharePanel(props: {
   onBusy?: (busy: boolean) => void;
   /** Told how many of its links can still be taken back, as that changes (the action row). */
   onCount?: (n: number) => void;
+  /**
+   * On the document's own page (the default), which a link's Change comes
+   * back to. False beside the list: the page under it is not the
+   * document's, so Change comes back to the document's own page, and what
+   * the page under it was told is left to that page.
+   */
+  fromAddress?: boolean;
 }) {
   const { guarded, authVersion, caps } = useApp();
   // A code by text (SMS3): offered while the household's texts are set up.
@@ -133,8 +140,12 @@ export function SharePanel(props: {
   const linkTexts = useLinkTexts();
   const [made, setMade] = useState<MadeLink | null>(null);
   // Changed on their own page, come back here saying so (0.9.0-dev.69).
-  const said = useArrivedSaid();
+  const fromAddress = props.fromAddress !== false;
+  const said = useArrivedSaid(fromAddress);
   const location = useLocation();
+  const backHere = fromAddress
+    ? `${location.pathname}${location.search}#share`
+    : `/documents/${encodeURIComponent(props.documentId)}#share`;
   // A sensitive document's link starts as view-only, for a week (0.9.0,
   // H5); one the vault can't draw goes to download all the same.
   const options = useLinkOptions(props.sensitive === true ? { permission: 'view' } : undefined);
@@ -354,8 +365,9 @@ export function SharePanel(props: {
                   {s.changeable === true && (
                     <Link
                       to={changeLinkPath(s)}
-                      // Back to this page, its Share panel open (`#share`), where the change is said.
-                      state={{ back: `${location.pathname}${location.search}#share` }}
+                      // Back to this page (beside the list: the document's
+                      // own), its Share panel open (`#share`), where the change is said.
+                      state={{ back: backHere }}
                       className="btn btn-quiet"
                       aria-label={changeLinkLabel(target, s)}
                     >

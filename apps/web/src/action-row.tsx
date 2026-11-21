@@ -132,11 +132,17 @@ export function ActionRow({
   trashRef?: RefObject<HTMLButtonElement | null>;
   /** What Download or the Trash could not do, said under the row. */
   error?: ReactNode;
+  /**
+   * On its own page (the default): a link to a section (`#share`) opens it.
+   * False beside the list, where the address is the page under it.
+   */
+  fromAddress?: boolean;
 }) {
   const { kind, memberId, sections } = props;
   const id = useId();
   const { hash } = useLocation();
-  const asked = hash.length > 1 ? decodeURIComponent(hash.slice(1)) : '';
+  const asked =
+    props.fromAddress !== false && hash.length > 1 ? decodeURIComponent(hash.slice(1)) : '';
   const [open, setOpen] = useState<ActionSectionKey | null>(
     () => HASHES[asked] ?? remembered(kind, memberId),
   );

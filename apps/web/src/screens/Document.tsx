@@ -20,7 +20,16 @@ import {
   SENSITIVE_MEANS,
   CAREGIVER_MARK,
 } from '@fdv/shared';
-import { Fragment, useCallback, useEffect, useRef, useState, type RefObject } from 'react';
+import {
+  Fragment,
+  useCallback,
+  useEffect,
+  useId,
+  useRef,
+  useState,
+  type ReactNode,
+  type RefObject,
+} from 'react';
 import { Link, Navigate, useLocation, useNavigate, useParams, useSearchParams } from 'react-router';
 import { FileItHere, WhereKeptRow } from '../original-place.js';
 import { SourceFolderRow } from '../source-folder.js';
@@ -37,7 +46,7 @@ import {
   NoLongerNeededBanner,
   NoLongerNeededInfo,
 } from '../no-longer-needed.js';
-import { DocPanes } from '../doc-panes.js';
+import { DocPanes, type DocPanesView } from '../doc-panes.js';
 import { PageViewer } from '../page-viewer.js';
 import { useShellMode } from '../shell.js';
 import {
@@ -69,28 +78,90 @@ import { documentFacts, PrintDocument } from '../print-document.js';
 import { exactWords, familyZoneNow } from '../family-time.js';
 
 /**
- * Document detail: the facts in a plain two-column list, its notes, the
- * history of versions, and one primary action — Download. From 768 px the
- * details are on the left and the pages on the right, turned in the shared
- * viewer (R3, the owner's rule); on a phone, one column — the details
- * first, with a preview right after the facts that opens the pages full
- * size, to read (0.4.12).
+ * A document's own page, `/documents/:id`: its view (DocumentView), the
+ * address saying which document and which of its versions is shown.
  */
 export function DocumentScreen() {
   const { id } = useParams<{ id: string }>();
-  const { withToken, guarded, authVersion, session, caps } = useApp();
-  const navigate = useNavigate();
   // Arrived from Add, its file just filed (0.9.0, C3): File it here is offered.
   const arrived: unknown = useLocation().state;
   const justFiled =
     typeof arrived === 'object' &&
     arrived !== null &&
     (arrived as { justFiled?: unknown }).justFiled === true;
+  return <DocumentView id={id as string} host="page" justFiled={justFiled} />;
+}
+
+/** Where a document is shown: its own page, or beside the list (flyouts). */
+export type DocumentHost = DocumentViewProps['host'];
+
+/**
+ * Why a document beside the list has nothing more to show, for its host to
+ * close it: moved to the Trash (`said` is what to announce, the words the
+ * page says on Home), or it is a note, which is read on Notes.
+ */
+export type DocumentViewClosed =
+  { reason: 'trashed'; said: string } | { reason: 'note'; noteId: string };
+
+/**
+ * Document detail: the facts in a plain two-column list, its notes, the
+ * history of versions, and one primary action — Download. From 768 px the
+ * details are on the left and the pages on the right, turned in the shared
+ * viewer (R3, the owner's rule); on a phone, one column — the details
+ * first, with a preview right after the facts that opens the pages full
+ * size, to read (0.4.12).
+ *
+ * Two hosts. On its own page (`page`) it is the screen it always was: the
+ * address holds the older version looked at, the Trash goes to Home, a
+ * note goes to Notes. Beside the list (`flyout`) it never reads or changes
+ * the address: the version looked at is its own, and the Trash and a note
+ * are told to the host (`onClosed`) instead. Its own width decides its
+ * panes there (DocPanes `fit="own"`), and `view` "content" shows its pages
+ * alone. Edit is a page in both.
+ *
+ * Beside the list it starts afresh for each document (keyed by its id):
+ * nothing of one document — a late answer, an open dialog, a version
+ * looked at, an open section — is carried to the next. The page is as it
+ * always was.
+ */
+export function DocumentView(props: DocumentViewProps) {
+  return props.host === 'flyout' ? (
+    <OneDocumentView key={props.id} {...props} />
+  ) : (
+    <OneDocumentView {...props} />
+  );
+}
+
+export type DocumentViewProps =
+  | {
+      id: string;
+      host: 'page';
+      /** Arrived from Add, its file just filed: File it here is offered. */
+      justFiled?: boolean;
+    }
+  | {
+      id: string;
+      host: 'flyout';
+      /** Told when there is nothing more to show here: its host closes it. */
+      onClosed: (why: DocumentViewClosed) => void;
+      /** Both panes, or its pages alone (Hide details). */
+      view?: DocPanesView;
+      /** The host's own buttons, beside Edit. */
+      tools?: ReactNode;
+    };
+
+function OneDocumentView(props: DocumentViewProps) {
+  const { id, host } = props;
+  const onPage = host === 'page';
+  const flyout = props.host === 'flyout' ? props : null;
+  const justFiled = props.host === 'page' && props.justFiled === true;
+  const { withToken, guarded, authVersion, session, caps } = useApp();
+  const navigate = useNavigate();
   const { data, error, reload, setData } = useLoad(
     async (t) => {
       const [doc, versions, members, types, profile] = await Promise.all([
-        api.document(t, id as string),
-        api.versions(t, id as string),
+        api.document(t, id),
+        api.versions(t, id),
         api.members(t),
         api.documentTypes(t),
         // The household's clock, which a note's "edited …" is said in (5.35).
@@ -120,14 +191,20 @@ export function DocumentScreen() {
   const suggests = useSuggestionsOffered();
 
   const latest = data?.versions[0];
-  // An older version looked at (0.9.0): named in the address, so Back and a
-  // reload keep it. The current version, or one not of this document, is
+  // An older version looked at (0.9.0): on the page, named in the address,
+  // so Back and a reload keep it; beside the list, held here (afresh for
+  // each document). The current version, or one not of this document, is
   // the document as ever.
   const [params, setParams] = useSearchParams();
-  const asked = params.get('version');
+  const [held, setHeld] = useState<string | null>(null);
+  const asked = onPage ? params.get('version') : held;
   const shownAt = asked ? (data?.versions.findIndex((v) => v.id === asked) ?? -1) : -1;
   const viewing = shownAt > 0 ? data?.versions[shownAt] : undefined;
-  const viewVersion = (v: VersionView | null) =>
+  const viewVersion = (v: VersionView | null) => {
+    if (!onPage) {
+      setHeld(v ? v.id : null);
+      return;
+    }
     setParams(
       (now) => {
         const next = new URLSearchParams(now);
@@ -137,9 +214,22 @@ export function DocumentScreen() {
       },
       { replace: false },
     );
+  };
   // Two panes from 768 px, the details on the left and the pages on the
   // right (R3, the owner's rule); on a phone, one column, details first.
-  const panes = useShellMode() !== 'phone';
+  // Beside the list its own width decides (DocPanes), the pages always in
+  // its viewer.
+  const shellPanes = useShellMode() !== 'phone';
+  const panes = !onPage || shellPanes;
+  // The details pane, which the line between the panes controls: one id on
+  // the page, as ever; beside the list, its own, as others may be open.
+  const ownId = useId();
+  const detailsId = onPage ? 'doc-details' : `doc-details-${ownId}`;
+  // Told to the host beside the list: the latest it gave.
+  const closed = useRef(flyout?.onClosed);
+  useEffect(() => {
+    closed.current = flyout?.onClosed;
+  });
 
   const download = async (v: VersionView) => {
     setActionError(null);
@@ -168,7 +258,7 @@ export function DocumentScreen() {
   // (0.9.0-dev.53; the owner's ask of 16 Nov 2026): closed on each document.
   // Held as the document it is open for, so another document starts closed.
   const [aboutFor, setAboutFor] = useState<string | null>(null);
-  const aboutUnneeded = id !== undefined && aboutFor === id;
+  const aboutUnneeded = aboutFor === id;
 
   const addVersion = async (file: File | undefined) => {
     if (!file || !data) return;
@@ -199,14 +289,16 @@ export function DocumentScreen() {
     setTrashing(true);
     try {
       await withToken((t) => api.deleteDocument(t, data.doc.id));
+      const said = `“${data.doc.title ?? 'Needs a name'}” moved to the Trash. You can bring it back from there.`;
+      if (!onPage) {
+        // Beside the list: its host closes it and says so, the list kept.
+        setConfirmingTrash(false);
+        closed.current?.({ reason: 'trashed', said });
+        return;
+      }
       // Home, where what was done is said and has the focus (R5): as Documents
       // says it of many, and never in silence.
-      void navigate('/', {
-        replace: true,
-        state: {
-          said: `“${data.doc.title ?? 'Needs a name'}” moved to the Trash. You can bring it back from there.`,
-        },
-      });
+      void navigate('/', { replace: true, state: { said } });
     } catch (err) {
       setConfirmingTrash(false);
       setActionError(describeError(err));
@@ -260,25 +352,39 @@ export function DocumentScreen() {
     }
   };
 
+  // A note kept on its own (0.9.0, N1) is read and written on Notes. Beside
+  // the list (where a note's row never opens it) its host is told, once.
+  const noteId = data?.doc.type_key === NOTE_KIND ? data.doc.id : null;
+  useEffect(() => {
+    if (!onPage && noteId !== null) closed.current?.({ reason: 'note', noteId });
+  }, [onPage, noteId]);
+
   if (error) {
-    return (
+    return onPage ? (
       <main className="page page-top has-nav">
         <TopBar title="Document" back="/" backInApp />
         <ErrorNote message={error} />
       </main>
+    ) : (
+      <FlyoutView title="Document" tools={flyout?.tools}>
+        <ErrorNote message={error} />
+      </FlyoutView>
     );
   }
   if (!data)
-    return (
+    return onPage ? (
       <main className="page page-top has-nav">
         <TopBar title="Document" back="/" backInApp />
       </main>
+    ) : (
+      <FlyoutView title="Document" tools={flyout?.tools} />
     );
 
   const { doc, versions, members, types } = data;
   // A note kept on its own (0.9.0, N1) is read and written on Notes: a
   // search hit or a row in the table that opens it goes there.
-  if (doc.type_key === NOTE_KIND) return <Navigate to={`/notes/${doc.id}`} replace />;
+  if (doc.type_key === NOTE_KIND)
+    return onPage ? <Navigate to={`/notes/${doc.id}`} replace /> : null;
   // Who may change it — move it to the Trash, remove a detail: the same
   // rule as its row's ⋯ (5.1, 5.4).
   const mayChangeIt = mayChange(storedRole(), session.info?.member_id, doc);
@@ -319,7 +425,7 @@ export function DocumentScreen() {
   // Download and the history — nothing that changes the document, which is
   // the current version's (0.9.0).
   const olderPane = viewing ? (
-    <section id="doc-details" className="doc-details" aria-label={`Details of ${title}`}>
+    <section id={detailsId} className="doc-details" aria-label={`Details of ${title}`}>
       <OlderVersionBanner
         version={viewing}
         of={versions.length}
@@ -340,6 +446,7 @@ export function DocumentScreen() {
       <ActionRow
         kind="document"
         memberId={memberId}
+        fromAddress={onPage}
         onDownload={!viewing.file_removed ? () => void download(viewing) : null}
         onTrash={null}
         error={<ErrorNote message={actionError} />}
@@ -363,7 +470,7 @@ export function DocumentScreen() {
         : 'Only me';
 
   const detailsPane = (
-    <section id="doc-details" className="doc-details" aria-label={`Details of ${title}`}>
+    <section id={detailsId} className="doc-details" aria-label={`Details of ${title}`}>
       <div className="row" style={{ alignItems: 'center', gap: 12 }}>
         <span className="row" style={{ alignItems: 'center', gap: 4 }}>
           <StatusBadge status={doc.status} />
@@ -371,7 +478,7 @@ export function DocumentScreen() {
             <NoLongerNeededInfo
               open={aboutUnneeded}
               controls="nln-about"
-              onToggle={() => setAboutFor((o) => (o === id ? null : (id ?? null)))}
+              onToggle={() => setAboutFor((o) => (o === id ? null : id))}
             />
           )}
         </span>
@@ -601,6 +708,7 @@ export function DocumentScreen() {
       <ActionRow
         kind="document"
         memberId={memberId}
+        fromAddress={onPage}
         onDownload={latest && !latest.file_removed ? () => void download(latest) : null}
         onPrint={() => setPrinting(true)}
         printRef={printButton}
@@ -700,6 +808,7 @@ export function DocumentScreen() {
                       onClose={done}
                       onBusy={(on) => setBusy((b) => ({ ...b, share: on }))}
                       onCount={onLinks}
+                      fromAddress={onPage}
                     />
                   ),
                 },
@@ -758,44 +867,73 @@ export function DocumentScreen() {
     </section>
   );
 
+  // Edit is the current version's: none while an older one is shown. A
+  // page in both hosts.
+  const edit = viewing ? undefined : (
+    <Link to={`/documents/${doc.id}/confirm`} className="btn btn-quiet" style={{ minHeight: 40 }}>
+      Edit
+    </Link>
+  );
+  const pagesPane = (
+    <DocumentPages
+      key={(viewing ?? latest)?.id ?? 'none'}
+      documentId={doc.id}
+      title={viewing ? `${title}, version ${viewing.version_no}` : title}
+      version={viewing ?? latest}
+      onDrawn={() => void reload()}
+    />
+  );
+
+  if (!onPage)
+    return (
+      <FlyoutView
+        title={title}
+        tools={
+          <>
+            {flyout?.tools}
+            {edit}
+          </>
+        }
+      >
+        <DocPanes
+          fit="own"
+          view={flyout?.view ?? 'both'}
+          detailsId={detailsId}
+          details={olderPane ?? detailsPane}
+          pages={pagesPane}
+        />
+      </FlyoutView>
+    );
+
   return (
     <main className={`page page-top has-nav${panes ? ' doc-panes' : ''}`}>
-      <TopBar
-        title={title}
-        back="/"
-        backInApp
-        action={
-          // Edit is the current version's: none while an older one is shown.
-          viewing ? undefined : (
-            <Link
-              to={`/documents/${doc.id}/confirm`}
-              className="btn btn-quiet"
-              style={{ minHeight: 40 }}
-            >
-              Edit
-            </Link>
-          )
-        }
-      />
+      <TopBar title={title} back="/" backInApp action={edit} />
       {panes ? (
         // From 768 px the details beside the pages, the line between them
         // moved to widen either (0.9.0).
-        <DocPanes
-          details={olderPane ?? detailsPane}
-          pages={
-            <DocumentPages
-              key={(viewing ?? latest)?.id ?? 'none'}
-              documentId={doc.id}
-              title={viewing ? `${title}, version ${viewing.version_no}` : title}
-              version={viewing ?? latest}
-              onDrawn={() => void reload()}
-            />
-          }
-        />
+        <DocPanes details={olderPane ?? detailsPane} pages={pagesPane} />
       ) : (
         <div className="doc-split">{olderPane ?? detailsPane}</div>
       )}
     </main>
+  );
+}
+
+/**
+ * A document beside the list: its name as the heading (for its host to
+ * focus as it opens), the host's buttons and Edit beside it, then the view.
+ */
+function FlyoutView(props: { title: string; tools?: ReactNode; children?: ReactNode }) {
+  return (
+    <div className="doc-view doc-view-flyout">
+      <div className="doc-flyout-head">
+        <h2 className="doc-flyout-title" tabIndex={-1}>
+          {props.title}
+        </h2>
+        <div className="row doc-flyout-tools">{props.tools}</div>
+      </div>
+      {props.children}
+    </div>
   );
 }
 
