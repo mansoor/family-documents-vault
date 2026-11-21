@@ -16,14 +16,15 @@ export default defineConfig({
     { name: 'first run', testMatch: 'first-run.spec.ts' },
     {
       name: 'on its vault',
-      testIgnore: ['first-run.spec.ts', 'desktop.spec.ts'],
+      testIgnore: ['first-run.spec.ts', 'desktop.spec.ts', 'flyouts.spec.ts'],
       dependencies: ['first run'],
     },
     // The wide layouts (Phase 6, R5): a few specs at 1280 × 800, on the same
-    // vault, run whatever the phone's came to.
+    // vault, run whatever the phone's came to; and documents beside the list
+    // with their tray (flyouts.spec.ts).
     {
       name: 'desktop',
-      testMatch: 'desktop.spec.ts',
+      testMatch: ['desktop.spec.ts', 'flyouts.spec.ts'],
       dependencies: ['first run'],
       use: { ...devices['Desktop Chrome'], viewport: { width: 1280, height: 800 } },
     },

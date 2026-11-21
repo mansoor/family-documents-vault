@@ -27,6 +27,8 @@ import { CollapseButton, ResizeHandle, useSidebar } from './sidebar.js';
 import { setThemeChoice, THEME_CHOICES, useThemeChoice } from './theme.js';
 import { useSheetFocus } from './ui.js';
 import { useFamilyZone } from './family-time.js';
+import { FlyoutProvider, useFlyouts } from './flyout-context.js';
+import { frontOf } from './flyout-store.js';
 
 /**
  * The app's shell (Phase 6, R1): one layout around every signed-in screen.
@@ -367,7 +369,21 @@ function busyElsewhere(e: KeyboardEvent): boolean {
   return document.querySelector('[aria-modal="true"], [role="menu"]') !== null;
 }
 
-export function AppShell() {
+/**
+ * The shell, with the documents open beside the list (flyout-context.tsx):
+ * held here, beside the app's context, so they stay as the person moves
+ * between pages, and drawn by `desk` (the app's FlyoutDesk) over the page.
+ */
+export function AppShell(props: { desk?: ReactNode }) {
+  const { session } = useApp();
+  return (
+    <FlyoutProvider memberId={session.info?.member_id ?? null}>
+      <Shell desk={props.desk} />
+    </FlyoutProvider>
+  );
+}
+
+function Shell(props: { desk?: ReactNode }) {
   const { caps, session, authVersion, markAuthChanged } = useApp();
   // The family's clock, asked once a sign-in for every screen (0.9.0, TZ).
   useFamilyZone();
@@ -546,6 +562,14 @@ export function AppShell() {
   const side = useSidebar(mode, page);
   const wide = mode === 'wide';
   const narrow = mode === 'mid' || (side.rail && !side.peek);
+  // The tray at the right edge, when documents are open beside the list:
+  // the page keeps clear of it.
+  const flyouts = useFlyouts();
+  const tray = flyouts !== null && flyouts.set.items.length > 0 && !flyouts.narrow;
+  // Narrower than 700 px, one covers the screen: nothing behind it is
+  // reachable until it is minimised or closed (it is not a modal dialog,
+  // so the page is fenced off here).
+  const covered = flyouts !== null && flyouts.narrow && frontOf(flyouts.set) !== null;
 
   // Many documents on their way, away from their page (the I1 review): how
   // far, with a way back to it — said politely as it goes on and as it ends,
@@ -589,12 +613,15 @@ export function AppShell() {
   // name at its left (the owner's ask): it stays where it is whatever the
   // sidebar below it does, folded, opened or dragged.
   return (
-    <div className={`shell shell-${mode}${side.shellClass}`} style={side.shellStyle}>
+    <div
+      className={`shell shell-${mode}${side.shellClass}${tray ? ' has-tray' : ''}`}
+      style={side.shellStyle}
+    >
       <a className="skip-link" href="#main-content" onClick={skip}>
         Skip to main content
       </a>
       {phone ? (
-        <header key="phone" className="phone-bar">
+        <header key="phone" className="phone-bar" inert={covered}>
           <button
             ref={hamburger}
             type="button"
@@ -613,7 +640,7 @@ export function AppShell() {
           {account}
         </header>
       ) : (
-        <header key="bar" className="app-bar">
+        <header key="bar" className="app-bar" inert={covered}>
           <Brand household={household} home />
           <SearchBox field={search} keysOn={keysOn} />
           <span className="app-bar-gap" />
@@ -622,7 +649,12 @@ export function AppShell() {
         </header>
       )}
       {phone ? null : (
-        <nav className="sidebar" aria-label="Sections" {...(wide ? side.navProps : {})}>
+        <nav
+          className="sidebar"
+          aria-label="Sections"
+          inert={covered}
+          {...(wide ? side.navProps : {})}
+        >
           <SectionList sections={sections} path={pathname} narrow={narrow} />
           <div className="side-gap" />
           {wide ? (
@@ -639,7 +671,7 @@ export function AppShell() {
           )}
         </nav>
       )}
-      <div className="shell-main" ref={page}>
+      <div className="shell-main" ref={page} inert={covered}>
         {upload.batch && (
           <p className="visually-hidden" role="status">
             {stripSaid}
@@ -656,7 +688,8 @@ export function AppShell() {
           <Outlet />
         </div>
       </div>
-      {phone && <BottomBar canAdd={canAdd} sections={sections} path={pathname} />}
+      {props.desk}
+      {phone && <BottomBar canAdd={canAdd} sections={sections} path={pathname} inert={covered} />}
       {phone && drawer && (
         <Drawer
           household={household}
@@ -1139,7 +1172,13 @@ function AccountMenuBox(props: {
  * attention and People, each where it is theirs. Somebody who adds nothing
  * has Documents and their collections there instead.
  */
-function BottomBar(props: { canAdd: boolean; sections: Section[]; path: string }) {
+function BottomBar(props: {
+  canAdd: boolean;
+  sections: Section[];
+  path: string;
+  /** Under a document covering the screen. */
+  inert?: boolean;
+}) {
   const has = (key: string) => props.sections.find((s) => s.key === key);
   const item = (s: Pick<Section, 'key' | 'label' | 'to' | 'icon'>, current: boolean) => (
     <Link key={s.key} to={s.to} className="nav-item" aria-current={current ? 'page' : undefined}>
@@ -1153,7 +1192,7 @@ function BottomBar(props: { canAdd: boolean; sections: Section[]; path: string }
     ? (['attention', 'people'] as const)
     : (['documents', 'collections'] as const);
   return (
-    <nav className="bottomnav" aria-label="Main">
+    <nav className="bottomnav" aria-label="Main" inert={props.inert}>
       {home && item(home, home.owns(props.path))}
       {item(search, props.path === '/search')}
       {/* A viewer can open and download, and nothing else: an Add button

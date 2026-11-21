@@ -10,7 +10,7 @@ import {
   type RenewalInput,
   type RenewalOffer,
 } from '@fdv/shared';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import { api, ApiRequestError, type Member } from './api.js';
 import { describeError, useApp } from './app-context.js';
 import { Toast, type ReviewToast } from './batch-review.js';
@@ -111,6 +111,7 @@ export function NewVersionSays(props: {
     (ReviewToast & { versionId: string; documentId: string }) | null
   >(null);
   const [heard, setHeard] = useState('');
+  const headingId = `${useId()}-h`;
   const box = useRef<HTMLDivElement>(null);
   const errorNote = useRef<HTMLParagraphElement>(null);
   const focusToast = useRef(false);
@@ -226,8 +227,8 @@ export function NewVersionSays(props: {
         </p>
       )}
       {shown && (
-        <section className="card sugg-card renewal-card" aria-labelledby="renewal-h">
-          <h2 id="renewal-h" className="sugg-h">
+        <section className="card sugg-card renewal-card" aria-labelledby={headingId}>
+          <h2 id={headingId} className="sugg-h">
             The new version says:
           </h2>
           <p className="muted">

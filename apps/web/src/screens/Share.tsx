@@ -36,7 +36,7 @@ import { Link, useLocation } from 'react-router';
 import { api, ApiRequestError, type CreatedShare, type Share } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
 import { storedRole } from '../session.js';
-import { Button, Check, ErrorNote, Field, useArrivedSaid } from '../ui.js';
+import { Button, Check, ErrorNote, Field, useArrivedSaid, useIdScope } from '../ui.js';
 import { endWords, familyZoneNow } from '../family-time.js';
 import { useLinkTexts, useSmsCodes } from '../text-messages.js';
 import { useSensitiveConfirm } from '../sensitive-confirm.js';
@@ -134,6 +134,8 @@ export function SharePanel(props: {
   fromAddress?: boolean;
 }) {
   const { guarded, authVersion, caps } = useApp();
+  // Its ids, its own beside the list (IdScope).
+  const sid = useIdScope();
   // A code by text (SMS3): offered while the household's texts are set up.
   const texts = useSmsCodes();
   // The link texted to whoever it is for (0.9.0-dev.69): while texts are set up.
@@ -172,7 +174,8 @@ export function SharePanel(props: {
     const to = moved.current;
     if (!to) return;
     // Once it is drawn: the page around it may be drawn again first.
-    const target = to === 'form' ? document.getElementById('share-label') : shareButton.current;
+    const target =
+      to === 'form' ? document.getElementById(sid('share-label')) : shareButton.current;
     if (!target) return;
     moved.current = null;
     target.focus();
@@ -415,7 +418,7 @@ export function SharePanel(props: {
           {protects && (
             <>
               <Check
-                id="share-show-title"
+                id={sid('share-show-title')}
                 checked={showTitle}
                 label={SHOW_TITLE_LABEL}
                 note={sensitive ? SHOW_TITLE_SENSITIVE_HINT : undefined}
@@ -758,11 +761,12 @@ export function LinkOptions(props: {
   note?: boolean;
 }) {
   const { options, read, timezone } = props;
+  const sid = useIdScope();
   return (
     <>
       <LinkWho options={options} read={read} />
       <EndPicker
-        idPrefix="share"
+        idPrefix={sid('share')}
         timezone={timezone}
         read={read}
         onChange={(end) => options.set({ end })}
@@ -793,11 +797,12 @@ export function LinkOptions(props: {
  */
 export function LinkWho(props: { options: LinkOptionsHandle; read: LinkOptionsRead }) {
   const { options, read } = props;
+  const sid = useIdScope();
   const { value } = options;
   return (
     <>
       <Field
-        id="share-label"
+        id={sid('share-label')}
         label="Who is it for?"
         value={value.label}
         onChange={(label) => options.set({ label })}
@@ -807,7 +812,7 @@ export function LinkWho(props: { options: LinkOptionsHandle; read: LinkOptionsRe
       {/* A new link is sent by the vault, if you like (18 Nov 2026): never on Change. */}
       {read.send && (
         <SendFields
-          idPrefix="share"
+          idPrefix={sid('share')}
           email={value.sendEmail}
           phone={value.sendPhone}
           onEmail={(sendEmail) => options.set({ sendEmail })}
@@ -835,6 +840,7 @@ export function LinkCanDo(props: {
   labelledBy?: string;
 }) {
   const { options, viewable } = props;
+  const sid = useIdScope();
   const { value } = options;
   if (props.canDo) {
     return (
@@ -845,9 +851,9 @@ export function LinkCanDo(props: {
     );
   }
   return (
-    <div className="field" role="group" aria-labelledby={props.labelledBy ?? 'share-can-h'}>
+    <div className="field" role="group" aria-labelledby={props.labelledBy ?? sid('share-can-h')}>
       {!props.labelledBy && (
-        <span id="share-can-h" className="field-label">
+        <span id={sid('share-can-h')} className="field-label">
           What they can do
         </span>
       )}
@@ -887,27 +893,28 @@ export function LinkCanDo(props: {
 /** How often it can be opened (5.18): a number, or empty for no limit. */
 export function LinkOpensField(props: { options: LinkOptionsHandle; read: LinkOptionsRead }) {
   const { options } = props;
+  const sid = useIdScope();
   const { opensProblem } = props.read;
   return (
     <div className="field">
-      <label htmlFor="share-opens">Can be opened</label>
+      <label htmlFor={sid('share-opens')}>Can be opened</label>
       <div className="row" style={{ gap: 8, alignItems: 'center' }}>
         <input
-          id="share-opens"
+          id={sid('share-opens')}
           type="text"
           inputMode="numeric"
           autoComplete="off"
           maxLength={6}
           value={options.value.opens}
           onChange={(e) => options.set({ opens: e.target.value })}
-          aria-describedby="share-opens-hint"
+          aria-describedby={sid('share-opens-hint')}
           aria-invalid={opensProblem ? true : undefined}
           style={{ width: 96 }}
         />
         <span aria-hidden="true">times</span>
       </div>
       <span
-        id="share-opens-hint"
+        id={sid('share-opens-hint')}
         className={opensProblem ? 'field-error' : 'muted'}
         role={opensProblem ? 'alert' : undefined}
       >
@@ -1232,6 +1239,7 @@ function Protection(props: {
   read: ReturnType<typeof readLinkOptions>;
 }) {
   const { options, read } = props;
+  const sid = useIdScope();
   const { value } = options;
   const { factors, passwordProblem, codeProblem } = read;
   // The app's box (`.check`, 5.19): beside the start of its label, never
@@ -1255,12 +1263,12 @@ function Protection(props: {
     </div>
   );
   return (
-    <div className="share-protect" role="group" aria-labelledby="share-protect-h">
-      <span id="share-protect-h" className="field-label">
+    <div className="share-protect" role="group" aria-labelledby={sid('share-protect-h')}>
+      <span id={sid('share-protect-h')} className="field-label">
         Protect it
       </span>
       {check(
-        'share-pin',
+        sid('share-pin'),
         value.withPin,
         (on) => options.set({ withPin: on, ...(on ? { withPassword: false } : {}) }),
         'Also ask for a four-digit PIN, which you tell them separately',
@@ -1268,14 +1276,14 @@ function Protection(props: {
       {factors.second && (
         <>
           {check(
-            'share-with-password',
+            sid('share-with-password'),
             value.withPassword,
             (on) => options.set({ withPassword: on, ...(on ? { withPin: false } : {}) }),
             'Also ask for a password, which you tell them separately',
           )}
           {value.withPassword && (
             <PasswordChoice
-              id="share-password"
+              id={sid('share-password')}
               mode={value.passwordMode}
               password={value.password}
               problem={passwordProblem}
@@ -1290,7 +1298,7 @@ function Protection(props: {
       {factors.email || factors.text ? (
         <>
           {check(
-            'share-with-code',
+            sid('share-with-code'),
             value.withCode,
             // Ticked with nowhere yet for the code: where the link is sent,
             // as typed above (18 Nov 2026), to change if it should go elsewhere.
@@ -1309,7 +1317,7 @@ function Protection(props: {
               : factors.text
                 ? 'Also text them a code when they open it'
                 : 'Also email them a code when they open it',
-            'share-code-truth',
+            sid('share-code-truth'),
           )}
           {/* By email or by text (SMS3), where the vault can do both. */}
           {value.withCode && factors.email && factors.text && (
@@ -1318,13 +1326,13 @@ function Protection(props: {
               {(['email', 'sms'] as const).map((way) => (
                 <div key={way} className="check">
                   <input
-                    id={`share-code-by-${way}`}
+                    id={sid(`share-code-by-${way}`)}
                     type="radio"
-                    name="share-code-by"
+                    name={sid('share-code-by')}
                     checked={read.by === way}
                     onChange={() => options.set({ codeBy: way, codeRefused: null })}
                   />
-                  <label htmlFor={`share-code-by-${way}`}>
+                  <label htmlFor={sid(`share-code-by-${way}`)}>
                     {way === 'email' ? 'By email' : 'By text message'}
                   </label>
                 </div>
@@ -1334,19 +1342,19 @@ function Protection(props: {
           {value.withCode && read.by === 'sms' && (
             <div className="stack share-indent" style={{ gap: 8 }}>
               <div className="field">
-                <label htmlFor="share-code-phone">Their mobile number</label>
+                <label htmlFor={sid('share-code-phone')}>Their mobile number</label>
                 <input
-                  id="share-code-phone"
+                  id={sid('share-code-phone')}
                   type="tel"
                   autoComplete="off"
                   maxLength={40}
                   value={value.codePhone}
                   onChange={(e) => options.set({ codePhone: e.target.value, codeRefused: null })}
                   aria-invalid={codeProblem && value.codePhone ? true : undefined}
-                  aria-describedby="share-code-phone-note"
+                  aria-describedby={sid('share-code-phone-note')}
                 />
                 <span
-                  id="share-code-phone-note"
+                  id={sid('share-code-phone-note')}
                   className={codeProblem && value.codePhone ? 'field-error' : 'muted'}
                   role={codeProblem && value.codePhone ? 'alert' : undefined}
                 >
@@ -1360,19 +1368,19 @@ function Protection(props: {
           {value.withCode && read.by === 'email' && (
             <div className="stack share-indent" style={{ gap: 8 }}>
               <div className="field">
-                <label htmlFor="share-code-email">Their email address</label>
+                <label htmlFor={sid('share-code-email')}>Their email address</label>
                 <input
-                  id="share-code-email"
+                  id={sid('share-code-email')}
                   type="email"
                   autoComplete="off"
                   maxLength={254}
                   value={value.codeEmail}
                   onChange={(e) => options.set({ codeEmail: e.target.value, codeRefused: null })}
                   aria-invalid={codeProblem && value.codeEmail ? true : undefined}
-                  aria-describedby="share-code-note"
+                  aria-describedby={sid('share-code-note')}
                 />
                 <span
-                  id="share-code-note"
+                  id={sid('share-code-note')}
                   className={codeProblem && value.codeEmail ? 'field-error' : 'muted'}
                   role={codeProblem && value.codeEmail ? 'alert' : undefined}
                 >
@@ -1383,7 +1391,7 @@ function Protection(props: {
               </div>
             </div>
           )}
-          <span id="share-code-truth" className="muted share-indent">
+          <span id={sid('share-code-truth')} className="muted share-indent">
             {read.by === 'sms' ? SHARE_TEXT_TRUTH : SHARE_CODE_TRUTH}
           </span>
         </>
@@ -1398,8 +1406,8 @@ function Protection(props: {
           sibling under the row it sat a whole tap height below it. */}
       {factors.second && (
         <Check
-          id="share-device-only"
-          noteId="share-device-note"
+          id={sid('share-device-only')}
+          noteId={sid('share-device-note')}
           checked={value.thisDeviceOnly}
           onChange={(on) => options.set({ thisDeviceOnly: on })}
           label="This browser only"

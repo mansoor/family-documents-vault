@@ -68,6 +68,7 @@ import {
   useSheetFocus,
 } from '../ui.js';
 import { DocRow } from './Home.js';
+import { useChangesBeside, useOpenDocument } from '../flyout-context.js';
 import { useTrashedNote } from '../DocActions.js';
 import { RoleControls } from './Roles.js';
 import { HandOver, InviteForm, useHouseholdToday } from './Invite.js';
@@ -144,6 +145,8 @@ export function ProfileScreen() {
   const { id } = useParams<{ id: string }>();
   const { authVersion, session } = useApp();
   const navigate = useNavigate();
+  // A row opens its document beside the list (flyouts).
+  const openDocument = useOpenDocument();
   const trashed = useTrashedNote();
   const location = useLocation();
   // "Add their details now" (5.27) opens the form once, as the screen
@@ -182,6 +185,8 @@ export function ProfileScreen() {
     },
     [id, authVersion, invites],
   );
+  // Changed beside the list: loaded again, and one moved to the Trash there gone at once.
+  const gone = useChangesBeside(reload);
   const member = data?.member ?? null;
   const name = member ? nameOf(member, data?.members ?? []) : '';
   const today = useHouseholdToday(invites);
@@ -299,16 +304,18 @@ export function ProfileScreen() {
             </h2>
             {trashed.note}
             <ul className="list">
-              {(data?.docs ?? []).map((d) => (
-                <DocRow
-                  key={d.id}
-                  doc={d}
-                  types={data?.types}
-                  onOpen={() => void navigate(`/documents/${d.id}`)}
-                  onChanged={reload}
-                  onTrashed={trashed.onTrashed}
-                />
-              ))}
+              {(data?.docs ?? [])
+                .filter((d) => !gone.has(d.id))
+                .map((d) => (
+                  <DocRow
+                    key={d.id}
+                    doc={d}
+                    types={data?.types}
+                    onOpen={(e) => openDocument(d.id, { title: d.title, event: e })}
+                    onChanged={reload}
+                    onTrashed={trashed.onTrashed}
+                  />
+                ))}
               {data && data.docs.length === 0 && <li className="muted">No documents yet.</li>}
             </ul>
             {member.document_count > 0 && (
@@ -1564,7 +1571,8 @@ function LockDialog(props: {
 export function PersonDocumentsScreen() {
   const { id } = useParams<{ id: string }>();
   const { authVersion } = useApp();
-  const navigate = useNavigate();
+  // A row opens its document beside the list (flyouts).
+  const openDocument = useOpenDocument();
   const trashed = useTrashedNote();
   const location = useLocation();
   // Back to where this was opened from: Home, or their profile (and their
@@ -1587,6 +1595,8 @@ export function PersonDocumentsScreen() {
     },
     [id, authVersion],
   );
+  // Changed beside the list: loaded again, and one moved to the Trash there gone at once.
+  const gone = useChangesBeside(reload);
   const member = data?.member ?? null;
   const name = member ? nameOf(member, data?.members ?? []) : '';
   const title = member ? (member.is_me ? 'Your documents' : `${name}’s documents`) : 'Documents';
@@ -1602,16 +1612,18 @@ export function PersonDocumentsScreen() {
       )}
       {trashed.note}
       <ul className="list">
-        {(data?.docs ?? []).map((d) => (
-          <DocRow
-            key={d.id}
-            doc={d}
-            types={data?.types}
-            onOpen={() => void navigate(`/documents/${d.id}`)}
-            onChanged={reload}
-            onTrashed={trashed.onTrashed}
-          />
-        ))}
+        {(data?.docs ?? [])
+          .filter((d) => !gone.has(d.id))
+          .map((d) => (
+            <DocRow
+              key={d.id}
+              doc={d}
+              types={data?.types}
+              onOpen={(e) => openDocument(d.id, { title: d.title, event: e })}
+              onChanged={reload}
+              onTrashed={trashed.onTrashed}
+            />
+          ))}
         {data && member && data.docs.length === 0 && <li className="muted">No documents yet.</li>}
       </ul>
     </main>

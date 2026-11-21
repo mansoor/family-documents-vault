@@ -58,6 +58,8 @@ The vault will not start on the example file's secrets: copying `.env.example` t
 
 From then on: **Add** a document from a photo or a file, confirm what it is and whose it is, and it is filed — or add many at once, which wait in the **Inbox** until you accept them. Every document is in **Documents**, to sort and filter; browse by person or category from Home, or search — including the words inside scanned pages.
 
+On the web, a document clicked in a list opens beside it, over the list, rather than in its place. Up to ten can be open at once: minimise one (Esc) and it waits in the tray at the right edge, just as it was; one minimised for 15 minutes is freed to save memory and opens again when chosen. Ctrl-click, or **Open as a page**, gives a document its own page, with an address to bookmark or share.
+
 `gen-env` refuses to overwrite an existing `.env`, because a new master key would make every stored document unreadable. **Back the file up somewhere off the server.**
 
 To stop: `docker compose down`. Your data stays in the `fdv_db-data` and `fdv_vault-data` volumes.

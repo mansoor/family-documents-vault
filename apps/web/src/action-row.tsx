@@ -75,10 +75,18 @@ const HASHES: Record<string, ActionSectionKey> = {
   activity: 'activity',
 };
 
-const storeKey = (kind: 'note' | 'document', memberId: string | null) =>
+/**
+ * Where each person's open section is kept: a document's page and a
+ * document beside the list (flyouts) each their own, so neither opens the
+ * other's — a section opened beside the list is not what the page opens
+ * with, nor the other way round.
+ */
+const storeKey = (kind: Kind, memberId: string | null) =>
   `fdv.actions.${kind}.${memberId ?? 'nobody'}`;
 
-function remembered(kind: 'note' | 'document', memberId: string | null): ActionSectionKey | null {
+type Kind = 'note' | 'document' | 'document-flyout';
+
+function remembered(kind: Kind, memberId: string | null): ActionSectionKey | null {
   try {
     const kept = window.localStorage.getItem(storeKey(kind, memberId));
     return kept && Object.values(HASHES).includes(kept as ActionSectionKey)
@@ -89,11 +97,7 @@ function remembered(kind: 'note' | 'document', memberId: string | null): ActionS
   }
 }
 
-function remember(
-  kind: 'note' | 'document',
-  memberId: string | null,
-  key: ActionSectionKey | null,
-) {
+function remember(kind: Kind, memberId: string | null, key: ActionSectionKey | null) {
   try {
     if (key) window.localStorage.setItem(storeKey(kind, memberId), key);
     else window.localStorage.removeItem(storeKey(kind, memberId));
@@ -137,8 +141,12 @@ export function ActionRow({
    * False beside the list, where the address is the page under it.
    */
   fromAddress?: boolean;
+  /** Where it is: on a page (the default), or beside the list, which keeps its own open section. */
+  place?: 'page' | 'flyout';
 }) {
-  const { kind, memberId, sections } = props;
+  const { memberId, sections } = props;
+  const kind: Kind =
+    props.kind === 'document' && props.place === 'flyout' ? 'document-flyout' : props.kind;
   const id = useId();
   const { hash } = useLocation();
   const asked =

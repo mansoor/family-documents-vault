@@ -187,7 +187,8 @@ export function useSidebar(mode: ShellMode, page: RefObject<HTMLDivElement | nul
   useEffect(() => {
     if (!peek) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key !== 'Escape' || overThePage()) return;
+      // Already answered by what had the focus (a document beside the list).
+      if (e.key !== 'Escape' || e.defaultPrevented || overThePage()) return;
       stop();
       setHoverOpen(false);
       setFocusOpen(false);

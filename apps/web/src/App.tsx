@@ -59,6 +59,7 @@ import { FocusOnMove } from './focus-on-move.js';
 import { Only, SCREEN_RULES } from './not-for.js';
 import { PageTitle } from './page-title.js';
 import { AppShell } from './shell.js';
+import { FlyoutDesk } from './flyouts.js';
 import { Logo } from './ui.js';
 
 /**
@@ -239,7 +240,7 @@ export function App() {
             <Route
               element={
                 <Gate need="signed-in">
-                  <AppShell />
+                  <AppShell desk={<FlyoutDesk />} />
                 </Gate>
               }
             >

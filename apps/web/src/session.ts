@@ -7,6 +7,7 @@ import {
 } from '@fdv/client';
 import { api, type Tokens } from './api.js';
 import { forgetDrafts } from './note-drafts.js';
+import { forgetFlyouts } from './flyout-store.js';
 import { forgetAllPages } from './batch-pages.js';
 import { clearPhotos } from './photos.js';
 import { disable as disablePush } from './push.js';
@@ -184,8 +185,9 @@ export class Session {
     // next load must not end this one in its place (0.9.0).
     setLogoutPending(false);
     // A new sign-in starts with no notes half-written by the last one
-    // (5.35, A32).
+    // (5.35, A32), and none of the last one's documents open beside the list.
     forgetDrafts();
+    forgetFlyouts();
     // The in-memory half is set before this returns; the store write is
     // localStorage, which is synchronous underneath.
     void this.core.accept(tokens);
@@ -199,6 +201,8 @@ export class Session {
     clearPhotos();
     forgetAllPages();
     forgetDrafts();
+    // Nor the documents they had open beside the list.
+    forgetFlyouts();
     void this.core.clear();
   }
 
@@ -210,7 +214,10 @@ export class Session {
     // A session that ended by itself — signed out on another device, taken
     // away, run out — takes its unsaved notes with it, as signing out does
     // (5.35, A32).
-    if (r.kind === 'ended' || r.kind === 'signed_out') forgetDrafts();
+    if (r.kind === 'ended' || r.kind === 'signed_out') {
+      forgetDrafts();
+      forgetFlyouts();
+    }
     // And one this tab took over from another tab, signed in there as
     // somebody else (the 5.35 review, W535-07): nothing of the last
     // person's stays — their unsaved notes, the photos fetched for them.
@@ -220,6 +227,7 @@ export class Session {
       (before.member_id !== after.member_id || before.household_id !== after.household_id)
     ) {
       forgetDrafts();
+      forgetFlyouts();
       clearPhotos();
       forgetAllPages();
     }

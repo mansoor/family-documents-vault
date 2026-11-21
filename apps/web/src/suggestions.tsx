@@ -12,7 +12,7 @@ import {
   type ProposalCue,
   type ProposalField,
 } from '@fdv/shared';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import { api, ApiRequestError, type DocumentInput, type Member } from './api.js';
 import { describeError, useApp } from './app-context.js';
 import { coreRule } from './details.js';
@@ -265,6 +265,7 @@ export function PagesSuggest(props: {
 }) {
   const { doc, types, members } = props;
   const { withToken, session } = useApp();
+  const headingId = `${useId()}-h`;
   const household = session.info?.household_id;
   const member = session.info?.member_id;
   const keyed = household && member ? notNowKey(household, member, doc.id) : null;
@@ -399,8 +400,8 @@ export function PagesSuggest(props: {
   };
 
   return (
-    <section className="card sugg-card" aria-labelledby="sugg-h">
-      <h2 id="sugg-h" className="sugg-h">
+    <section className="card sugg-card" aria-labelledby={headingId}>
+      <h2 id={headingId} className="sugg-h">
         We read the pages — is this right?
       </h2>
       {done ? (

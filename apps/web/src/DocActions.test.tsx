@@ -127,12 +127,13 @@ describe('quick actions on every document (5.4)', () => {
     expect(more).toHaveAttribute('aria-expanded', 'false');
     await expectAccessible();
 
-    // Pressing the row still opens the document.
+    // Pressing the row still opens the document: beside the list (Home).
     fireEvent.click(row);
+    const aside = await screen.findByRole('dialog', { name: "Mansoor's passport" });
     expect(
-      await screen.findByRole('heading', { name: "Mansoor's passport", level: 1 }),
+      within(aside).getByRole('heading', { name: "Mansoor's passport", level: 2 }),
     ).toBeInTheDocument();
-    expect(window.location.pathname).toBe('/documents/doc-1');
+    expect(window.location.pathname).toBe('/');
   });
 
   it('a viewer sees Open and Download only', async () => {

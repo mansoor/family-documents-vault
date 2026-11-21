@@ -282,7 +282,24 @@ test("a collection's own page finds two documents by search and adds them", asyn
 
 test('a document opens in two panes: its details on the left, its pages on the right', async () => {
   await visit(page, '/documents');
+  // A row opens it beside the list (flyouts), two panes there too; its
+  // own page from there.
   await page.getByRole('link', { name: "Mansoor's passport" }).first().click();
+  const aside = page.getByRole('dialog', { name: "Mansoor's passport" });
+  await expect(aside).toBeVisible();
+  await expect(page).toHaveURL(/\/documents$/);
+  {
+    const left = await aside
+      .getByRole('region', { name: "Details of Mansoor's passport" })
+      .boundingBox();
+    const right = await aside
+      .getByRole('region', { name: "Pages of Mansoor's passport" })
+      .boundingBox();
+    expect(left && right && left.x + left.width <= right.x).toBe(true);
+  }
+  await aside.getByRole('link', { name: 'Open as a page' }).click();
+  await expect(page).toHaveURL(/\/documents\/[^/]+$/);
+  await expect(page.getByRole('dialog', { name: "Mansoor's passport" })).toHaveCount(0);
   const details = page.getByRole('region', { name: "Details of Mansoor's passport" });
   const pages = page.getByRole('region', { name: "Pages of Mansoor's passport" });
   await expect(details).toBeVisible();

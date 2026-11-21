@@ -40,6 +40,7 @@ import { describeError, useApp, useLoad } from './app-context.js';
 import { documentsCount, folderView } from './documents-table.js';
 import { Button, ConfirmDialog, ErrorNote, LoadFailed, Sheet } from './ui.js';
 import { DocRow } from './screens/Home.js';
+import { useChangesBeside, useOpenDocument } from './flyout-context.js';
 import { storedRole } from './session.js';
 
 /**
@@ -388,11 +389,13 @@ function UnfiledPane(props: {
 }) {
   const { names } = props;
   const { withToken } = useApp();
-  const navigate = useNavigate();
+  const openDocument = useOpenDocument();
   const [items, setItems] = useState<DocumentView[] | null>(null);
   const [next, setNext] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [asked, setAsked] = useState(0);
+  // Changed beside the list: asked again, and one moved to the Trash there gone at once.
+  const gone = useChangesBeside(() => setAsked((n) => n + 1));
   const page = (cursor?: string) =>
     withToken((t) => api.cabinetUnfiled(t, { limit: 50, ...(cursor ? { cursor } : {}) }));
   useEffect(() => {
@@ -447,15 +450,17 @@ function UnfiledPane(props: {
       )}
       {items !== null && items.length > 0 && (
         <ul className="list doclist">
-          {items.map((d) => (
-            <DocRow
-              key={d.id}
-              doc={d}
-              types={names.types}
-              onOpen={() => void navigate(`/documents/${d.id}`)}
-              onChanged={() => setAsked((n) => n + 1)}
-            />
-          ))}
+          {items
+            .filter((d) => !gone.has(d.id))
+            .map((d) => (
+              <DocRow
+                key={d.id}
+                doc={d}
+                types={names.types}
+                onOpen={(e) => openDocument(d.id, { title: d.title, event: e })}
+                onChanged={() => setAsked((n) => n + 1)}
+              />
+            ))}
         </ul>
       )}
       {next && (
@@ -628,7 +633,7 @@ function FolderPane(props: {
   const { withToken, caps } = useApp();
   // Places in a cabinet (C3), for whoever sees where originals are kept.
   const places = caps?.features.original_place === true && seesLocation(storedRole());
-  const navigate = useNavigate();
+  const openDocument = useOpenDocument();
   const headingId = useId();
   const [contents, setContents] = useState<FolderContents | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -658,6 +663,8 @@ function FolderPane(props: {
     setAsked((n) => n + 1);
     props.onChanged();
   };
+  // Changed beside the list: asked again, and one moved to the Trash there gone at once.
+  const gone = useChangesBeside(() => setAsked((n) => n + 1));
   const unpin = async (d: DocumentView) => {
     const title = d.title ?? 'This paper';
     setBusy(d.id);
@@ -729,16 +736,18 @@ function FolderPane(props: {
             Pinned here
           </h3>
           <ul className="list doclist">
-            {pinned.map((d) => (
-              <DocRow
-                key={d.id}
-                doc={d}
-                types={names.types}
-                onOpen={() => void navigate(`/documents/${d.id}`)}
-                onChanged={changed}
-                pinned={{ onUnpin: () => void unpin(d), busy: busy === d.id }}
-              />
-            ))}
+            {pinned
+              .filter((d) => !gone.has(d.id))
+              .map((d) => (
+                <DocRow
+                  key={d.id}
+                  doc={d}
+                  types={names.types}
+                  onOpen={(e) => openDocument(d.id, { title: d.title, event: e })}
+                  onChanged={changed}
+                  pinned={{ onUnpin: () => void unpin(d), busy: busy === d.id }}
+                />
+              ))}
           </ul>
         </section>
       )}
@@ -801,12 +810,18 @@ function DividerSection(props: {
 }) {
   const { divider, names } = props;
   const { withToken } = useApp();
-  const navigate = useNavigate();
+  const openDocument = useOpenDocument();
   const listId = useId();
   const [open, setOpen] = useState(props.startOpen);
   const [items, setItems] = useState<DocumentView[] | null>(null);
   const [next, setNext] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Changed beside the list: its page asked again (when open), and one
+  // moved to the Trash there gone at once.
+  const gone = useChangesBeside(() => {
+    setItems(null);
+    setNext(null);
+  });
 
   const page = (cursor?: string) =>
     withToken((t) =>
@@ -856,15 +871,17 @@ function DividerSection(props: {
       {divider.count > 0 && items === null && !error && <p className="muted">Opening…</p>}
       {items !== null && items.length > 0 && (
         <ul className="list doclist" id={listId}>
-          {items.map((d) => (
-            <DocRow
-              key={d.id}
-              doc={d}
-              types={names.types}
-              onOpen={() => void navigate(`/documents/${d.id}`)}
-              onChanged={props.onChanged}
-            />
-          ))}
+          {items
+            .filter((d) => !gone.has(d.id))
+            .map((d) => (
+              <DocRow
+                key={d.id}
+                doc={d}
+                types={names.types}
+                onOpen={(e) => openDocument(d.id, { title: d.title, event: e })}
+                onChanged={props.onChanged}
+              />
+            ))}
         </ul>
       )}
       {next && (

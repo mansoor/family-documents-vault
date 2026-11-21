@@ -336,6 +336,7 @@ export function FileItHere(props: {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState<string | null>(null);
+  const headingId = `${useId()}-h`;
   const other = useRef<HTMLButtonElement>(null);
   const { data } = useLoad(
     async (t) => {
@@ -372,8 +373,8 @@ export function FileItHere(props: {
     }
   };
   return (
-    <section className="card stack file-it-here" aria-labelledby="file-it-here-h">
-      <h2 id="file-it-here-h" style={{ fontSize: 18 }}>
+    <section className="card stack file-it-here" aria-labelledby={headingId}>
+      <h2 id={headingId} style={{ fontSize: 18 }}>
         Where will the paper go?
       </h2>
       <p className="muted">

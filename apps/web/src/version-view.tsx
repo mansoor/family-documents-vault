@@ -6,7 +6,7 @@ import {
   type DocumentTypeView,
   type VersionView,
 } from '@fdv/shared';
-import { Fragment, useEffect, useRef } from 'react';
+import { Fragment, useEffect, useId, useRef } from 'react';
 import { asksFor, coreRule, detailText } from './details.js';
 import { familyZoneNow } from './family-time.js';
 
@@ -43,14 +43,16 @@ export function OlderVersionBanner(props: {
 }) {
   const { version } = props;
   const heading = useRef<HTMLHeadingElement>(null);
+  // Its own, as more than one document may be open beside the list.
+  const headingId = `${useId()}-h`;
   // Said and given the focus as it is shown: the page changed under the person.
   useEffect(() => {
     heading.current?.focus();
   }, [version.id]);
   const when = replacedOn(props.next);
   return (
-    <section className="version-banner" aria-labelledby="version-banner-h">
-      <h2 id="version-banner-h" className="version-banner-h" tabIndex={-1} ref={heading}>
+    <section className="version-banner" aria-labelledby={headingId}>
+      <h2 id={headingId} className="version-banner-h" tabIndex={-1} ref={heading}>
         Version {version.version_no} of {props.of}
         {when ? `: replaced on ${when}` : ''} — not the current version
       </h2>
@@ -74,6 +76,7 @@ export function OlderVersionDetails(props: {
   person: string | null;
 }) {
   const { version, type } = props;
+  const headingId = `${useId()}-h`;
   const d = version.details ?? null;
   const word = (key: CoreField, fallback: string) => coreRule(type, key).label ?? fallback;
   const typeFields = (type?.fields ?? []).filter(asksFor);
@@ -86,8 +89,8 @@ export function OlderVersionDetails(props: {
     ([key, value]) => value !== null && value !== '' && !typeFields.some((f) => f.key === key),
   );
   return (
-    <section aria-labelledby="version-details-h" className="version-details">
-      <h2 id="version-details-h" className="section-h">
+    <section aria-labelledby={headingId} className="version-details">
+      <h2 id={headingId} className="section-h">
         This version’s details
       </h2>
       {!d ? (

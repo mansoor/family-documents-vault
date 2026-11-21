@@ -6,6 +6,24 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.9.0-dev.84] - 2026-11-21 — documents open beside the list
+
+### Added
+
+- **A document opens beside the list.** Clicking a document in the Documents table or the cabinet, in Home's lists or in a person's documents opens it on the right, over the list, which stays where it was. It is the same as the document's page: its details, its pages and every action. Hide details shows its pages across the whole width; every document opens with its details shown. Ctrl+click, ⌘+click or a middle click opens the document's own page in a new tab instead, and Shift+click in a new window, as a link would; Alt+click is the same as a plain click. Open as a page, or Edit, takes it from beside the list to its own page. Links inside text — Activity, Emergency, uploads, "replaced by", Notes — and a document just added still go to its page.
+- **The tray.** Every open document has an icon at the right edge. Hover over it, or move to it with the keyboard, to see its full name. Click it to bring the document to the front; the small × on its corner (always there on a touch screen), or Delete, closes it without opening it. Close all closes them all.
+- **Minimise.** Minimise, or Esc while you are in the document (or in the tray), puts it in the tray, just as it was: going back to it loads nothing again. × closes it. The focus goes back to the row it was opened from.
+- **The list keeps up.** Saving a document beside the list, or moving it to the Trash there, updates the list under it; a document moved to the Trash leaves the list at once. A document moved to the Trash elsewhere closes when it is opened again.
+- **Up to 10 open at once.** From the 8th, a warning says that many open documents slow the vault down, and the tray's count turns amber. The 11th asks you to close one first, suggesting those freed and then those minimised longest.
+- **Freed after 15 minutes.** A document minimised for 15 minutes is freed to save memory: nothing of it is kept on the page, its icon stays in the tray, and clicking it opens it again.
+- **Kept for this tab.** After a reload the tray comes back, the document in front opens again and the others are freed. They show as "A document" until you choose them: the vault keeps no names for them, and does not look them up just to label the icons. Signing out, or somebody else signing in, forgets them; closing the tab does too.
+- **Narrow windows.** Below 700 px wide the document covers the screen, and nothing behind it can be reached until it is minimised or closed. The tray is an "N open" button with a list, and Back (the browser's, or a phone's) minimises the document rather than leaving the list.
+- **Keys.** Esc minimises; ] and [ (or Alt+↓ and Alt+↑) go to the next and the previous open document; Delete on a tray icon closes it; ? lists the keys. ] [ and ? follow the keyboard shortcuts setting.
+
+### Changed
+
+- A section opened in a document beside the list (History, Share a link…) is remembered apart from the one its page opens with.
+
 ## [0.9.0-dev.83] - 2026-11-21 — a document view ready to open beside the list
 
 ### Changed
