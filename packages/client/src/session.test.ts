@@ -1,8 +1,8 @@
-import type { Tokens } from '@fdv/shared';
+import { APP_UPDATE_REQUIRED_MESSAGE, type Tokens } from '@fdv/shared';
 import { describe, expect, it } from 'vitest';
 import { createApi } from './api.js';
-import { createHttp } from './http.js';
-import { ApiRequestError } from './errors.js';
+import { createHttp, type FetchLike } from './http.js';
+import { ApiRequestError, isAppUpdateRequired, isSessionOver } from './errors.js';
 import {
   SessionCore,
   type CrossContextLock,
@@ -749,5 +749,80 @@ describe('a token that joins a renewal but never waits out a refusal', () => {
         expect([asked, slept]).toEqual([2, [5000]]);
       }
     }
+  });
+});
+
+describe('a vault that asks for the app to be updated (0.9.0-dev.79)', () => {
+  /** The fake vault, but answering 426 app_update_required where `blocked` says. */
+  async function blockingVault() {
+    const { vault, tokens } = await signedInVault();
+    const blocked = { refresh: false, calls: false };
+    const fetch: FetchLike = async (url, init) => {
+      const refresh = url.endsWith('/api/v1/auth/refresh');
+      if (refresh ? blocked.refresh : blocked.calls) {
+        const body = {
+          error: {
+            code: 'app_update_required',
+            message: APP_UPDATE_REQUIRED_MESSAGE,
+            min_client_version: '0.18.0',
+            retriable: false,
+            request_id: 'r',
+          },
+        };
+        return {
+          ok: false,
+          status: 426,
+          headers: { get: () => null },
+          json: async () => body,
+          text: async () => JSON.stringify(body),
+          arrayBuffer: async () => new ArrayBuffer(0),
+        };
+      }
+      return vault.fetch(url, init);
+    };
+    const api = createApi(createHttp({ baseUrl: 'https://vault.example', fetch }));
+    return { api, tokens, blocked };
+  }
+
+  it('a 426 on a renewal keeps the session, stored as it was, and says to update', async () => {
+    const { api, tokens, blocked } = await blockingVault();
+    const mem = memoryStore();
+    let clock = 0;
+    const session = new SessionCore(api, mem.store, { now: () => clock });
+    await session.accept(tokens);
+    clock = 20 * 60 * 1000;
+    blocked.refresh = true;
+
+    expect(await session.token()).toEqual({
+      kind: 'offline',
+      updateRequired: { minClientVersion: '0.18.0' },
+    });
+    expect(session.signedIn).toBe(true);
+    expect(mem.current()?.refresh_token).toBe(tokens.refresh_token);
+    expect(mem.saved).not.toContain(null);
+
+    // Updated (the vault answers again): the same refresh token still works.
+    blocked.refresh = false;
+    expect((await session.token()).kind).toBe('ok');
+  });
+
+  it('a 426 on any other call keeps the session too', async () => {
+    const { api, tokens, blocked } = await blockingVault();
+    const mem = memoryStore();
+    let clock = 0;
+    const session = new SessionCore(api, mem.store, { now: () => clock });
+    await session.accept(tokens);
+    blocked.calls = true;
+
+    const t = await session.token();
+    expect(t.kind).toBe('ok');
+    const err = await api.me(t.kind === 'ok' ? t.token : '').catch((e: unknown) => e);
+    expect(isAppUpdateRequired(err)).toBe(true);
+    expect(isSessionOver(err)).toBe(false);
+    expect(session.signedIn).toBe(true);
+    // And a renewal after it is as ever.
+    clock = 20 * 60 * 1000;
+    expect((await session.token()).kind).toBe('ok');
+    expect(mem.saved).not.toContain(null);
   });
 });

@@ -17,7 +17,7 @@ describe.skipIf(!testAdminUrl())('refresh grace, sliding expiry, and why a sessi
   let admin: ReturnType<typeof createPool>;
   const PHONE = randomUUID();
   const OTHER = randomUUID();
-  const APP_AGENT = 'FamilyDocumentVault/0.1.3 (Android 15; Google Pixel 8a)';
+  const APP_AGENT = 'FamilyDocumentVault/0.19.0 (Android 15; Google Pixel 8a)';
 
   beforeAll(async () => {
     h = await createHarness();

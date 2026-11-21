@@ -1,4 +1,5 @@
-import { ApiRequestError, NetworkError, parseRetryAfter } from './errors.js';
+import { APP_UPDATE_REQUIRED_CODE } from '@fdv/shared';
+import { ApiRequestError, AppUpdateRequired, NetworkError, parseRetryAfter } from './errors.js';
 
 /**
  * The transport, with nothing platform-specific in it.
@@ -196,6 +197,7 @@ export async function toError(res: ResponseLike, now: number): Promise<ApiReques
       request_id?: string;
       detail?: string;
       factor?: boolean;
+      min_client_version?: string;
     };
   } = {};
   try {
@@ -207,6 +209,16 @@ export async function toError(res: ResponseLike, now: number): Promise<ApiReques
   }
   const e = body.error ?? {};
   const retryAfter = parseRetryAfter(res.headers.get('retry-after'), now);
+  // A vault that will not work with this app until it is updated: its own
+  // 426, in its own envelope. A bare 426 (a proxy's) stays http_error, as
+  // any answer that is not the vault's.
+  if (res.status === 426 && code === APP_UPDATE_REQUIRED_CODE) {
+    return new AppUpdateRequired(
+      message,
+      typeof e.min_client_version === 'string' ? e.min_client_version : undefined,
+      e.request_id !== undefined ? { requestId: e.request_id } : {},
+    );
+  }
   return new ApiRequestError(res.status, code, message, e.action, {
     ...(e.reason !== undefined ? { reason: e.reason } : {}),
     // A 429 or a 5xx is worth retrying whatever the envelope says: the

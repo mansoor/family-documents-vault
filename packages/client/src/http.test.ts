@@ -1,7 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import { createApi } from './api.js';
-import { NetworkError, networkDetail } from './errors.js';
-import { createHttp, type RequestInitLike } from './http.js';
+import { APP_UPDATE_REQUIRED_MESSAGE } from '@fdv/shared';
+import {
+  ApiRequestError,
+  AppUpdateRequired,
+  isAppUpdateRequired,
+  isSessionOver,
+  NetworkError,
+  networkDetail,
+} from './errors.js';
+import { createHttp, toError, type FetchLike, type RequestInitLike } from './http.js';
 
 /** A fetch that answers 200 {} and remembers what it was asked. */
 function recorder(answerHeaders: Record<string, string> = {}) {
@@ -152,5 +160,117 @@ describe('a request with no answer keeps what went wrong (CL2)', () => {
     const bare = new NetworkError('offline');
     expect('cause' in bare).toBe(false);
     expect(bare.detail).toBeUndefined();
+  });
+});
+
+describe('a vault that asks for the app to be updated (0.9.0-dev.79)', () => {
+  /** A fetch that answers every request with this status and body. */
+  const answering =
+    (status: number, body: unknown): FetchLike =>
+    async () => ({
+      ok: status < 400,
+      status,
+      headers: { get: () => null },
+      json: async () => {
+        if (typeof body === 'string') throw new SyntaxError('not JSON');
+        return body;
+      },
+      text: async () => (typeof body === 'string' ? body : JSON.stringify(body)),
+      arrayBuffer: async () => new ArrayBuffer(0),
+    });
+
+  it('426 app_update_required is AppUpdateRequired on any call: its words, the minimum, never retried', async () => {
+    const http = createHttp({
+      baseUrl: 'http://vault.test',
+      fetch: answering(426, {
+        error: {
+          code: 'app_update_required',
+          message: APP_UPDATE_REQUIRED_MESSAGE,
+          min_client_version: '0.18.0',
+          retriable: false,
+          request_id: 'r-1',
+        },
+      }),
+    });
+    for (const call of [
+      () => http.request('/api/v1/documents', { token: 't' }),
+      () => http.request('/api/v1/auth/password', { method: 'POST', body: {} }),
+      () => http.raw('/api/v1/versions/v/content', { token: 't' }),
+      () => createApi(http).me('t'),
+    ]) {
+      const err = await call().then(
+        () => null,
+        (e: unknown) => e,
+      );
+      expect(err).toBeInstanceOf(AppUpdateRequired);
+      // Code that catches every refusal still catches it.
+      expect(err).toBeInstanceOf(ApiRequestError);
+      expect(isAppUpdateRequired(err)).toBe(true);
+      expect(isSessionOver(err)).toBe(false);
+      expect(err).toMatchObject({
+        name: 'AppUpdateRequired',
+        status: 426,
+        code: 'app_update_required',
+        message: APP_UPDATE_REQUIRED_MESSAGE,
+        minClientVersion: '0.18.0',
+        retriable: false,
+        requestId: 'r-1',
+      });
+    }
+  });
+
+  it("a bare 426 is no vault's: http_error, as before, never AppUpdateRequired", async () => {
+    for (const body of [
+      'Upgrade Required',
+      { error: { code: 'upgrade_required', message: 'Use TLS 1.3.' } },
+      {},
+    ]) {
+      const http = createHttp({ baseUrl: '', fetch: answering(426, body) });
+      const err = await http.request('/api/v1/me').catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(ApiRequestError);
+      expect(isAppUpdateRequired(err)).toBe(false);
+      expect((err as ApiRequestError).status).toBe(426);
+      if (typeof body === 'string' || !('error' in body)) {
+        expect((err as ApiRequestError).code).toBe('http_error');
+      }
+    }
+  });
+
+  it("a connected app's client maps only the vault's own 426 too", () => {
+    // apps.ts reads every refusal with the same toError: a bare 426 is not
+    // "update the app" for a connected app either.
+    return Promise.all(
+      [
+        ['Upgrade Required', false],
+        [
+          {
+            error: {
+              code: 'app_update_required',
+              message: APP_UPDATE_REQUIRED_MESSAGE,
+              min_client_version: '0.18.0',
+            },
+          },
+          true,
+        ],
+      ].map(async ([body, mapped]) => {
+        const res = await answering(426, body)('http://vault.test/api/v1/apps/me', {
+          method: 'GET',
+          headers: {},
+        });
+        const err = await toError(res, 0);
+        expect(isAppUpdateRequired(err)).toBe(mapped);
+      }),
+    );
+  });
+
+  it('every other refusal is as it was', async () => {
+    const http = createHttp({
+      baseUrl: '',
+      fetch: answering(403, { error: { code: 'forbidden', message: 'No.', retriable: false } }),
+    });
+    const err = await http.request('/api/v1/me').catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ApiRequestError);
+    expect(isAppUpdateRequired(err)).toBe(false);
+    expect(err).toMatchObject({ status: 403, code: 'forbidden' });
   });
 });

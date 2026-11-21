@@ -6,6 +6,18 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.9.0-dev.79] - 2026-11-20 — the phone app and the vault agree on versions
+
+### Added
+
+- **A phone app too old for the vault is told to update.** The vault works with the phone app's 0.18.0 and later, and says so in its capability document. An older app is answered on every call — signing in included — that it is too old for this vault and must be updated (`426 app_update_required`, with the oldest version that works). It stays signed in and keeps what it holds on the phone: it can still read the capability document, renew its session and sign out. Only the phone app is ever told this, by the version it says it is: the web app, browsers, other programs and connected apps are never refused by it.
+- **The client:** `AppUpdateRequired`, thrown when the vault answers `426 app_update_required` to any call, with the vault's words and the oldest app version it works with; `isAppUpdateRequired`. It never ends a session: a renewal answered so is `offline` with `updateRequired`, the session kept. A bare `426` from something in front of the vault stays an ordinary error.
+- **A note a phone app 0.13 to 0.17 was still sending** when the vault told it to update stays on the phone, held for its person, rather than sent again by itself once the app is updated. Nothing is lost; only test phones run those versions.
+
+### Changed
+
+- **Every phone app the vault works with is tested against it.** `apps/api/src/phone-apps.json` lists each phone app released with the vault release its client came from, and the oldest the vault works with — the one place that minimum is written. CI runs the client contract with the client of every app at or above it, each as at its own release, side by side in one run; a server change that breaks one fails until it is fixed, or until the minimum is raised on purpose. The fixed runs of the apps 0.2.0 and 0.2.1 are gone with them.
+
 ## [0.9.0-dev.78] - 2026-11-20 — security and health at a look
 
 ### Added

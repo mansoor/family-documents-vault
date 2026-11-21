@@ -1,3 +1,5 @@
+import { APP_UPDATE_REQUIRED_CODE } from '@fdv/shared';
+
 /**
  * The two ways a request can fail, kept apart because a client has to
  * treat them oppositely: an answer from the server is to be read and
@@ -47,6 +49,33 @@ export class ApiRequestError extends Error {
     this.retryAfterSeconds = extra.retryAfterSeconds;
     this.factor = extra.factor === true;
   }
+}
+
+/**
+ * The vault will not work with this app until it is updated (0.9.0-dev.79):
+ * `426 app_update_required`, which a vault answers a phone app older than
+ * its `min_client_version` on any call but the capability document, a
+ * session's renewal, sign-out and the health checks — in its own envelope
+ * only: a bare 426 is no vault's, and stays `http_error`. An
+ * `ApiRequestError` too, so code that catches those still does; an app
+ * catches this one first and shows its "update the app" screen, not the
+ * call's own error. It never ends a session. `message` is the vault's,
+ * safe to show.
+ */
+export class AppUpdateRequired extends ApiRequestError {
+  /** The oldest app version the vault works with, when it said (it always does). */
+  readonly minClientVersion: string | undefined;
+
+  constructor(message: string, minClientVersion?: string, extra: ApiErrorExtra = {}) {
+    super(426, APP_UPDATE_REQUIRED_CODE, message, undefined, { ...extra, retriable: false });
+    this.name = 'AppUpdateRequired';
+    this.minClientVersion = minClientVersion;
+  }
+}
+
+/** Whether an error is the vault saying this app must be updated first. */
+export function isAppUpdateRequired(err: unknown): err is AppUpdateRequired {
+  return err instanceof AppUpdateRequired;
 }
 
 /**

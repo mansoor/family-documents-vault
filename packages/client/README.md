@@ -22,7 +22,7 @@ It is not on npmjs.com. Each vault release attaches the client of that release t
 ```json
 {
   "dependencies": {
-    "@fdv/client": "https://github.com/mansoor/family-documents-vault/releases/download/v0.9.0-dev.78/fdv-client-0.9.0-dev.78.tgz"
+    "@fdv/client": "https://github.com/mansoor/family-documents-vault/releases/download/v0.9.0-dev.79/fdv-client-0.9.0-dev.79.tgz"
   }
 }
 ```

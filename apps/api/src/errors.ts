@@ -22,6 +22,11 @@ export interface ErrorBody {
      * every other answer that sends Retry-After.
      */
     retry_after?: number;
+    /**
+     * The oldest phone app this vault works with (`app_update_required`,
+     * 0.9.0-dev.79), as the capability document says it.
+     */
+    min_client_version?: string;
   };
 }
 
@@ -40,6 +45,8 @@ export class ApiError extends Error {
       reason?: string;
       /** A step-up only a passkey or a code answers (0.9.0). */
       factor?: boolean;
+      /** The oldest phone app this vault works with (app_update_required). */
+      minClientVersion?: string;
     } = {},
   ) {
     super(message);
@@ -58,6 +65,9 @@ export class ApiError extends Error {
     if (this.options.reason !== undefined) error.reason = this.options.reason;
     if (this.options.factor === true) error.factor = true;
     if (this.options.retryAfter !== undefined) error.retry_after = this.options.retryAfter;
+    if (this.options.minClientVersion !== undefined) {
+      error.min_client_version = this.options.minClientVersion;
+    }
     return { error };
   }
 }

@@ -836,10 +836,26 @@ export interface Deprecation {
   removed_in: string;
 }
 
+/**
+ * A phone app older than a vault's `min_client_version` (0.9.0-dev.79):
+ * `426`, with `error.code` this and `error.min_client_version`, on any API
+ * call but the capability document, a session's renewal, sign-out and the
+ * health checks. The app is to be updated; nothing else it shows will work
+ * until then. Its session stays: this is about the app, not the person.
+ */
+export const APP_UPDATE_REQUIRED_CODE = 'app_update_required';
+export const APP_UPDATE_REQUIRED_MESSAGE =
+  'The app on this phone is too old for this vault. Update the app to keep using it.';
+
 export interface Capabilities {
   product: typeof PRODUCT_ID;
   server_version: string;
   api_version: typeof API_VERSION;
+  /**
+   * The oldest phone app this vault works with (its version, as its
+   * User-Agent says it). A phone app checks it on every look at this
+   * document (`negotiate`, `client_too_old`).
+   */
   min_client_version: string;
   edition: Edition;
   protection_mode: ProtectionMode;

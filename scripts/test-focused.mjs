@@ -293,7 +293,8 @@ if (!full && !flag('--with-slow')) {
 }
 
 const touches = (re) => changed.some((f) => re.test(f) && !isTest(f));
-const olderClient = full || touches(/^(packages\/(client|shared)|apps\/api)\//);
+const olderClient =
+  full || touches(/^(packages\/(client|shared)|apps\/api)\/|^scripts\/older-client\.mjs$/);
 const packClient = full || touches(/^packages\/(client|shared)\//);
 
 console.log(`Changed since ${base} (${mergeBase.slice(0, 7)}): ${changed.length} files`);
@@ -332,10 +333,9 @@ else if (picked.size) {
     run(`pnpm exec vitest run --maxWorkers=3 ${quote(list.slice(i, i + 120))}`);
 } else console.log('\nNo tests reach this change.');
 
-if (olderClient) {
-  run('pnpm test:older-client');
-  run('pnpm test:older-client', { OLDER_CLIENT_REF: 'v0.5.11' });
-}
+// The client of every phone app the vault still works with, each as at its
+// tag (apps/api/src/phone-apps.json): one run, its projects side by side.
+if (olderClient) run('pnpm test:older-client --all-supported');
 if (packClient) {
   run('pnpm client:pack');
   run('pnpm client:smoke npm pnpm');

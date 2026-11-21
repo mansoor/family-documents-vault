@@ -114,7 +114,7 @@ describe.skipIf(!testAdminUrl())('Essentials a phone may keep', () => {
       url: '/api/v1/auth/password',
       headers: {
         'x-fdv-installation': randomUUID(),
-        'user-agent': 'FamilyDocumentVault/0.1.5 (Android 15; Google Pixel 8a)',
+        'user-agent': 'FamilyDocumentVault/0.19.0 (Android 15; Google Pixel 8a)',
       },
       payload: { email, password },
     });

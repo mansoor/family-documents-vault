@@ -96,7 +96,7 @@ describe.skipIf(!testAdminUrl())('new-device alerts', () => {
 
   it('a phone signing in for the first time says so, naming the phone', async () => {
     const before = alerts().length;
-    expect((await signInApp(PHONE, '0.1.2')).statusCode).toBe(200);
+    expect((await signInApp(PHONE, '0.19.0')).statusCode).toBe(200);
     const told = alerts();
     expect(told).toHaveLength(before + 1);
     expect(told.at(-1)?.body).toMatch(/^Somebody signed in with the app on a Google Pixel 8a/);
@@ -104,13 +104,13 @@ describe.skipIf(!testAdminUrl())('new-device alerts', () => {
 
   it('an app update on the same installation raises no alert', async () => {
     const before = alerts().length;
-    expect((await signInApp(PHONE, '0.1.3')).statusCode).toBe(200);
+    expect((await signInApp(PHONE, '0.19.1')).statusCode).toBe(200);
     expect(alerts()).toHaveLength(before);
   });
 
   it('a second phone with the same app version raises one', async () => {
     const before = alerts().length;
-    expect((await signInApp(OTHER_PHONE, '0.1.3')).statusCode).toBe(200);
+    expect((await signInApp(OTHER_PHONE, '0.19.1')).statusCode).toBe(200);
     expect(alerts()).toHaveLength(before + 1);
   });
 

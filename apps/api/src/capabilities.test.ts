@@ -5,6 +5,7 @@ import { testAdminUrl } from '@fdv/db/testing';
 import { meetsMinimum, parseVersion, type Capabilities } from '@fdv/shared';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { buildCapabilities, MIN_CLIENT_VERSION } from './capabilities.js';
+import { PHONE_APPS } from './phone-apps.js';
 import { createHarness, type Harness } from './test-harness.js';
 import { serverVersion } from './version.js';
 
@@ -291,8 +292,10 @@ describe('buildCapabilities', () => {
     expect(set.limits.app_daily_bytes_max).toBe(10 * 1024 ** 2);
   });
 
-  it('the minimum client version is a valid semver the server itself satisfies', () => {
-    expect(meetsMinimum(config.serverVersion, MIN_CLIENT_VERSION)).toBe(true);
+  it('the minimum client version is the oldest phone app the vault works with (phone-apps.json)', () => {
+    expect(() => parseVersion(MIN_CLIENT_VERSION)).not.toThrow();
+    expect(buildCapabilities(config).min_client_version).toBe(MIN_CLIENT_VERSION);
+    expect(PHONE_APPS.map((a) => a.app)).toContain(MIN_CLIENT_VERSION);
   });
 });
 

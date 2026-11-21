@@ -389,10 +389,11 @@ last used, 180 days at most (see [Sign-in and sessions](#sign-in-and-sessions)).
 
 **Which versions work together.** The phone app needs a vault of **0.4.10 or later**;
 an older one is told so in both version numbers, with the way to [upgrade](#upgrading).
-The vault works with every version of the app released so far: a newer vault adds to
-what it answers and never takes away within the deprecation window (see
-[`docs/api-changelog.md`](docs/api-changelog.md)), so an app that has not been updated
-keeps working, without what came after it. The app's 0.3.x adds **Send to my Inbox**
+The vault works with the app's **0.18.0 and later**, and says so to the app: an app older
+than that is told, on whatever it asks, that it must be updated. It stays signed in and
+keeps what it holds on the phone, and signing out still works. Within that range a newer vault adds to what it answers and never takes away
+within the deprecation window (see [`docs/api-changelog.md`](docs/api-changelog.md)), so
+an app that has not been updated keeps working, without what came after it. The app's 0.3.x adds **Send to my Inbox**
 (a scan goes to your uploads, for the vault to read and you to accept on the web), which
 needs a vault of **0.7.0 or later**; with an older vault, 0.3.x is as 0.2.3 was. The
 uploader for computers (below) needs **0.8.0**.
@@ -829,7 +830,7 @@ npm or pnpm and no token (from CI too):
 ```json
 {
   "dependencies": {
-    "@fdv/client": "https://github.com/mansoor/family-documents-vault/releases/download/v0.9.0-dev.78/fdv-client-0.9.0-dev.78.tgz"
+    "@fdv/client": "https://github.com/mansoor/family-documents-vault/releases/download/v0.9.0-dev.79/fdv-client-0.9.0-dev.79.tgz"
   }
 }
 ```
@@ -2666,6 +2667,16 @@ docs/              public operational docs (API changelog)
 The three images are built from the one `Dockerfile` (targets `api`, `worker`, `web`).
 
 Every change goes through a pull request with green CI. Commits follow [Conventional Commits](https://www.conventionalcommits.org/).
+
+**Phone apps the vault works with.** [`apps/api/src/phone-apps.json`](apps/api/src/phone-apps.json)
+lists every phone app released, with the vault tag whose `packages/client` it carries, and
+`min_client_version`, the oldest app this vault works with: the one place either is
+written. Each phone release adds its row there, with the exact tag its `vendor/fdv` submodule
+points at. CI (and `node scripts/test-focused.mjs`)
+runs the client contract with the client of every app at or above the minimum, each as at
+its tag (`pnpm test:older-client --all-supported`): a server change that breaks a
+supported app fails until it is fixed, or until the minimum is raised on purpose — every
+app below it is then told to update (`426 app_update_required`) on its next call.
 
 ## Licence
 
