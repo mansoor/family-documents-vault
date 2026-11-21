@@ -133,6 +133,8 @@ services:
       FDV_BACKUP_RETAIN_DAYS: ${FDV_BACKUP_RETAIN_DAYS:-30}
       # Days without an off-site copy before the owners are told (2: nightly backups).
       FDV_BACKUP_OFFSITE_LATE_DAYS: ${FDV_BACKUP_OFFSITE_LATE_DAYS:-2}
+      # Days without a backup before Security & health says so (2: nightly backups).
+      FDV_BACKUP_LATE_DAYS: ${FDV_BACKUP_LATE_DAYS:-2}
       FDV_RATE_LIMIT_PER_MINUTE: ${FDV_RATE_LIMIT_PER_MINUTE:-}
       # Whether owners may set the AI reader in Settings → Reading (on unless
       # off), and the ports it may be on. The worker has the same.
@@ -191,6 +193,8 @@ services:
       FDV_BACKUP_RETAIN_DAYS: ${FDV_BACKUP_RETAIN_DAYS:-30}
       # Days without an off-site copy before the owners are told (2: nightly backups).
       FDV_BACKUP_OFFSITE_LATE_DAYS: ${FDV_BACKUP_OFFSITE_LATE_DAYS:-2}
+      # Days without a backup before Security & health says so (2: nightly backups).
+      FDV_BACKUP_LATE_DAYS: ${FDV_BACKUP_LATE_DAYS:-2}
       # The scanner folder (README, "Scanning straight into the vault"): set
       # FDV_WATCH_DIR=/watch in .env and uncomment the mount below. The
       # largest file it takes is the same as for an upload.

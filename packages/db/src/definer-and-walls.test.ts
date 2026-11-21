@@ -55,7 +55,8 @@ describe.skipIf(!testAdminUrl())('the schema as the migrations leave it', () => 
       `select f as fn, has_function_privilege('fdv_app', f, 'execute') as app,
               has_function_privilege('public', f, 'execute') as public_may
          from unnest(array['setup_complete()', 'vault_display_name()',
-                           'invitation_household(bytea)', 'share_link_household(bytea)']) f`,
+                           'invitation_household(bytea)', 'share_link_household(bytea)',
+                           'app_is_installation_household()']) f`,
     );
     expect(rows).toEqual(rows.map((r) => ({ fn: r.fn, app: true, public_may: false })));
     // And a member of the application role can ask, as the API does.

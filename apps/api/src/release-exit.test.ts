@@ -13,11 +13,20 @@ import {
 import { createPool, withScope, withSystem } from '@fdv/db';
 import { testAdminUrl } from '@fdv/db/testing';
 import type { DocumentView, Tokens } from '@fdv/shared';
+import argon2 from 'argon2';
 import type { LightMyRequestResponse } from 'fastify';
 import FormData from 'form-data';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { deviceKeyHash } from './devices/service.js';
-import { alertsSent, createHarness, mailSent, TEST_MASTER, type Harness } from './test-harness.js';
+import {
+  alertsSent,
+  appKeyFor,
+  basicFor,
+  createHarness,
+  mailSent,
+  TEST_MASTER,
+  type Harness,
+} from './test-harness.js';
 
 /**
  * The release's exit test: every door, attacked together. Written for the
@@ -194,6 +203,10 @@ type Who =
 /** The attackers. */
 type Attacker =
   | 'restrictedViewer'
+  /** A viewer who sees every family document (5.34): never an Only me or Adults only paper. */
+  | 'unrestrictedViewer'
+  /** A teen: the family's papers, never an Only me or Adults only one, nor an adult's powers. */
+  | 'teen'
   | 'guest'
   | 'endedGuest'
   | 'guestWithNoRow'
@@ -201,7 +214,9 @@ type Attacker =
   | 'uploadSender'
   | 'lockedMember'
   | 'passwordOnlyOwner'
-  | 'otherAdult';
+  | 'otherAdult'
+  /** The owner of another household on the same server, with two-step sign-in (0.9.0-dev.78). */
+  | 'otherHouseholdOwner';
 
 /** What a route's parameter names: the kind of thing, and so whose it is. */
 type Kind =
@@ -867,7 +882,15 @@ const RULES: Record<string, Rule> = {
     who: 'signedIn',
     theirs: Object.fromEntries(
       (
-        ['restrictedViewer', 'guest', 'guestWithNoRow', 'otherAdult', 'passwordOnlyOwner'] as const
+        [
+          'restrictedViewer',
+          'unrestrictedViewer',
+          'teen',
+          'guest',
+          'guestWithNoRow',
+          'otherAdult',
+          'passwordOnlyOwner',
+        ] as const
       ).map((a) => [a, 'only their own pin row is taken away; 204 says nothing (C2 review)']),
     ),
   },
@@ -1589,6 +1612,9 @@ const RULES: Record<string, Rule> = {
   'PUT /api/v1/backups/offsite/enabled': { who: 'ownerPower', body: () => ({ enabled: true }) },
   'DELETE /api/v1/backups/offsite': { who: 'ownerPower' },
   'POST /api/v1/backups/offsite/test': { who: 'owners', body: () => ({}) },
+  // Settings → Security & health (0.9.0-dev.78): the owners' to read, with
+  // any credential — it changes nothing.
+  'GET /api/v1/household/health': { who: 'owners' },
 };
 
 /** Whether a role is among those a rule is for. */
@@ -1626,6 +1652,8 @@ describe.skipIf(!testAdminUrl())('the release exit (Phase 5, and Phase 6 for 0.7
   let gil: Tokens;
   let ned: Tokens;
   let tariq: Tokens;
+  /** A viewer who sees every family document (5.34): no restriction of hers. */
+  let una: Tokens;
 
   /** What each thing planted is called. */
   const doc: Record<string, { id: string; version: string; title: string; marker: string }> = {};
@@ -2475,6 +2503,9 @@ describe.skipIf(!testAdminUrl())('the release exit (Phase 5, and Phase 6 for 0.7
         })
         .execute(),
     );
+    // Una, a viewer who sees every family document (5.34): no restriction.
+    await h.decider(olivia);
+    una = await h.join(olivia, { name: 'Una', email: 'una-541@example.test', role: 'viewer' });
   }, 180_000);
 
   /** Answers to many at once, each from an address of its own. */
@@ -3902,6 +3933,503 @@ describe.skipIf(!testAdminUrl())('the release exit (Phase 5, and Phase 6 for 0.7
     expect(unknown, 'parameters of no known kind').toEqual([]);
   });
 
+  // ----------------- another household, keys and tokens that ended, OPTIONS
+
+  /** Everything planted of the Khan family's: nothing of it reaches anybody outside it. */
+  const everything = (): string[] =>
+    [
+      ...new Set([
+        ...attackerList().flatMap((a) => a.forbidden),
+        ...Object.keys(doc).flatMap((n) => secretsOf(n)),
+        LOCATION,
+        SOURCE_FOLDER,
+        ATTORNEY_CHECKLIST,
+        'The Khan family',
+      ]),
+    ].filter((x) => x);
+
+  /** What an answer carries of it: in its body, or in any of its headers (a file's name, say). */
+  const leaksIn = (r: LightMyRequestResponse, forbidden: string[]) => {
+    const raw = `${r.rawPayload.toString('latin1')}
+${JSON.stringify(r.headers)}`;
+    return forbidden.filter((x) => raw.includes(x));
+  };
+
+  /**
+   * A second household on the same server (0.9.0-dev.78), made as setup
+   * makes one — its keys, its owner's key — and its owner signed in with a
+   * password and given two-step sign-in, so every owner power is hers to
+   * try, in her own household.
+   */
+  async function neighbour(): Promise<Tokens> {
+    const hid = randomUUID();
+    const email = 'nadia-541@example.test';
+    const password = 'the neighbours’ own long password';
+    const keys = new ScopeKeys(new EnvKeyProvider(TEST_MASTER));
+    await admin.query(`insert into household (id, name) values ($1, 'The neighbours')`, [hid]);
+    await admin.query('insert into household_profile (household_id) values ($1)', [hid]);
+    const m = (
+      await admin.query<{ id: string }>(
+        `insert into member (household_id, display_name) values ($1, 'Nadia') returning id`,
+        [hid],
+      )
+    ).rows[0]?.id as string;
+    const a = (
+      await admin.query<{ id: string }>(
+        'insert into account (email, password_hash) values ($1, $2) returning id',
+        [email, await argon2.hash(password)],
+      )
+    ).rows[0]?.id as string;
+    await admin.query(
+      `insert into account_household (account_id, household_id, member_id, role)
+       values ($1, $2, $3, 'owner')`,
+      [a, hid, m],
+    );
+    await withSystem(h.db, hid, async (trx) => {
+      await keys.mintHouseholdKeys(trx, hid);
+      await keys.mintMemberKey(trx, hid, m, password);
+    });
+    const signed = await ok(
+      h.app.inject({
+        method: 'POST',
+        url: '/api/v1/auth/password',
+        payload: { email, password },
+        ...peer(),
+      }),
+    );
+    const t = json<Tokens>(signed);
+    expect(t.household_id).toBe(hid);
+    await h.decider(t);
+    return t;
+  }
+
+  /**
+   * Every row of a household's, as it stands — and its people's accounts:
+   * a change anywhere, a row more or less or a value changed, shows.
+   */
+  const rowsOf = async (hid: string): Promise<Record<string, string>> => {
+    const tables = (
+      await admin.query<{ t: string }>(
+        `select c.table_name as t
+           from information_schema.columns c
+           join information_schema.tables t using (table_schema, table_name)
+          where c.table_schema = 'public' and c.column_name = 'household_id'
+            and t.table_type = 'BASE TABLE'
+          order by 1`,
+      )
+    ).rows.map((r) => r.t);
+    const out: Record<string, string> = {};
+    const hash = async (from: string) => {
+      const r = await admin.query<{ n: number; h: string | null }>(
+        `select count(*)::int as n, md5(string_agg(x::text, ',' order by x::text)) as h ${from}`,
+        [hid],
+      );
+      return `${r.rows[0]?.n}:${r.rows[0]?.h ?? ''}`;
+    };
+    for (const t of tables) out[t] = await hash(`from public.${t} x where x.household_id = $1`);
+    out.account = await hash(
+      `from public.account x where x.id in (select account_id from public.account_household where household_id = $1)`,
+    );
+    out.credential = await hash(
+      `from public.credential x where x.account_id in (select account_id from public.account_household where household_id = $1)`,
+    );
+    return out;
+  };
+
+  it("a second household's owner, with every id of this one's, in a route's address, its body or its query, is refused or told nothing (0.9.0-dev.78)", async () => {
+    const nadia = await neighbour();
+    // Real ids of what the victims' kinds name but the fixture had no row
+    // for: a photo, a passkey, an owner change (refused, so it is no live
+    // question for the sweep after).
+    const accountOf = async (member: string) =>
+      (
+        await admin.query<{ account_id: string }>(
+          'select account_id from account_household where member_id = $1',
+          [member],
+        )
+      ).rows[0]?.account_id as string;
+    const photo = (
+      await admin.query<{ id: string }>(
+        `insert into member_photo (household_id, member_id, state, sealed, ready_at)
+         values ($1, $2, 'ready', $3, now()) returning id`,
+        [olivia.household_id, ahmed.member_id, Buffer.alloc(64, 1)],
+      )
+    ).rows[0]?.id as string;
+    const passkey = (
+      await admin.query<{ id: string }>(
+        `insert into credential (account_id, kind, public_key, credential_id, sign_count, label)
+         values ($1, 'passkey', $2, $3, 0, 'Ahmed’s phone') returning id`,
+        [await accountOf(ahmed.member_id), Buffer.alloc(65, 4), Buffer.alloc(16, 5)],
+      )
+    ).rows[0]?.id as string;
+    const ownerChange = (
+      await admin.query<{ id: string }>(
+        `insert into owner_change_request
+           (household_id, target_account, requested_by, action, opens_at, lapses_at, refused_at)
+         values ($1, $2, $3, 'promote', now(), now() + interval '7 days', now()) returning id`,
+        [olivia.household_id, await accountOf(sara.member_id), await accountOf(olivia.member_id)],
+      )
+    ).rows[0]?.id as string;
+    try {
+      const base = attackerList().find((x) => x.name === 'passwordOnlyOwner') as AttackerDef;
+      const names = Object.keys(doc);
+      const victims: Partial<Record<Kind, string[]>> = {
+        ...base.victims,
+        document: [...names.map((n) => (doc[n] as { id: string }).id), ids.ahmedNote as string],
+        version: names.map((n) => (doc[n] as { version: string }).version),
+        collection: [ids.attorney as string, ids.ahmedOnly as string],
+        member: [olivia.member_id, ahmed.member_id, sara.member_id, vera.member_id],
+        photo: [photo],
+        passkey: [passkey],
+        ownerChange: [ownerChange],
+      };
+      const a: AttackerDef = {
+        name: 'otherHouseholdOwner',
+        tokens: nadia,
+        role: 'owner',
+        stale: false,
+        cookies: {},
+        victims,
+        forbidden: everything(),
+      };
+      // A suggestion's key names a kind of advice, and a cabinet's folder
+      // the caller's own: neither is anything of a household's.
+      const household = (k: Kind) =>
+        (OBJECT_KINDS.has(k) || k === 'deviceEndpoint' || k === 'mailInCode') &&
+        k !== 'suggestionKey';
+      const theirIds = new Set(
+        (Object.entries(victims) as Array<[Kind, string[]]>)
+          .filter(([k]) => household(k))
+          .flatMap(([, v]) => v),
+      );
+      /** What "not there" is called: a photo's own word for it, as for any photo not there. */
+      const NOT_THERE = new Set(['not_found', 'no_photo']);
+      /** Routes that answer every id alike, by design, and so tell nothing: and why. */
+      const alike: Record<string, string> = {
+        'DELETE /api/v1/cabinet/folders/:id/pins/:documentId':
+          'only her own pin row is taken away; 204 for any id says nothing (C2 review)',
+      };
+      // The tries: every route whose address takes an id of the Khans', or
+      // whose body or query carries one, with each of the Khans' ids.
+      const tries: Array<{
+        route: Route;
+        key: string;
+        rule: Rule;
+        fill: Fill;
+        body: unknown;
+        query: string | undefined;
+        inAddress: boolean;
+      }> = [];
+      for (const route of routeTable(h)) {
+        const key = `${route.method} ${route.url}`;
+        const rule = RULES[key];
+        if (!rule) continue;
+        const params = paramsOf(route.url);
+        const inAddress = params.some((p) => p.kind !== null && household(p.kind));
+        // A route with no id in its address: tried with every id its body
+        // and query can carry, whatever kind they are.
+        const fills = inAddress
+          ? fillsFor(a, params)
+          : (Object.keys(victims) as Kind[])
+              .filter((k) => household(k))
+              .flatMap((k) =>
+                (victims[k] ?? []).map((_, i) => {
+                  const f = fillsFor(a, params)[0] as Fill;
+                  return { ...f, [k]: (victims[k] as string[])[i] };
+                }),
+              );
+        const seen = new Set<string>();
+        for (const fill of fills) {
+          const queries = rule.queries ? rule.queries(fill) : [rule.query?.(fill)];
+          for (const query of queries) {
+            for (const body of rule.bodies ? rule.bodies(fill) : [rule.body?.(fill)]) {
+              const said = `${JSON.stringify(body ?? null)}?${query ?? ''}`;
+              const carries = [...theirIds].some((id) => said.includes(id));
+              if (!inAddress && (!carries || seen.has(said))) continue;
+              seen.add(said);
+              tries.push({ route, key, rule, fill, body, query, inAddress });
+            }
+          }
+        }
+      }
+      const before = await rowsOf(olivia.household_id);
+      const problems: string[] = [];
+      let tried = 0;
+      const codes = new Set<string>();
+      for (const t of tries) {
+        await h.decider(nadia);
+        const res = await attack(a, t.route, t.rule, t.fill, t.body, t.query);
+        tried += 1;
+        const s = res.statusCode;
+        const code = errorCode(res);
+        if (code) codes.add(code);
+        // Signed in, she is told the thing is not there or not hers: never
+        // more, and never a sign-in's or two-step's question (her session
+        // is good). An id in a body or query may be answered with nothing
+        // of the Khans' (a list filtered to nothing): checked by every row
+        // of theirs, after.
+        const session = !['public', 'link', 'drop', 'device', 'app'].includes(t.rule.who);
+        const refusedRight = session
+          ? (s === 403 && code === 'forbidden') || (s === 404 && NOT_THERE.has(code ?? ''))
+          : s >= 400 && s < 500 && s !== 429;
+        const fine = alike[t.key] || !t.inAddress ? s < 500 && s !== 429 : refusedRight;
+        const asked =
+          code === 'step_up_required' ||
+          code === 'totp_required_for_owner' ||
+          code === 'two_step_required' ||
+          (s === 401 && session);
+        const leaks = leaksIn(res, a.forbidden);
+        if (!fine || asked || leaks.length > 0) {
+          problems.push(
+            `${t.key} ${res.requested} ${t.body === undefined ? '' : JSON.stringify(t.body)} → ${s} ${code ?? ''}${leaks.length ? ` leaks ${leaks.join(', ')}` : ''}`,
+          );
+        }
+      }
+      expect(problems).toEqual([]);
+      // Every try was made, and they were many: the address's and the body's.
+      expect(tried).toBe(tries.length);
+      expect(tries.filter((t) => t.inAddress).length).toBeGreaterThan(300);
+      expect(tries.filter((t) => !t.inAddress).length).toBeGreaterThan(20);
+      // Nothing of the Khans' changed: no row more or less, no value.
+      const after = await rowsOf(olivia.household_id);
+      expect(
+        Object.keys(before).filter((t) => before[t] !== after[t]),
+        'tables of the Khans’ changed',
+      ).toEqual([]);
+
+      // And the control: the same routes, with her own ids, answer her.
+      await h.decider(nadia);
+      const mine = json<{ id: string }>(
+        await ok(
+          send(nadia, 'POST', '/api/v1/documents', {
+            title: 'Nadia’s own note',
+            type_key: 'note',
+            visibility: 'household',
+            owner_member_id: nadia.member_id,
+            notes: 'hers',
+          }),
+          201,
+        ),
+      ).id;
+      const shelf = json<{ id: string }>(
+        await ok(
+          send(nadia, 'POST', '/api/v1/collections', { name: 'Hers', audience: 'adults' }),
+          201,
+        ),
+      ).id;
+      for (const [method, url, body] of [
+        ['GET', `/api/v1/documents/${mine}`],
+        ['PATCH', `/api/v1/documents/${mine}`, { title: 'Nadia’s note, renamed' }],
+        ['GET', `/api/v1/documents/${mine}/collections`],
+        ['GET', `/api/v1/members/${nadia.member_id}/caregivers`],
+        ['GET', `/api/v1/collections/${shelf}`],
+        ['POST', `/api/v1/collections/${shelf}/items`, { document_ids: [mine] }],
+        ['GET', `/api/v1/reminders?state=all&document_id=${mine}`],
+      ] as Array<['GET' | 'PATCH' | 'POST', string, unknown?]>) {
+        await h.decider(nadia);
+        const res = await send(nadia, method, url, body);
+        expect(res.statusCode, `${method} ${url} ${res.body}`).toBeLessThan(300);
+      }
+      // Still herself, signed in: nothing above was a sign-in's question.
+      expect((await send(nadia, 'GET', '/api/v1/me')).statusCode).toBe(200);
+    } finally {
+      await admin.query('delete from member_photo where id = $1', [photo]);
+      await admin.query('delete from credential where id = $1', [passkey]);
+    }
+  }, 900_000);
+
+  it('a revoked or expired app key, an ended access token and a revoked computer are 401 on every route (0.9.0-dev.78)', async () => {
+    // An app acting for Olivia, "Acme Money", and one removed; their keys and tokens.
+    const connect = async (name: string) => {
+      await h.decider(olivia);
+      return json<{ id: string }>(
+        await ok(
+          send(olivia, 'POST', '/api/v1/connected-apps', {
+            name,
+            member_id: olivia.member_id,
+            allowed_kinds: ['bank_statement'],
+          }),
+          201,
+        ),
+      ).id;
+    };
+    const keyOf = async (app: string) => {
+      await h.decider(olivia);
+      return appKeyFor(h, olivia, { id: app, scopes: ['documents.send'] });
+    };
+    // From this machine, as the token route asks of a plain-http vault.
+    const tokenOf = async (k: { clientId: string; secret: string }) =>
+      json<{ access_token: string }>(
+        await ok(
+          h.app.inject({
+            method: 'POST',
+            url: '/api/v1/apps/token',
+            headers: { ...basicFor(k), 'content-type': 'application/x-www-form-urlencoded' },
+            payload: 'grant_type=client_credentials',
+            remoteAddress: '127.0.0.1',
+          }),
+        ),
+      ).access_token;
+    const acme = await connect('Acme Money');
+    // A token past its fifteen minutes.
+    const kA = await keyOf(acme);
+    const tA = await tokenOf(kA);
+    await admin.query(
+      `update connected_app_token set created_at = now() - interval '20 minutes',
+              expires_at = now() - interval '5 minutes'
+        where key_id = $1`,
+      [kA.keyId],
+    );
+    // A key revoked, and the token it gave.
+    const kB = await keyOf(acme);
+    const tB = await tokenOf(kB);
+    await h.decider(olivia);
+    await ok(send(olivia, 'DELETE', `/api/v1/connected-apps/${acme}/keys/${kB.keyId}`), 204);
+    // A key past its end, and the token it gave before.
+    const kC = await keyOf(acme);
+    const tC = await tokenOf(kC);
+    // Past its end, as the database's clock would have it (its guard lets
+    // nothing but a key's use and revoking change, so round it, as
+    // apps.test.ts does).
+    const c = await admin.connect();
+    try {
+      await c.query('begin');
+      await c.query('set local session_replication_role = replica');
+      await c.query(
+        `update connected_app_key set created_at = now() - interval '2 days',
+                expires_at = now() - interval '1 day'
+          where id = $1`,
+        [kC.keyId],
+      );
+      await c.query('commit');
+    } finally {
+      c.release();
+    }
+    // An app removed: its key, and its token.
+    const gone = await connect('Acme Money (old)');
+    const kD = await keyOf(gone);
+    const tD = await tokenOf(kD);
+    await h.decider(olivia);
+    await ok(send(olivia, 'DELETE', `/api/v1/connected-apps/${gone}`), 204);
+    // A computer of Olivia's, revoked.
+    await fresh(olivia);
+    const pairing = json<{ code: string }>(
+      await ok(send(olivia, 'POST', '/api/v1/device-pairings', {}), 201),
+    );
+    const computer = json<{ device_id: string; key: string }>(
+      await ok(
+        h.app.inject({
+          method: 'POST',
+          url: '/api/v1/devices/pair',
+          payload: { code: pairing.code, device_name: 'olivia-old-laptop', platform: 'windows' },
+          ...peer(),
+        }),
+        201,
+      ),
+    );
+    await fresh(olivia);
+    await ok(send(olivia, 'DELETE', `/api/v1/paired-devices/${computer.device_id}`), 204);
+
+    const ended: Array<[string, string]> = [
+      ['a revoked key', basicFor(kB).authorization],
+      ['an expired key', basicFor(kC).authorization],
+      ['a removed app’s key', basicFor(kD).authorization],
+      ['a token past its fifteen minutes', `Bearer ${tA}`],
+      ['a revoked key’s token', `Bearer ${tB}`],
+      ['an expired key’s token', `Bearer ${tC}`],
+      ['a removed app’s token', `Bearer ${tD}`],
+      ['a revoked computer', `Device ${computer.device_id}.${computer.key}`],
+    ];
+    const victim = attackerList().find((x) => x.name === 'passwordOnlyOwner') as AttackerDef;
+    const forbidden = everything();
+    const problems: string[] = [];
+    let tried = 0;
+    for (const route of routeTable(h)) {
+      const rule = RULES[`${route.method} ${route.url}`];
+      if (!rule) continue;
+      const fill = fillsFor(victim, paramsOf(route.url), rule)[0] as Fill;
+      const body = rule.bodies ? rule.bodies(fill)[0] : rule.body?.(fill);
+      const url = urlOf(route, fill, rule.queries ? rule.queries(fill)[0] : rule.query?.(fill));
+      for (const [what, authorization] of ended) {
+        const res = await h.app.inject({
+          method: route.method as 'GET',
+          url,
+          headers: { authorization },
+          ...(body === undefined || rule.file ? {} : { payload: body as never }),
+          ...peer(),
+        });
+        tried += 1;
+        const leaks = leaksIn(res, forbidden);
+        if (res.statusCode !== 401 || leaks.length > 0) {
+          problems.push(
+            `${what}: ${route.method} ${route.url} → ${res.statusCode} ${errorCode(res) ?? ''}${leaks.length ? ` leaks ${leaks.join(', ')}` : ''}`,
+          );
+        }
+      }
+    }
+    expect(problems).toEqual([]);
+    expect(tried).toBe(routeTable(h).length * ended.length);
+  }, 600_000);
+
+  it('OPTIONS answers nothing on any route, to anybody; HEAD answers each caller no more than GET (0.9.0-dev.78)', async () => {
+    const victim = attackerList().find((x) => x.name === 'passwordOnlyOwner') as AttackerDef;
+    const forbidden = everything();
+    const problems: string[] = [];
+    const say = (what: string, r: LightMyRequestResponse, leaks: string[]) =>
+      `${what} → ${r.statusCode}${leaks.length ? ` leaks ${leaks.join(', ')}` : ''}`;
+    await fresh(olivia);
+    for (const route of routeTable(h)) {
+      const fill = fillsFor(victim, paramsOf(route.url))[0] as Fill;
+      const url = urlOf(route, fill);
+      // Olivia's real ids, asked with nothing, and with her own sign-in.
+      for (const headers of [{}, h.as(olivia)]) {
+        const res = await h.app.inject({ method: 'OPTIONS', url, headers, ...peer() });
+        const leaks = leaksIn(res, forbidden);
+        const cors = Object.keys(res.headers).filter((k) => k.startsWith('access-control-'));
+        if (res.statusCode !== 404 || leaks.length > 0 || cors.length > 0) {
+          problems.push(`${say(`OPTIONS ${route.url}`, res, leaks)} ${cors.join(', ')}`);
+        }
+      }
+    }
+    // HEAD runs GET's handler: as GET answers each caller — nobody, and
+    // each attacker with its own credential and victims — with no body, and
+    // nothing planted in its headers either; or is no route at all (an
+    // app's routes have no HEAD, so a HEAD of a download is never counted).
+    // A link's and a request's own routes are left to their holders' GET
+    // alone: each GET there counts an open or a download.
+    const callers: Array<AttackerDef | null> = [null, ...attackerList()];
+    for (const a of callers) {
+      for (const t of [...attackerList().map((x) => x.tokens), olivia]) if (t) await fresh(t);
+      for (const route of routeTable(h).filter((r) => r.method === 'GET')) {
+        const rule = RULES[`GET ${route.url}`];
+        if (!rule) continue;
+        if (
+          a &&
+          Object.keys(a.cookies).length > 0 &&
+          (rule.who === 'link' || rule.who === 'drop')
+        ) {
+          continue;
+        }
+        const fill = fillsFor(a ?? victim, paramsOf(route.url), rule)[0] as Fill;
+        const url = urlOf(route, fill, rule.queries ? rule.queries(fill)[0] : rule.query?.(fill));
+        const as = {
+          headers: a?.tokens ? h.as(a.tokens) : {},
+          cookies: a?.cookies ?? {},
+        };
+        const get = await h.app.inject({ method: 'GET', url, ...as, ...peer() });
+        const head = await h.app.inject({ method: 'HEAD', url, ...as, ...peer() });
+        const noHead = head.statusCode === 404 && route.url.startsWith('/api/v1/apps/');
+        const leaks = leaksIn(head, a?.forbidden ?? forbidden);
+        const who = a?.name ?? 'nobody';
+        if (leaks.length > 0) problems.push(say(`${who} HEAD ${route.url}`, head, leaks));
+        if (!noHead && (head.statusCode !== get.statusCode || head.rawPayload.length > 0)) {
+          problems.push(`${who} HEAD ${route.url} → ${head.statusCode}, GET ${get.statusCode}`);
+        }
+      }
+    }
+    expect(problems).toEqual([]);
+  }, 900_000);
+
   it('every attacker gets only what its rules allow, on every route', async () => {
     const attackers = attackerList();
     const routes = routeTable(h).filter((r) => `${r.method} ${r.url}` in RULES);
@@ -4382,8 +4910,37 @@ describe.skipIf(!testAdminUrl())('the release exit (Phase 5, and Phase 6 for 0.7
       },
       forbidden: [...base, ...outsideGrant, ...computer, LOCATION, ...checklists],
     });
+    /** An Adults only paper, and the attorney's collection (adults): never a teen's or a viewer's. */
+    const adultsOnly = [...secretsOf('will'), ids.attorney as string, 'For the attorney'];
     const list: AttackerDef[] = [
       viewerLike('restrictedViewer', vera),
+      {
+        // Sees every family document (5.34): the deed and Sara's insurance
+        // are hers to read, so not her victims; an Only me or Adults only
+        // paper, where it is kept and the attorney's checklist never are.
+        ...viewerLike('unrestrictedViewer', una),
+        victims: {
+          ...common,
+          ...all(['ahmedPrivate', 'oliviaPrivate', 'will']),
+          collection: [ids.attorney as string, ids.ahmedOnly as string],
+        },
+        forbidden: [...base, ...adultsOnly, ...computer, LOCATION, ...checklists],
+      },
+      {
+        // A teen (5.32): the family's papers and where they are kept, never
+        // an Only me or Adults only one, nor anybody's computer or app.
+        name: 'teen',
+        tokens: tariq,
+        role: 'teen',
+        stale: false,
+        cookies: {},
+        victims: {
+          ...common,
+          ...all(['ahmedPrivate', 'oliviaPrivate', 'will']),
+          collection: [ids.ahmedOnly as string, ids.attorney as string],
+        },
+        forbidden: [...base, ...adultsOnly, ...computer, ...checklists],
+      },
       viewerLike('guest', jane),
       viewerLike('endedGuest', gil, true),
       {
@@ -4534,15 +5091,7 @@ describe.skipIf(!testAdminUrl())('the release exit (Phase 5, and Phase 6 for 0.7
     body: unknown,
     query: string | undefined,
   ) {
-    const url =
-      route.url
-        .split('/')
-        .map((seg, i, all) => {
-          if (!seg.startsWith(':')) return seg;
-          const kind = kindOf(all[i - 1] ?? '', seg);
-          return encodeURIComponent(kind ? fill[kind] : 'x');
-        })
-        .join('/') + (query ? `?${query}` : '');
+    const url = urlOf(route, fill, query);
     const headers: Record<string, string> = {};
     if (a.tokens) headers.authorization = `Bearer ${a.tokens.access_token}`;
     let payload: unknown;
@@ -4769,6 +5318,29 @@ const PARAM_KIND_DEFAULTS: Record<Kind, true> = {
   settingsCheck: true,
   cabinetFolder: true,
 };
+
+/** A route's address, its parameters filled. */
+function urlOf(route: Route, fill: Fill, query?: string): string {
+  return (
+    route.url
+      .split('/')
+      .map((seg, i, all) => {
+        if (!seg.startsWith(':')) return seg;
+        const kind = kindOf(all[i - 1] ?? '', seg);
+        return encodeURIComponent(kind ? fill[kind] : 'x');
+      })
+      .join('/') + (query ? `?${query}` : '')
+  );
+}
+
+/** An answer's error code, whatever its body. */
+function errorCode(r: LightMyRequestResponse): string | undefined {
+  try {
+    return (JSON.parse(r.body) as { error?: { code?: string } }).error?.code;
+  } catch {
+    return undefined;
+  }
+}
 
 function kindOf(before: string, param: string): Kind | null {
   if (param === ':n') return 'page';

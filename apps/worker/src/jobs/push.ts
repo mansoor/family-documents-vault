@@ -12,8 +12,8 @@ import {
   type PushMessage,
   type PushType,
 } from '@fdv/shared';
-import webpush from 'web-push';
 import type { VapidKeys } from './notify.js';
+import { webPush } from './web-push.js';
 
 /**
  * Sending one push (4.13), to a browser (Web Push) or a phone (UnifiedPush)
@@ -165,7 +165,7 @@ export async function deliver(
     return 'refused';
   }
   try {
-    await webpush.sendNotification(
+    await webPush.sendNotification(
       { endpoint: device.endpoint, keys: { p256dh: device.p256dh, auth: device.auth } },
       payload,
       {

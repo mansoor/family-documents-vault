@@ -410,6 +410,11 @@ begin
     grant execute on function public.setup_complete() to fdv_app;
     grant execute on function public.vault_display_name() to fdv_app;
   end if;
+  -- Whether the household acting is the installation's own (0125): the
+  -- server's backups and restore drill are its to see in Security & health.
+  if to_regprocedure('public.app_is_installation_household()') is not null then
+    grant execute on function public.app_is_installation_household() to fdv_app;
+  end if;
   -- No function that runs with the owner's rights is anybody's by default
   -- (0124): a backup loads without privileges, which gives every function
   -- back to PUBLIC. Those fdv_app calls are granted to it above; trigger

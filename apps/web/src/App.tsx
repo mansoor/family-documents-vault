@@ -46,6 +46,7 @@ import { ScannerScreen } from './watch-folder.js';
 import { EmailInAndOutScreen, ReadingAndCheckScreen } from './screens/ServerSettings.js';
 import { TextMessagesScreen } from './text-messages.js';
 import { BackupsScreen } from './backups.js';
+import { SecurityHealthScreen } from './security-health.js';
 import { PersonDocumentsScreen, ProfileScreen } from './screens/Person.js';
 import { PeopleScreen, RemindersScreen, SearchScreen } from './screens/SearchPeople.js';
 import { AccountScreen, DataScreen, SettingsScreen, StorageScreen } from './screens/Settings.js';
@@ -496,6 +497,14 @@ export function App() {
                   element={
                     <Only rule={SCREEN_RULES.backups}>
                       <BackupsScreen />
+                    </Only>
+                  }
+                />
+                <Route
+                  path="health"
+                  element={
+                    <Only rule={SCREEN_RULES.health}>
+                      <SecurityHealthScreen />
                     </Only>
                   }
                 />

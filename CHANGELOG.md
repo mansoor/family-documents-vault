@@ -6,6 +6,29 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.9.0-dev.78] - 2026-11-20 — security and health at a look
+
+### Added
+
+- **Settings → Server and reading → Security & health**, an owner's: the vault's state at a look, each line fine, a gentle note, or a problem said in plain words with where to fix it. The last backup (late after two days with none, `FDV_BACKUP_LATE_DAYS`, counted from the day the vault was set up until its first; or the last one didn't finish after its retries), and its copy off-site when one is set up (late after `FDV_BACKUP_OFFSITE_LATE_DAYS`, as Settings → Backups says it); the last restore drill (a note, not a problem, when none has been run or the last is over a month old; a problem when it failed); the nightly check of the activity log (not checked yet says nothing wrong); failed sign-ins in the last day (five or more is a problem: a few are mistyped passwords); and sign-ins used from two places in the last day, which the vault signed out. Nothing new is collected about anybody: the worker writes a line to the activity log as it makes a backup (or one fails), checks the log, and as the restore drill is run — lines nobody's Activity shows — and the rest was already there. The owners are emailed once when the backups stop or the activity log fails its check, and not again until it clears. The server's lines — backups, the copy, the drill, and their emails — are the household's that set the vault up; on a server with more than one household the others' cards leave them out. On the hosted edition, whose operator keeps the backups, the card leaves them out too, and says to contact whoever runs the vault rather than restore a backup or run a command.
+- **`FDV_BACKUP_LATE_DAYS`** (2): how many days without a backup is late, for the card and the owners' email; API and worker. Raise it if `FDV_BACKUP_CRON` backs up less often than nightly.
+
+### Security
+
+- **The route sweep tries more callers.** Another household's owner on the same server, with two-step sign-in, asks every route that takes an id with this household's ids — in its address, and in its body or query (a document's owner, the documents of a ZIP, a reminder's document, a push address, a code to confirm an address, a cabinet, an app's person and the rest) — and is answered "not there" or "not yours" where the id is in the address, never asked to confirm it's her, with nothing of this household's in any answer and no row of theirs changed; the same routes answer her with her own ids. A revoked or expired app key, the access token of each, a token past its fifteen minutes, a removed app's key and token, and a computer whose key was revoked are each 401 on every route; a viewer who sees every family document and a teen are swept as the other attackers are; and `OPTIONS` on every route answers 404 to anybody, signed in or not, with nothing in its body or headers, while `HEAD` answers each caller as `GET` does.
+
+### Changed
+
+- **Web Push without the `web-push` package.** The worker encrypts each push (RFC 8291, aes128gcm, at most 3993 bytes) and signs it for the push service (RFC 8292, VAPID, ES256) itself, on Node's own crypto, checked against the RFC's published example. The VAPID keys in `.env` and every phone and browser subscribed keep working as they are. `web-push` and what only it brought in (`asn1.js`, `bn.js`, `jws`, `https-proxy-agent` and others) are gone from the server.
+
+### Database
+
+- Migration 0125: an index on the activity log by household, action and line, for the card's lookups; and `app_is_installation_household()`, whether the household acting is the one that set the vault up (a definer function, the application role's alone).
+
+### Upgrading
+
+`docker compose pull && docker compose up -d`. Nothing to change.
+
 ## [0.9.0-dev.77] - 2026-11-20 — hygiene before launch
 
 ### Security

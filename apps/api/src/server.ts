@@ -89,6 +89,7 @@ import { SettingsCheckService } from './settings-checks.js';
 import { LocalAiService } from './household/local-ai.js';
 import { AiReaderService } from './household/ai-reader.js';
 import { BackupOffsiteService } from './backups/offsite.js';
+import { SecurityHealthService } from './backups/health.js';
 import { PHONE_CODE_KEY_PURPOSE, MemberPhoneService } from './sms/phones.js';
 import { SmsService } from './sms/service.js';
 import { SMS_CODE_KEY_PURPOSE, TextCodeService } from './sms/codes.js';
@@ -372,6 +373,13 @@ async function main(): Promise<void> {
       edition: config.FDV_EDITION,
       lateDays: config.FDV_BACKUP_OFFSITE_LATE_DAYS,
       alert,
+    }),
+    // Settings → Security & health (0.9.0): read from the activity log and
+    // the off-site copy's setting, an owner's.
+    securityHealth: new SecurityHealthService(db, {
+      edition: config.FDV_EDITION,
+      lateDays: config.FDV_BACKUP_LATE_DAYS,
+      offsiteLateDays: config.FDV_BACKUP_OFFSITE_LATE_DAYS,
     }),
     pingDatabase: async () => {
       await pool.query('select 1');

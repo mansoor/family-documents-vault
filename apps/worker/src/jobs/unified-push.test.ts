@@ -7,7 +7,6 @@ import { createDb, createPool, withSystem, type Db } from '@fdv/db';
 import { createTestDatabase, testAdminUrl, type TestDatabase } from '@fdv/db/testing';
 import ece from 'http_ece';
 import pg from 'pg';
-import webpush from 'web-push';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createNotifier } from './notify.js';
 import {
@@ -21,6 +20,7 @@ import {
   type PushJob,
 } from './push.js';
 import type { Digest } from './reminders.js';
+import { webPush } from './web-push.js';
 
 /**
  * UnifiedPush from the worker (4.13), against a local HTTPS fake of a push
@@ -47,7 +47,7 @@ describe.skipIf(!testAdminUrl())('UnifiedPush from the worker', () => {
   let sessionId = '';
   const received: Received[] = [];
   const answers: number[] = [];
-  const vapid = { ...webpush.generateVAPIDKeys(), subject: 'mailto:test@example.test' };
+  const vapid = { ...webPush.generateVAPIDKeys(), subject: 'mailto:test@example.test' };
   const smtpKey = deriveKey('unified-push-test-master-secret-32-bytes', 'smtp-credentials');
   const log = () => undefined;
   // The phone's keys, as the app makes them for its subscription.

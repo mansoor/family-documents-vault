@@ -16,7 +16,7 @@ import {
   masterSecretProblem,
 } from '@fdv/crypto';
 import { assertSchemaCurrent, createPool, rowSecurityProblem } from '@fdv/db';
-import { WATCH_SYSTEM_DIRS } from '@fdv/shared';
+import { HEALTH_EVENTS, WATCH_SYSTEM_DIRS } from '@fdv/shared';
 import { loadConfig, logs, type LogLevel } from './config.js';
 import { backupDatabase } from './jobs/backup.js';
 import {
@@ -59,6 +59,7 @@ import {
   type IncomingScanJob,
 } from './jobs/incoming.js';
 import { connections, verifyAllAuditChains } from './jobs/verify-audit.js';
+import { lastTry, noteVaultCheck, noticeHealth } from './jobs/vault-health.js';
 import { resumeBatchItems, sendBatchPreviews, workBatchPreviews } from './jobs/batches.js';
 import { ProposalThread } from './jobs/proposal-thread.js';
 import { keepRecordingReadingModel, recordReadingModel } from './reading-model.js';
@@ -214,6 +215,21 @@ async function main(): Promise<void> {
   await boss.schedule(JOBS.heartbeat, '* * * * *');
 
   const dbs = connections(config.DATABASE_URL, config.DATABASE_ADMIN_URL ?? config.DATABASE_URL);
+  // Settings → Security & health (0.9.0): the owners told, once a problem,
+  // when the backups stop or the activity log fails its check.
+  const healthDbs = { admin: dbs.admin, db: dbs.app };
+  const noticeVaultHealth = async () => {
+    const told = await noticeHealth({
+      admin: dbs.admin,
+      db: dbs.app,
+      tell: async (a, db) => {
+        await boss.send(JOBS.alertSend, { ...a }, { db });
+      },
+      lateDays: config.FDV_BACKUP_LATE_DAYS,
+      backups: config.FDV_EDITION !== 'hosted',
+    });
+    if (told > 0) log('info', 'owners told of a backup or activity log problem', { told });
+  };
   await boss.createQueue(JOBS.verifyAudit);
   await boss.work(JOBS.verifyAudit, async () => {
     const report = await verifyAllAuditChains(dbs.admin, dbs.app);
@@ -222,6 +238,18 @@ async function main(): Promise<void> {
     } else {
       log('info', 'audit chains verified', { households: report.households });
     }
+    // What the check found, for Settings → Security & health.
+    const broken = new Map(report.broken.map((b) => [b.household_id, b]));
+    await noteVaultCheck(
+      healthDbs,
+      HEALTH_EVENTS.auditChecked,
+      (hh) => {
+        const b = broken.get(hh);
+        return b ? { ok: false, broken_at: b.broken_at ?? null } : { ok: true };
+      },
+      { every: true },
+    );
+    await noticeVaultHealth();
   });
   await boss.schedule(JOBS.verifyAudit, '15 3 * * *');
 
@@ -471,8 +499,27 @@ async function main(): Promise<void> {
     }
   });
   await boss.createQueue(JOBS.backupDatabase, { retryLimit: 3, retryDelay: 300 });
-  await boss.work(JOBS.backupDatabase, async () => {
-    const made = await backupDatabase(backupDeps);
+  await boss.work(JOBS.backupDatabase, { includeMetadata: true }, async ([job]) => {
+    let made: Awaited<ReturnType<typeof backupDatabase>>;
+    try {
+      made = await backupDatabase(backupDeps);
+    } catch (err) {
+      // Said in Settings → Security & health, and to the owners once — on
+      // the last try alone: one a retry makes was never a problem.
+      if (lastTry(job)) {
+        await noteVaultCheck(healthDbs, HEALTH_EVENTS.backupFailed).catch((e: unknown) =>
+          log('error', 'a failed backup could not be noted', { error: (e as Error).message }),
+        );
+        await noticeVaultHealth().catch(() => undefined);
+      }
+      throw err;
+    }
+    // Noted for Security & health; never in the way of the backup's copy,
+    // nor a reason to make the backup again.
+    await noteVaultCheck(healthDbs, HEALTH_EVENTS.backupMade, () => ({ bytes: made.bytes })).catch(
+      (e: unknown) =>
+        log('error', 'a backup made could not be noted', { error: (e as Error).message }),
+    );
     // The backup is made: its copy is a job of its own, and never makes it again.
     try {
       await boss.send(
@@ -491,6 +538,8 @@ async function main(): Promise<void> {
   await boss.createQueue(JOBS.backupOffsiteCheck, { retryLimit: 1, retryDelay: 300 });
   await boss.work(JOBS.backupOffsiteCheck, async () => {
     await noticeOffsiteCopies();
+    // And the backups themselves, late because no backup ran at all.
+    await noticeVaultHealth();
   });
   await boss.schedule(JOBS.backupOffsiteCheck, '50 * * * *');
 

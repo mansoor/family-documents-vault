@@ -3,10 +3,10 @@ import { deriveKey } from '@fdv/crypto';
 import { createDb, createPool, withSystem, type Db } from '@fdv/db';
 import { createTestDatabase, testAdminUrl, type TestDatabase } from '@fdv/db/testing';
 import pg from 'pg';
-import webpush from 'web-push';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createNotifier } from './notify.js';
 import { deliver, weekly, type Digest } from './reminders.js';
+import { webPush } from './web-push.js';
 
 /**
  * The digest and the privacy wall.
@@ -92,7 +92,7 @@ describe.skipIf(!testAdminUrl())('the digest respects the privacy wall', () => {
   const forbidden = (who: Who) => Object.values(TITLES).filter((t) => !allowed[who].includes(t));
 
   const reminderOf: Record<string, string> = {};
-  const vapid = webpush.generateVAPIDKeys();
+  const vapid = webPush.generateVAPIDKeys();
 
   beforeAll(async () => {
     tdb = await createTestDatabase();
@@ -215,7 +215,7 @@ describe.skipIf(!testAdminUrl())('the digest respects the privacy wall', () => {
   /** Runs the digest with the push service replaced by a recorder. */
   const runDaily = async () => {
     const pushed: Array<{ endpoint: string; payload: string }> = [];
-    vi.spyOn(webpush, 'sendNotification').mockImplementation(async (sub, payload) => {
+    vi.spyOn(webPush, 'sendNotification').mockImplementation(async (sub, payload) => {
       pushed.push({ endpoint: sub.endpoint, payload: String(payload) });
       return { statusCode: 201, body: '', headers: {} };
     });
@@ -334,7 +334,7 @@ describe.skipIf(!testAdminUrl())('the digest respects the privacy wall', () => {
   it.skipIf(!withMailpit)(
     'the Sunday summary is cut the same way',
     async () => {
-      vi.spyOn(webpush, 'sendNotification').mockResolvedValue({
+      vi.spyOn(webPush, 'sendNotification').mockResolvedValue({
         statusCode: 201,
         body: '',
         headers: {},
@@ -395,7 +395,7 @@ describe.skipIf(!testAdminUrl())('the digest respects the privacy wall', () => {
         .execute();
     });
     const pushed: string[] = [];
-    vi.spyOn(webpush, 'sendNotification').mockImplementation(async (sub) => {
+    vi.spyOn(webPush, 'sendNotification').mockImplementation(async (sub) => {
       pushed.push(sub.endpoint);
       return { statusCode: 201, body: '', headers: {} };
     });

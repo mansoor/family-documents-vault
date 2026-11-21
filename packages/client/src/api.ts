@@ -179,6 +179,7 @@ import type {
   OffsiteInput,
   OffsiteTestResult,
   OffsiteView,
+  SecurityHealthView,
   SmsStatusView,
   SmsTestResult,
   TextCodeSent,
@@ -2458,6 +2459,15 @@ export function createApi(http: Http) {
     /** The bucket forgotten, secret and all (`change_backups`). Copies already there stay. */
     removeOffsiteBackup: (token: string) =>
       request<OffsiteView>('/api/v1/backups/offsite', { method: 'DELETE', token }),
+    /**
+     * Settings → Security & health (0.9.0, `features.security_health`): the
+     * last backup and its copy off-site, the last restore drill, the
+     * activity log's last check, and the day's failed sign-ins and sign-ins
+     * used from two places. An owner's (`403` for anybody else); no passkey
+     * or code asked. `securityHealthLines` (@fdv/shared) says it in words.
+     */
+    securityHealth: (token: string) =>
+      request<SecurityHealthView>('/api/v1/household/health', { token }),
     /** Somebody's mobile number, masked: their own, or an owner's for anybody (`403` otherwise). */
     memberPhone: (token: string, memberId: string) =>
       request<MemberPhoneView>(`/api/v1/members/${encodeURIComponent(memberId)}/phone`, { token }),
