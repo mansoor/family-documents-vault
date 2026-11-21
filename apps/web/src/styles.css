@@ -8089,6 +8089,188 @@ html:has(.shell-phone):has(.has-toast) {
   }
 }
 
+/* Printing (0.9.0): a document, a note, a collection's contents and the
+   activity log, each drawn in a root of its own at the end of the page while
+   it is printed (print.tsx), black on white whatever the theme. The printer
+   is given that root alone: no bar, no sidebar, no buttons, no toast. */
+.print-choices {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.print-choices legend {
+  font-weight: 700;
+  margin-bottom: 4px;
+}
+
+/* The printer's copy: nowhere on the screen. */
+.print-root {
+  display: none;
+}
+
+@media print {
+  body.printing > :not(.print-root) {
+    display: none !important;
+  }
+
+  body.printing {
+    background: var(--paper);
+  }
+
+  body.printing > .print-root {
+    display: block;
+  }
+}
+
+.print-root {
+  background: var(--paper);
+  color: var(--paper-ink);
+  font-size: 10.5pt;
+  line-height: 1.35;
+}
+
+.print-head h1 {
+  font-size: 16pt;
+  line-height: 1.2;
+  margin: 0 0 3pt;
+  overflow-wrap: anywhere;
+}
+
+.print-about {
+  margin: 0 0 2pt;
+}
+
+.print-head {
+  margin-bottom: 10pt;
+}
+
+.print-facts {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 3pt 14pt;
+  margin: 0;
+}
+
+.print-fact {
+  display: contents;
+}
+
+.print-facts dt {
+  font-weight: 700;
+}
+
+.print-facts dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.print-note {
+  margin-top: 10pt;
+  overflow-wrap: anywhere;
+}
+
+.print-note h2 {
+  font-size: 12pt;
+  margin: 0 0 3pt;
+}
+
+.print-note a {
+  color: var(--paper-ink);
+}
+
+/* A page of the file: as wide as the paper, on a page of its own after the
+   first, never split. */
+.print-page {
+  margin: 0;
+  break-inside: avoid;
+}
+
+.print-page-new {
+  break-before: page;
+}
+
+.print-page img {
+  display: block;
+  max-width: 100%;
+  max-height: 240mm;
+  margin: 0 auto;
+}
+
+.print-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.print-table thead {
+  display: table-header-group;
+}
+
+.print-table tr {
+  break-inside: avoid;
+}
+
+.print-table th,
+.print-table td {
+  border: 0.5pt solid var(--paper-ink);
+  padding: 3pt 5pt;
+  text-align: left;
+  vertical-align: top;
+  overflow-wrap: anywhere;
+}
+
+.print-table th {
+  font-weight: 700;
+}
+
+.print-tick-col {
+  width: 14pt;
+  text-align: center;
+}
+
+/* A box to tick on paper. */
+.print-tick {
+  display: inline-block;
+  width: 9pt;
+  height: 9pt;
+  border: 1pt solid var(--paper-ink);
+}
+
+.print-foot {
+  margin-top: 12pt;
+  font-size: 8pt;
+}
+
+/* Printed with the browser's own Print rather than the app's: the page
+   without the app around it — no bars, no sidebar, no action buttons, no
+   toast. A button that is the page's content (a column's header, which
+   sorts it) is printed. */
+@media print {
+  body:not(.printing):not(.printing-labels):not(.printing-wallet-card)
+    :is(
+      .skip-link,
+      .phone-bar,
+      .app-bar,
+      .sidebar,
+      .bottomnav,
+      .upload-strip,
+      .toast,
+      .action-row-wrap,
+      .collection-actions,
+      .btn,
+      .icon-btn,
+      .col-pick,
+      .col-more,
+      .col-resize
+    ) {
+    display: none !important;
+  }
+}
+
 /* APP7: the kinds a connected app may send, by category: each category's
    box, its kinds beneath it, indented. The whole list scrolls in its box. */
 .app-kinds {

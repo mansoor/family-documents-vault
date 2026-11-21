@@ -32,7 +32,8 @@ import { useSensitiveConfirm } from '../sensitive-confirm.js';
 import { AddDocumentsPicker } from '../collection-add.js';
 import { Toast, type ReviewToast } from '../batch-review.js';
 import type { Removed } from '../DocActions.js';
-import { CollectionDocuments } from './Documents.js';
+import { CollectionDocuments, useKnown } from './Documents.js';
+import { PrintCollection } from '../print-collection.js';
 import { ManagersSection, managersOffered } from '../collection-managers.js';
 import { collectionShareOffered, ShareCollectionPanel } from './ShareCollection.js';
 import {
@@ -261,6 +262,10 @@ export function CollectionScreen() {
   const managersButton = useRef<HTMLButtonElement>(null);
   // Download (DL): the whole collection as one ZIP.
   const [zipping, setZipping] = useState(false);
+  // Print (0.9.0): what is in it, as a table — named as its table names it.
+  const [printing, setPrinting] = useState(false);
+  const known = useKnown();
+  const printButton = useRef<HTMLButtonElement>(null);
   // The collection is not there for the reader any more — deleted, or no longer
   // for them — since the page was drawn: then that is all the page says,
   // as it would have been had it been so when the page opened.
@@ -373,13 +378,8 @@ export function CollectionScreen() {
   const mayAdd = mayChange && collectionsOffered(caps, role);
   const mayFill = offered && mayAdd && kept.data !== null && !checklistKept(kept.data);
   // The top row (DL): Add documents, Fill from a checklist, Share this
-  // collection, Add managers, in that order; then Download.
-  const topRow =
-    mayAdd ||
-    mayFill ||
-    collectionShareOffered(caps, role, collection) ||
-    mayChooseManagers ||
-    mayZip;
+  // collection, Add managers, in that order; then Download, and Print
+  // (0.9.0), which everybody who sees it has.
 
   /** Filled from the checklist: the sheet goes, what it did is said, and all is loaded again. */
   const onFilled = (done: ChecklistDone) => {
@@ -595,71 +595,86 @@ export function CollectionScreen() {
               {sharedOutsideWords(collection.shared_outside, role)}
             </p>
           )}
-          {topRow && (
-            <div className="row collection-actions">
-              {mayAdd && (
-                <button
-                  ref={addButton}
-                  type="button"
-                  className="btn btn-primary"
-                  onClick={() => {
-                    setAdded(null);
-                    setPicking(true);
-                  }}
-                >
-                  Add documents
-                </button>
-              )}
-              {/* With no checklist kept yet, filling one is a button here,
+          <div className="row collection-actions">
+            {mayAdd && (
+              <button
+                ref={addButton}
+                type="button"
+                className="btn btn-primary"
+                onClick={() => {
+                  setAdded(null);
+                  setPicking(true);
+                }}
+              >
+                Add documents
+              </button>
+            )}
+            {/* With no checklist kept yet, filling one is a button here,
                   not a section of its own (the owner, 24 Oct). */}
-              {mayFill && (
-                <button
-                  ref={fillButton}
-                  type="button"
-                  className="btn btn-quiet"
-                  onClick={() => {
-                    setAdded(null);
-                    setFilling(true);
-                  }}
-                >
-                  Fill from a checklist
-                </button>
-              )}
-              {collectionShareOffered(caps, role, collection) && (
-                <button
-                  ref={shareButton}
-                  type="button"
-                  className="btn btn-quiet"
-                  onClick={() => setSharing(true)}
-                >
-                  Share this collection
-                </button>
-              )}
-              {/* Who manages it (DL): its sheet, for whoever may choose managers. */}
-              {mayChooseManagers && (
-                <button
-                  ref={managersButton}
-                  type="button"
-                  className="btn btn-quiet"
-                  onClick={() => setAddingManagers(true)}
-                >
-                  Add managers
-                </button>
-              )}
-              {/* Everything in it the reader may download, as one ZIP (DL). */}
-              {mayZip && (
-                <button
-                  type="button"
-                  className="btn btn-quiet"
-                  disabled={zipping}
-                  onClick={() => void downloadAll()}
-                >
-                  {zipping ? 'Preparing the download…' : 'Download'}
-                </button>
-              )}
-            </div>
-          )}
+            {mayFill && (
+              <button
+                ref={fillButton}
+                type="button"
+                className="btn btn-quiet"
+                onClick={() => {
+                  setAdded(null);
+                  setFilling(true);
+                }}
+              >
+                Fill from a checklist
+              </button>
+            )}
+            {collectionShareOffered(caps, role, collection) && (
+              <button
+                ref={shareButton}
+                type="button"
+                className="btn btn-quiet"
+                onClick={() => setSharing(true)}
+              >
+                Share this collection
+              </button>
+            )}
+            {/* Who manages it (DL): its sheet, for whoever may choose managers. */}
+            {mayChooseManagers && (
+              <button
+                ref={managersButton}
+                type="button"
+                className="btn btn-quiet"
+                onClick={() => setAddingManagers(true)}
+              >
+                Add managers
+              </button>
+            )}
+            {/* Everything in it the reader may download, as one ZIP (DL). */}
+            {mayZip && (
+              <button
+                type="button"
+                className="btn btn-quiet"
+                disabled={zipping}
+                onClick={() => void downloadAll()}
+              >
+                {zipping ? 'Preparing the download…' : 'Download'}
+              </button>
+            )}
+            {/* What is in it, as a table, to print (0.9.0). */}
+            <button
+              ref={printButton}
+              type="button"
+              className="btn btn-quiet"
+              onClick={() => setPrinting(true)}
+            >
+              Print
+            </button>
+          </div>
         </div>
+      )}
+      {printing && (
+        <PrintCollection
+          collection={collection}
+          known={known}
+          returnFocus={printButton}
+          onClose={() => setPrinting(false)}
+        />
       )}
       {sharing && (
         <Sheet
@@ -737,6 +752,7 @@ export function CollectionScreen() {
       {/* What is in it, as the Documents table shows documents (0.9.0): what
           the vault gives this reader of it, counted as it counts them. */}
       <CollectionDocuments
+        known={known}
         refresh={refresh}
         scope={{
           collection: {

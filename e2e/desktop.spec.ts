@@ -614,3 +614,96 @@ test('a 15-year-old added with “Invite them to sign up now” ticked: the link
   // Waiting to be accepted, as a teen, at the address given.
   await expect(page.getByText(`Teen · ${email}`)).toBeVisible();
 });
+
+/**
+ * Printing (0.9.0): Print on a document's action row, a collection's top
+ * row and Activity's bar, each giving the printer its own print root and
+ * nothing of the app. The browser's print dialog is the browser's: here
+ * `window.print` only counts, and the page is looked at as printed media.
+ */
+test('a document, a collection and the activity log print alone, with no app around them', async () => {
+  const auth = { authorization: `Bearer ${token}` };
+  const title = `Printed ${run}`;
+  const made = await page.request.post('/api/v1/documents', {
+    headers: auth,
+    data: { title, visibility: 'household', physical_location: `Drawer ${run}` },
+  });
+  expect(made.ok()).toBe(true);
+  const { id } = (await made.json()) as { id: string };
+  const collection = await page.request.post('/api/v1/collections', {
+    headers: auth,
+    data: { name: `Print me ${run}`, audience: 'everyone' },
+  });
+  expect(collection.ok()).toBe(true);
+  const { id: collectionId } = (await collection.json()) as { id: string };
+  const put = await page.request.post(`/api/v1/collections/${collectionId}/items`, {
+    headers: auth,
+    data: { document_ids: [id] },
+  });
+  expect(put.ok()).toBe(true);
+  await page.evaluate('window.__printed = 0; window.print = () => { window.__printed += 1; };');
+  const printedCount = () => page.evaluate<number>('window.__printed');
+  const root = page.locator('.print-root');
+  /** As printed: the print root alone; then back to the screen, which puts the page back. */
+  const asPrinted = async (check: () => Promise<void>) => {
+    await page.emulateMedia({ media: 'print' });
+    await expect(root).toBeVisible();
+    await expect(page.locator('.app-bar')).toBeHidden();
+    await expect(page.locator('nav.sidebar')).toBeHidden();
+    await expect(page.locator('main').first()).toBeHidden();
+    await expect(root.locator('button')).toHaveCount(0);
+    await expect(root.locator('.print-foot')).toContainText('Printed ');
+    await check();
+    await page.emulateMedia({ media: 'screen' });
+    await expect(root).toHaveCount(0);
+    await expect(page.locator('.app-bar')).toBeVisible();
+  };
+
+  // A document: no file yet, so its details alone.
+  await visit(page, `/documents/${id}`);
+  await page
+    .getByRole('toolbar', { name: 'Document actions' })
+    .getByRole('button', { name: 'Print', exact: true })
+    .click();
+  const dialog = page.getByRole('dialog', { name: `Print “${title}”` });
+  await expect(dialog.getByRole('checkbox', { name: 'Its pages' })).toBeDisabled();
+  await expect(dialog.getByRole('checkbox', { name: 'A sheet of its details' })).toBeChecked();
+  await dialog.getByRole('button', { name: 'Print', exact: true }).click();
+  await expect.poll(printedCount).toBe(1);
+  // Nowhere on the screen.
+  await expect(root).toBeHidden();
+  await asPrinted(async () => {
+    await expect(root.locator('h1')).toHaveText(title);
+    await expect(root.locator('.print-facts')).toContainText('Who can see it');
+    await expect(root.locator('.print-facts')).toContainText(`Drawer ${run}`);
+  });
+
+  // A collection: a table, with a box to tick beside each.
+  await visit(page, `/collections/${collectionId}`);
+  await page.getByRole('button', { name: 'Print', exact: true }).click();
+  const sheet = page.getByRole('dialog', { name: `Print “Print me ${run}”` });
+  await sheet.getByRole('checkbox', { name: 'A box beside each, to tick' }).check();
+  await sheet.getByRole('button', { name: 'Print', exact: true }).click();
+  await expect.poll(printedCount).toBe(2);
+  await asPrinted(async () => {
+    const table = root.locator('table');
+    await expect(table).toBeVisible();
+    await expect(table.locator('thead th').nth(1)).toHaveText('Title');
+    await expect(table.locator('tbody tr')).toHaveCount(1);
+    await expect(table.locator('tbody')).toContainText(title);
+    await expect(table.locator('.print-tick')).toHaveCount(1);
+  });
+
+  // The activity log: its filters said at the top.
+  await visit(page, '/activity?kind=sign_in');
+  await page.getByRole('button', { name: 'Print', exact: true }).click();
+  await expect.poll(printedCount).toBe(3);
+  await asPrinted(async () => {
+    await expect(root).toContainText('Who: Everybody · What happened: Signing in');
+    await expect(root).toContainText('When: Any day');
+    await expect(root.locator('table thead th')).toHaveText(['When', 'Who', 'What happened']);
+  });
+
+  await page.request.delete(`/api/v1/collections/${collectionId}`, { headers: auth });
+  await page.request.delete(`/api/v1/documents/${id}`, { headers: auth });
+});

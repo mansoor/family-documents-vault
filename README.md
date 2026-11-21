@@ -1309,6 +1309,18 @@ Opening an Essential, or anything marked Only me, asks you to confirm it is
 you if you have not done so in the last five minutes — for its pages as for
 its file.
 
+**Print**, beside Download, prints its pages and a sheet of its details (each
+ticked or not first): the pages the worker drew, fetched as its page fetches
+them, so printing asks to confirm it is you where reading its pages does, each
+page printed is in the log as each page read is, and the first 30 pages are
+the most it prints — **Download** the file to print the rest, or a file it
+doesn't draw. A note prints from its own **Print**; a collection's page prints
+what is in it as a table, with the columns and filters its table has and a box
+to tick beside each if wanted; and **Activity** prints the lines its filters
+keep, with who, what and which days said at the top. Each prints on its own,
+black on white, with nothing of the app around it and the vault's name and the
+day it was printed at the foot.
+
 ### Health records from a patient portal
 
 Besides PDFs, photos, scans, and Word and Excel files, the vault keeps the

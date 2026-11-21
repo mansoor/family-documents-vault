@@ -6,6 +6,17 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.9.0-dev.81] - 2026-11-21 — printing
+
+### Added
+
+- **Print, on the web.** Beside the other actions on four pages, each printing on its own — black on white, with no bar, sidebar, buttons or toast around it, and the vault's name and when it was printed at the foot. Nothing is printed that the page doesn't show you, and nothing secret: no link, PIN or code.
+  - **A document:** Print beside Download asks what to print — its pages, and a sheet of its details (its kind, whose it is, its dates, status, who sees it, where the original is kept for whoever is told that, the kind's own details and its note), each ticked or not. Its pages are the pages the vault drew of it, fetched as its page fetches them: an Essential, Only me or Sensitive document asks to confirm it's you first, just as reading its pages does, and each page printed is in the activity log as each page read is. At most the first 30 pages, as the page shows; it says so for a longer file, and that a file the vault doesn't draw (a Word file, a health record kept as it is) is downloaded to be printed.
+  - **A note:** its title, who sees it, when it changed, and its words.
+  - **A collection:** what is in it as a table, with the columns its table shows on this device, in its sort and through its filters — everything in it you can see, not only the rows loaded so far — and, if wanted, a box to tick beside each.
+  - **Activity:** the lines its filters keep, as a table, with who, what happened and which days said at the top. With a From day further back than the lines loaded, the older lines down to it are loaded first; without one, it says how far back it goes.
+- **Printing a page with the browser's own Print** leaves out the app's bars, sidebar, buttons and toasts.
+
 ## [0.9.0-dev.80] - 2026-11-21 — small follow-ups
 
 ### Added
