@@ -13,7 +13,8 @@ import { TrashIcon } from './ui.js';
 
 /**
  * One row of actions under a note and under a document (0.9.0, the owner's
- * request of 24 Oct 2026): Download, which acts at once; a button for each
+ * request of 24 Oct 2026): Download, which acts at once; Print beside it
+ * (0.9.0, printing); a button for each
  * of its sections — Who can see it, Tags, Collections, Share a link, a
  * document's History — each opening that section in a panel right under
  * the row; and Move to the Trash at the far end. Edit stays where it was.
@@ -113,12 +114,17 @@ const FOCUSABLE = [
 
 export function ActionRow({
   trashRef,
+  printRef,
   ...props
 }: {
   kind: 'note' | 'document';
   memberId: string | null;
   /** Download, at once; none when there is nothing to download. */
   onDownload?: (() => void) | null;
+  /** Print (0.9.0): beside Download; none when there is nothing to print. */
+  onPrint?: (() => void) | null;
+  /** Print's button, for its dialog to give the focus back to. */
+  printRef?: RefObject<HTMLButtonElement | null>;
   sections: ActionSection[];
   /** Move to the Trash, for whoever may; its button, for the dialog to give focus back to. */
   onTrash?: (() => void) | null;
@@ -226,7 +232,7 @@ export function ActionRow({
   };
 
   // The row's buttons, in order: one of them reached by Tab, the arrows along.
-  const first = props.onDownload ? 1 : 0;
+  const first = (props.onDownload ? 1 : 0) + (props.onPrint ? 1 : 0);
   const count = first + sections.length + (props.onTrash ? 1 : 0);
   const current = active < count ? active : 0;
   const onToolbarKey = (e: KeyboardEvent<HTMLDivElement>) => {
@@ -263,6 +269,18 @@ export function ActionRow({
           <button type="button" className="btn action-btn" onClick={props.onDownload} {...stop(0)}>
             <ActionIcon name="download" />
             Download
+          </button>
+        )}
+        {props.onPrint && (
+          <button
+            ref={printRef}
+            type="button"
+            className="btn action-btn"
+            onClick={props.onPrint}
+            {...stop(props.onDownload ? 1 : 0)}
+          >
+            <ActionIcon name="print" />
+            Print
           </button>
         )}
         {sections.map((s, i) => (
@@ -334,7 +352,7 @@ export function countBadge(n: number, one: string, many: string) {
 }
 
 type IconName =
-  'download' | 'eye' | 'tag' | 'collection' | 'link' | 'history' | 'info' | 'activity';
+  'download' | 'print' | 'eye' | 'tag' | 'collection' | 'link' | 'history' | 'info' | 'activity';
 
 const PATHS: Record<IconName, ReactNode> = {
   download: (
@@ -342,6 +360,14 @@ const PATHS: Record<IconName, ReactNode> = {
       <path d="M12 3v12" />
       <path d="M7 10l5 5 5-5" />
       <path d="M5 21h14" />
+    </>
+  ),
+  // A printer, a sheet coming out of it (0.9.0).
+  print: (
+    <>
+      <path d="M6 9V3h12v6" />
+      <path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2" />
+      <path d="M6 14h12v7H6z" />
     </>
   ),
   eye: (

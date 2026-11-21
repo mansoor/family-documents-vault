@@ -2,10 +2,11 @@ import {
   ACTIVITY_KINDS,
   documentActivityEmptyWords,
   documentActivityWords,
+  formatDate,
   localToday,
   type ActivityLine,
 } from '@fdv/shared';
-import { useId, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router';
 import { api, type Member } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
@@ -13,6 +14,7 @@ import { useShellMode } from '../shell.js';
 import { FilterSelect } from '../table-grid.js';
 import { Button, ErrorNote, TopBar } from '../ui.js';
 import { exactWords, relativeWords, useFamilyZone } from '../family-time.js';
+import { NOTHING, PrintOut } from '../print.js';
 
 /**
  * The household activity log (SHR-07).
@@ -34,6 +36,13 @@ import { exactWords, relativeWords, useFamilyZone } from '../family-time.js';
  * no others — said by a chip ("About ‘Richa’s visa’") whose × shows the
  * whole log again. A vault without `features.document_activity` shows the
  * whole log, as before.
+ *
+ * Print (0.9.0), on the bar on top: the lines the filters keep, as a table,
+ * with who, what and which days were asked for said at the top. A From day
+ * (or, without one, a To day) further back than the lines loaded so far has
+ * the older lines loaded down to it first, as Show older would; the print
+ * goes back as far as the lines loaded, and says how far when there are
+ * older ones. Show older and Print wait for each other.
  */
 export function ActivityScreen() {
   const { withToken, authVersion, caps } = useApp();
@@ -98,6 +107,22 @@ export function ActivityScreen() {
   const cursor = cursorFor?.about === about ? cursorFor.next : undefined;
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Print (0.9.0): the older lines it needs on their way, then the printing.
+  const [preparing, setPreparing] = useState(false);
+  const [printing, setPrinting] = useState(false);
+  // Still shown, and about which document: a print being prepared stops
+  // when the page goes, and is not printed under another document's chip.
+  const alive = useRef(true);
+  const aboutNow = useRef(about);
+  useEffect(() => {
+    aboutNow.current = about;
+  });
+  useEffect(() => {
+    alive.current = true;
+    return () => {
+      alive.current = false;
+    };
+  }, []);
   const filters = filtersFrom(params);
   const setFilter = (key: keyof Filters, value: string) => {
     const next = new URLSearchParams(params);
@@ -122,20 +147,25 @@ export function ActivityScreen() {
   const family = members ?? [];
   const shown = lines.filter((l) => matches(l, filters, family, timezone ?? null));
 
+  /** Older lines, after those there: each line once, whatever asked for it. */
+  const addOlder = (of: string, items: readonly ActivityLine[], nextCursor: number | null) => {
+    setOlderFor((old) => {
+      const kept = old.about === of ? old.lines : [];
+      const have = new Set([...(data?.items ?? []), ...kept].map((l) => l.id));
+      return { about: of, lines: [...kept, ...items.filter((l) => !have.has(l.id))] };
+    });
+    setCursorFor({ about: of, next: nextCursor });
+  };
+
   const more = async (before: number) => {
+    if (busy || preparing || printing) return;
     setBusy(true);
     const of = about;
     try {
       const page = await withToken((t) =>
         of ? api.documentActivity(t, of, before) : api.activity(t, before),
       );
-      if (page) {
-        setOlderFor((old) => ({
-          about: of,
-          lines: [...(old.about === of ? old.lines : []), ...page.items],
-        }));
-        setCursorFor({ about: of, next: page.next });
-      }
+      if (page && alive.current) addOlder(of, page.items, page.next);
     } catch (err) {
       setError(describeError(err));
     } finally {
@@ -143,10 +173,117 @@ export function ActivityScreen() {
     }
   };
 
+  // Print waits for the first page, and for Show older; with no first page
+  // there is nothing to print.
+  const mayPrint = !waiting && data !== null && !busy && !preparing && !printing;
+  /**
+   * Print: with a From day (or else a To day), the older lines down to it
+   * first (fifty pages at most), kept on the screen as Show older keeps
+   * them; then the lines the filters keep. Not printed if the page has
+   * gone, or now shows another document's lines.
+   */
+  const print = async () => {
+    if (!mayPrint) return;
+    setPreparing(true);
+    setError(null);
+    const of = about;
+    const bound = filters.from || filters.to;
+    try {
+      const extra: ActivityLine[] = [];
+      let cursorNow = next;
+      let oldest = lines.at(-1)?.at ?? null;
+      for (
+        let round = 0;
+        bound &&
+        cursorNow !== null &&
+        oldest !== null &&
+        dayOf(oldest, timezone ?? null) >= bound &&
+        round < 50;
+        round++
+      ) {
+        const before = cursorNow;
+        const page = await withToken((t) =>
+          of ? api.documentActivity(t, of, before) : api.activity(t, before),
+        );
+        if (!page || !alive.current || aboutNow.current !== of) return;
+        extra.push(...page.items);
+        cursorNow = page.next;
+        oldest = page.items.at(-1)?.at ?? null;
+      }
+      if (!alive.current || aboutNow.current !== of) return;
+      if (extra.length > 0) addOlder(of, extra, cursorNow);
+      setPrinting(true);
+    } catch (err) {
+      if (alive.current) setError(describeError(err));
+    } finally {
+      if (alive.current) setPreparing(false);
+    }
+  };
+
   const ids = useId();
   return (
     <main className="page page-top page-wide has-nav">
-      <TopBar title="What has been happening" />
+      <TopBar
+        title="What has been happening"
+        action={
+          // Never disabled outright: pressed, it keeps the focus while it
+          // prepares, and says it is not to be pressed meanwhile.
+          <button
+            type="button"
+            className="btn btn-quiet"
+            style={{ minHeight: 40 }}
+            aria-disabled={mayPrint ? undefined : true}
+            onClick={() => void print()}
+          >
+            {preparing ? 'Preparing…' : 'Print'}
+          </button>
+        }
+      />
+      {printing && (
+        <PrintOut
+          title="What has been happening"
+          about={
+            <ActivityPrintAbout
+              chip={about ? chip : ''}
+              filters={filters}
+              family={family}
+              count={shown.length}
+              older={next !== null ? (lines.at(-1)?.at ?? null) : null}
+              reachedFrom={
+                filters.from !== '' &&
+                lines.length > 0 &&
+                dayOf(lines.at(-1)?.at as string, timezone ?? null) < filters.from
+              }
+              timezone={timezone ?? null}
+            />
+          }
+          onDone={() => setPrinting(false)}
+        >
+          <table className="print-table">
+            <thead>
+              <tr>
+                <th scope="col">When</th>
+                <th scope="col">Who</th>
+                <th scope="col">What happened</th>
+              </tr>
+            </thead>
+            <tbody>
+              {shown.map((l) => (
+                <tr key={l.id}>
+                  <td className="nowrap">{exactWords(l.at, timezone ?? undefined)}</td>
+                  <td>{family.find((m) => m.id === l.actor_member_id)?.display_name ?? NOTHING}</td>
+                  <td>{l.text}</td>
+                </tr>
+              ))}
+              {shown.length === 0 && (
+                <tr>
+                  <td colSpan={3}>{emptyWords(anyFilter, false, about !== '')}</td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </PrintOut>
+      )}
       <ErrorNote message={error ?? loadError} />
       <p className="muted">
         Everything anybody has done in this vault. Your own private documents are only ever in your
@@ -298,7 +435,11 @@ export function ActivityScreen() {
         </table>
       )}
       {next !== null && (
-        <Button kind="quiet" disabled={busy} onClick={() => void more(next)}>
+        <Button
+          kind="quiet"
+          disabled={busy || preparing || printing}
+          onClick={() => void more(next)}
+        >
           {busy ? 'Loading…' : 'Show older'}
         </Button>
       )}
@@ -308,6 +449,56 @@ export function ActivityScreen() {
 
 /** Who the filter asks for that is not one of the family the reader is given. */
 const ELSE = 'else';
+
+/**
+ * What a printed log is (0.9.0): the document it is about, if one; who,
+ * what and which days the filters ask for, each said even when it is
+ * everything; how many lines; and, where older lines were not loaded, how
+ * far back it goes.
+ */
+export function ActivityPrintAbout(props: {
+  chip: string;
+  filters: Filters;
+  family: readonly Member[];
+  count: number;
+  /** The oldest line printed's moment, when there are older ones not loaded. */
+  older: string | null;
+  /** The lines loaded reach back past the From day: nothing in range is left out. */
+  reachedFrom: boolean;
+  timezone: string | null;
+}) {
+  const { filters: f } = props;
+  const who =
+    f.who === ''
+      ? 'Everybody'
+      : f.who === ELSE
+        ? 'Anybody else'
+        : (props.family.find((m) => m.id === f.who)?.display_name ?? 'Somebody');
+  const what = ACTIVITY_KINDS.find((k) => k.value === f.kind)?.label ?? 'Everything';
+  const day = (d: string) => formatDate({ date: d, precision: 'day' });
+  const days =
+    f.from && f.to
+      ? `${day(f.from)} to ${day(f.to)}`
+      : f.from
+        ? `From ${day(f.from)}`
+        : f.to
+          ? `Up to ${day(f.to)}`
+          : 'Any day';
+  return (
+    <>
+      {props.chip && <p className="print-about">{props.chip}</p>}
+      <p className="print-about">
+        Who: {who} · What happened: {what} · When: {days}
+      </p>
+      <p className="print-about">
+        {props.count === 1 ? '1 line' : `${props.count} lines`}, newest first.
+        {props.older && !props.reachedFrom
+          ? ` Older lines weren’t loaded: this goes back to ${exactWords(props.older, props.timezone ?? undefined)}.`
+          : ''}
+      </p>
+    </>
+  );
+}
 
 /** What the address asks the lines to be: each empty for any. */
 interface Filters {

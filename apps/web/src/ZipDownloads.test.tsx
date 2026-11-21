@@ -183,7 +183,7 @@ describe('Download in the Documents table’s bar (DL)', () => {
 });
 
 describe('a collection’s page (DL)', () => {
-  it('its top row: Add documents, Fill from a checklist, Share this collection, Add managers — then Download', async () => {
+  it('its top row: Add documents, Fill from a checklist, Share this collection, Add managers — then Download and Print', async () => {
     at('/collections/collection-t', { collections: [{ ...TRIP }] });
     await screen.findByRole('heading', { name: 'Trip', level: 1 });
     const add = await screen.findByRole('button', { name: 'Add documents' });
@@ -201,6 +201,7 @@ describe('a collection’s page (DL)', () => {
       'Share this collection',
       'Add managers',
       'Download',
+      'Print',
     ]);
   });
 

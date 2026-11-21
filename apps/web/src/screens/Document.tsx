@@ -65,6 +65,7 @@ import {
 import { ActionIcon, ActionRow, countBadge } from '../action-row.js';
 import { DocumentActivityPanel } from '../document-activity.js';
 import { createUploadKeys, whileInProgress } from '../upload-keys.js';
+import { documentFacts, PrintDocument } from '../print-document.js';
 import { exactWords, familyZoneNow } from '../family-time.js';
 
 /**
@@ -185,6 +186,10 @@ export function DocumentScreen() {
     }
   };
 
+  // Print (0.9.0): what to print, in a dialog from the action row.
+  const [printing, setPrinting] = useState(false);
+  const printButton = useRef<HTMLButtonElement>(null);
+
   // Moving to the Trash asks first, in the app's own dialog (5.1).
   const [confirmingTrash, setConfirmingTrash] = useState(false);
   const [trashing, setTrashing] = useState(false);
@@ -286,6 +291,14 @@ export function DocumentScreen() {
     return value === undefined || value === null || value === '' ? [] : [{ field, value }];
   });
   const title = doc.title ?? 'Needs a name';
+  // Whose it is, as its details say it: printed in the same words.
+  const person =
+    owner?.display_name ??
+    (doc.household_owned === true
+      ? THE_HOUSEHOLD
+      : doc.household_owned === false
+        ? NOT_SURE_YET
+        : 'Not set');
   const memberId = session.info?.member_id ?? null;
   const isMine = doc.owner_member_id !== null && doc.owner_member_id === memberId;
   const filedByMe = doc.filed_by_me === true;
@@ -432,14 +445,7 @@ export function DocumentScreen() {
         <dt>Type</dt>
         <dd>{type?.label ?? 'Not set'}</dd>
         <dt>Person</dt>
-        <dd>
-          {owner?.display_name ??
-            (doc.household_owned === true
-              ? THE_HOUSEHOLD
-              : doc.household_owned === false
-                ? NOT_SURE_YET
-                : 'Not set')}
-        </dd>
+        <dd>{person}</dd>
         {doc.issued_by && (
           <>
             {/* The type's own word for it: "Institution", "Insurer"… */}
@@ -596,6 +602,8 @@ export function DocumentScreen() {
         kind="document"
         memberId={memberId}
         onDownload={latest && !latest.file_removed ? () => void download(latest) : null}
+        onPrint={() => setPrinting(true)}
+        printRef={printButton}
         onTrash={mayChangeIt ? () => setConfirmingTrash(true) : null}
         trashRef={trashButton}
         error={<ErrorNote message={actionError} />}
@@ -725,6 +733,17 @@ export function DocumentScreen() {
       {/* Their own sensitive paper's links, whoever made them, and who
           opened each (0.9.0, H5). */}
       {isMine && doc.sensitive_effective === true && <TheirLinksOpened documentId={doc.id} />}
+      {printing && (
+        <PrintDocument
+          title={title}
+          version={latest}
+          facts={documentFacts(doc, type, person, storedRole())}
+          note={doc.notes ? { label: word('notes', 'Notes'), text: doc.notes } : null}
+          sensitive={doc.sensitive_effective === true}
+          returnFocus={printButton}
+          onClose={() => setPrinting(false)}
+        />
+      )}
       {confirmingTrash && (
         <MoveToTrashDialog
           title={doc.title}

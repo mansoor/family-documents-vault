@@ -106,11 +106,12 @@ const panelOf = (b: HTMLElement) =>
   document.getElementById(b.getAttribute('aria-controls') ?? '') as HTMLElement;
 
 describe('the row on a note', () => {
-  it('Download, who can see it, its tags, collections, a link, and the Trash at the end; none open', async () => {
+  it('Download, Print, who can see it, its tags, collections, a link, and the Trash at the end; none open', async () => {
     const { row } = await openAt(state(), '/notes/note-boiler');
     await waitFor(() => expect(button(row, /^Collections: 0 collections$/)).toBeVisible());
     expect(names(row)).toEqual([
       'Download',
+      'Print',
       'Who can see itEveryone',
       'Tags0',
       'Collections0',
@@ -129,11 +130,11 @@ describe('the row on a note', () => {
     await expectAccessible();
   });
 
-  it('a viewer: Download, and its tags when it has some; nothing to change', async () => {
+  it('a viewer: Download, Print, and its tags when it has some; nothing to change', async () => {
     const s = state();
     (s.documents[0] as { tags: string[] }).tags = ['house'];
     const { row } = await openAt(s, '/notes/note-boiler', 'viewer');
-    expect(names(row)).toEqual(['Download', 'Tags1']);
+    expect(names(row)).toEqual(['Download', 'Print', 'Tags1']);
     fireEvent.click(button(row, /^Tags/));
     const panel = panelOf(button(row, /^Tags/));
     expect(within(panel).getByRole('link', { name: 'Documents tagged house' })).toBeVisible();
@@ -141,9 +142,9 @@ describe('the row on a note', () => {
     await expectAccessible();
   });
 
-  it('a viewer of a note with no tags: Download alone', async () => {
+  it('a viewer of a note with no tags: Download and Print alone', async () => {
     const { row } = await openAt(state(), '/notes/note-boiler', 'viewer');
-    expect(names(row)).toEqual(['Download']);
+    expect(names(row)).toEqual(['Download', 'Print']);
   });
 
   it('one open at a time: another closes the first, the open one folds; Escape folds it back to its button', async () => {
@@ -186,7 +187,7 @@ describe('the row on a note', () => {
   it('a toolbar: one Tab stop, the arrows along it, Home and End', async () => {
     const { row } = await openAt(state(), '/notes/note-boiler');
     const all = within(row).getAllByRole('button');
-    expect(all.map((b) => b.tabIndex)).toEqual([0, -1, -1, -1, -1, -1]);
+    expect(all.map((b) => b.tabIndex)).toEqual([0, -1, -1, -1, -1, -1, -1]);
     all[0]?.focus();
     fireEvent.keyDown(all[0] as HTMLElement, { key: 'ArrowRight' });
     expect(all[1]).toHaveFocus();
@@ -351,11 +352,12 @@ describe('the row on a note', () => {
 });
 
 describe('the row on a document', () => {
-  it('for its owner: Download and its History together, then who, tags, collections, a link, and the Trash', async () => {
+  it('for its owner: Download, Print and its History together, then who, tags, collections, a link, and the Trash', async () => {
     const { row } = await openAt(state(), '/documents/doc-1');
     await waitFor(() => expect(button(row, /^Collections: 1 collection$/)).toBeVisible());
     expect(names(row)).toEqual([
       'Download',
+      'Print',
       'History1',
       'Who can see itEveryone',
       'Tags1',
@@ -375,9 +377,9 @@ describe('the row on a document', () => {
     await expectAccessible();
   });
 
-  it('a viewer: Download, its History and its tags; nothing to change or send', async () => {
+  it('a viewer: Download, Print, its History and its tags; nothing to change or send', async () => {
     const { row } = await openAt(state(), '/documents/doc-1', 'viewer');
-    expect(names(row)).toEqual(['Download', 'History1', 'Tags1']);
+    expect(names(row)).toEqual(['Download', 'Print', 'History1', 'Tags1']);
     fireEvent.click(button(row, /^History/));
     const panel = panelOf(button(row, /^History/));
     expect(within(panel).getByRole('heading', { name: 'History' })).toBeVisible();

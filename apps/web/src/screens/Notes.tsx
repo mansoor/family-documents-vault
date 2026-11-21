@@ -13,7 +13,8 @@ import { api } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
 import { collectionsOffered } from '../collections.js';
 import { mayChange } from '../DocActions.js';
-import { NotesSection, ONLY_ME_TITLE, secretNoteWarning } from '../notes.js';
+import { NoteText, NotesSection, ONLY_ME_TITLE, secretNoteWarning } from '../notes.js';
+import { PrintOut } from '../print.js';
 import { release, useLeaveGuard } from '../leave-guard.js';
 import { RichTextEditor } from '../rich-text.js';
 import { storedRole } from '../session.js';
@@ -287,6 +288,8 @@ function NotePane(props: {
   const [trashing, setTrashing] = useState(false);
   const [editSlot, setEditSlot] = useState<HTMLElement | null>(null);
   const [confirming, setConfirming] = useState(false);
+  // Printed (0.9.0): its title, who sees it and when it changed, and its words.
+  const [printing, setPrinting] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   // The row's counts, as its sections say them; and which of them is busy.
   const [counts, setCounts] = useState<{ collections?: number; links?: number }>({});
@@ -394,12 +397,13 @@ function NotePane(props: {
         onDirty={props.onDirty}
         editSlot={editSlot}
       />
-      {/* Under the note, one row: Download, a button for each section,
-          and the Trash at the end (the owner's request of 24 Oct 2026). */}
+      {/* Under the note, one row: Download, Print, a button for each
+          section, and the Trash at the end (the owner's request of 24 Oct 2026). */}
       <ActionRow
         kind="note"
         memberId={memberId}
         onDownload={() => downloadNote(doc)}
+        onPrint={() => setPrinting(true)}
         onTrash={mayEdit ? () => setConfirming(true) : null}
         trashRef={trashButton}
         error={<ErrorNote message={actionError} />}
@@ -497,6 +501,26 @@ function NotePane(props: {
             : []),
         ]}
       />
+      {printing && (
+        <PrintOut
+          title={title}
+          about={
+            <p className="print-about">
+              Note · {visibilityWords[doc.visibility]} · changed{' '}
+              {exactWords(doc.notes_updated_at ?? doc.updated_at, data.timezone ?? undefined)}
+            </p>
+          }
+          onDone={() => setPrinting(false)}
+        >
+          <div className="print-note">
+            {doc.notes ? (
+              <NoteText source={doc.notes} headingLevel={2} />
+            ) : (
+              <p>This note has no words yet.</p>
+            )}
+          </div>
+        </PrintOut>
+      )}
       {confirming && (
         <MoveToTrashDialog
           title={title}

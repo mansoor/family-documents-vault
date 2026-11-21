@@ -202,21 +202,29 @@ function TableScreen() {
 }
 
 /** The household as this reader is given it: what the filters offer and the cells name. */
-function useKnown(): Known {
+export function useKnown(): Known {
   const { authVersion, caps } = useApp();
   const hasCollections = caps?.features.collections === true;
-  const { data: members } = useLoad(async (t) => (await api.members(t)).items, [authVersion]);
-  const { data: types } = useLoad(async (t) => (await api.documentTypes(t)).items, [authVersion]);
-  const { data: collections } = useLoad(
+  const { data: members, error: membersError } = useLoad(
+    async (t) => (await api.members(t)).items,
+    [authVersion],
+  );
+  const { data: types, error: typesError } = useLoad(
+    async (t) => (await api.documentTypes(t)).items,
+    [authVersion],
+  );
+  const { data: collections, error: collectionsError } = useLoad(
     async (t) => (hasCollections ? (await api.collections(t)).items : []),
     [authVersion, hasCollections],
   );
   // Every tag the reader can see, for the filters by a tag and by a detail's label (T1).
-  const { data: tags } = useLoad(
+  const { data: tags, error: tagsError } = useLoad(
     async (t) => (await api.tags(t, undefined, { limit: 1000 })).items.map((x) => x.tag),
     [authVersion],
   );
   return {
+    settled: members !== null && types !== null && collections !== null && tags !== null,
+    failed: membersError ?? typesError ?? collectionsError ?? tagsError,
     members: members ?? [],
     // First names, or whole ones where two first names match (5.17c).
     names: shortName(members ?? []),
@@ -267,6 +275,8 @@ export interface TableScope {
 
 export function CollectionDocuments(props: {
   scope: TableScope;
+  /** The household as the reader is given it: the page's, which its Print shares. */
+  known: Known;
   /** Moved on by the page when what is in it changed there (Add documents, Undo). */
   refresh: number;
 }) {
@@ -292,7 +302,7 @@ export function CollectionDocuments(props: {
     seen.current = refresh;
     reload();
   }, [refresh, reload]);
-  const known = useKnown();
+  const { known } = props;
   const who: Chooser = {
     role,
     memberId: info?.member_id ?? null,
@@ -345,6 +355,10 @@ export interface Known {
   tags: string[];
   /** Whether the vault has Sensitive (0.9.0, AIR2): then its filter is offered. */
   sensitive?: boolean;
+  /** Everything above has come (printing a collection waits for it). */
+  settled?: boolean;
+  /** What could not be loaded, said where it matters. */
+  failed?: string | null;
 }
 
 // ------------------------------------------------------------- the pages
@@ -582,7 +596,7 @@ function usePages(view: TableView, holder: Holder | null, withoutNotes = false):
 // ------------------------------------------------------------- words
 
 /** How a sort's two ways read, for a column of this kind. */
-function directionWords(sort: DocumentSort): Record<SortDirection, string> {
+export function directionWords(sort: DocumentSort): Record<SortDirection, string> {
   switch (sort) {
     case 'issued':
     case 'expires':
@@ -597,7 +611,7 @@ function directionWords(sort: DocumentSort): Record<SortDirection, string> {
   }
 }
 
-const SORT_LABELS: Record<DocumentSort, string> = {
+export const SORT_LABELS: Record<DocumentSort, string> = {
   title: 'Title',
   kind: 'Kind',
   person: 'Person',
@@ -613,7 +627,7 @@ const SORT_LABELS: Record<DocumentSort, string> = {
   dated: 'Date',
 };
 
-function titleOf(doc: Pick<DocumentView, 'title' | 'type_key' | 'note_name'>): string {
+export function titleOf(doc: Pick<DocumentView, 'title' | 'type_key' | 'note_name'>): string {
   // A note with no title by its first words (the N1 re-check).
   return documentName(doc, 'Scan · needs a name');
 }
