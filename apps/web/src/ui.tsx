@@ -435,12 +435,15 @@ export function StatusBadge({ status }: { status: Status }) {
  * the screen opens, kept while it is open, and taken out of the history
  * entry, so that coming back to the entry later — Back, Forward, a reload —
  * neither says it again nor takes the focus for it (the R5 review). The
- * entry keeps its place in the history.
+ * entry keeps its place in the history. `fromAddress` false: something not
+ * on its own page (a document beside the list), which the page's entry
+ * says nothing to and which leaves the entry as it is.
  */
-export function useArrivedSaid(): string | null {
+export function useArrivedSaid(fromAddress = true): string | null {
   const location = useLocation();
   const navigate = useNavigate();
   const [said] = useState(() => {
+    if (!fromAddress) return null;
     const word = (location.state as { said?: unknown } | null)?.said;
     return typeof word === 'string' ? word : null;
   });
