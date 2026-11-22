@@ -495,6 +495,11 @@ export function registerDocuments(
   });
 
   app.get<{ Params: { id: string } }>('/api/v1/documents/:id', auth, async (req, reply) => {
+    // An Only me or an Essential note's words (0.9.0-dev.87): asked for as
+    // opening a document's file asks, once in five minutes. Anything else,
+    // and a document the caller cannot see, as before.
+    const ask = stepUp ? await docs.stepUpForNote(principal(req), req.params.id) : null;
+    if (stepUp && ask) await stepUp.require(principal(req), ask);
     const d = await docs.get(principal(req), req.params.id);
     reply.header('etag', d.etag);
     return d;
@@ -513,8 +518,14 @@ export function registerDocuments(
       }),
       req.body ?? {},
     );
-    // Essential turned off, or out of "only me": what opening it asks is
-    // asked first, or one tap takes the question away (5.4, SEC-17).
+    // An Only me or an Essential note, whatever is changed (0.9.0-dev.87):
+    // a save of its words asks as reading them does, and the answer gives
+    // them; a change the caller may not make is refused, never asked first.
+    // Then, for any document, Essential turned off, or out of "only me":
+    // what opening it asks is asked first, or one tap takes the question
+    // away.
+    const note = stepUp ? await docs.stepUpForNote(principal(req), req.params.id, true) : null;
+    if (stepUp && note) await stepUp.require(principal(req), note);
     const ask = stepUp ? await docs.stepUpToLoosen(principal(req), req.params.id, body) : null;
     if (stepUp && ask) await stepUp.require(principal(req), ask);
     // A visibility change rewraps keys and moves text; it is never a plain

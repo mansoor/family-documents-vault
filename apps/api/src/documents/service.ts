@@ -7,6 +7,7 @@ import {
   normaliseTags,
   NOTE_KIND,
   NOTE_MARK_CHARACTERS,
+  noteConfirm,
   noteMatchWords,
   noteFirstWords,
   notePreview,
@@ -92,6 +93,7 @@ import {
   type DocumentView,
   type NoLongerNeededView,
   type OfflineItem,
+  type OfflineNote,
   type RequiredRules,
   type RequiredValues,
   type SealedPresence,
@@ -126,6 +128,7 @@ import {
 import { objectKey, readAll, type StorageAdapter } from '@fdv/storage';
 import { sql, type Expression, type RawBuilder, type Selectable, type SqlBool } from 'kysely';
 import type { Principal, RequestMeta } from '../auth/service.js';
+import { STEP_UP_WINDOW_MS } from '../auth/step-up.js';
 import { ApiError } from '../errors.js';
 import type { VaultService } from '../vaults/service.js';
 import type { ReminderService } from '../reminders/service.js';
@@ -825,8 +828,6 @@ export async function holdForReading(trx: Db, documentId: string): Promise<void>
 
 /** The most notes GET /notes lists at once (0.9.0, N1): the newest. */
 export const NOTES_LIST_MAX = 500;
-/** The most of the caller's own Only me notes it opens to list or match. */
-const NOTES_OWN_MAX = 2_000;
 
 /** A version as a document's view counts them: newest first. */
 interface VersionBrief {
@@ -1214,8 +1215,24 @@ export class DocumentService {
     editors?: Map<string, string>,
     /** The replacements this reader sees, by id, when a list has read them (0082). */
     replacements?: Map<string, Replacement>,
+    /**
+     * In a list (0.9.0-dev.87): an Only me or an Essential note's words are
+     * never given in one, whoever asks and however lately they confirmed.
+     */
+    listed = false,
+    /**
+     * Its words given whatever this session confirmed (0.9.0-dev.87): a
+     * phone's Essentials, whose grant took the password again.
+     */
+    given = false,
   ): Promise<DocumentView> {
     const type = row.type_key ? await typeOf(row.type_key) : null;
+    // A note whose words are behind "Confirm it's you" (0.9.0-dev.87): given
+    // only where this session confirmed it's them within the last five
+    // minutes, never in a list — its title, its date and the rest as any
+    // document's. GET and PATCH /documents/{id} ask first, so they give them.
+    const confirm = noteConfirm(row);
+    const withheld = confirm !== null && !given && (listed || !(await confirmedLately(trx, p)));
     const versions = known ?? (await this.versionsOf(trx, [row.id])).get(row.id) ?? [];
     const named = editors ?? (await this.noteEditors(trx, p, [row]));
     const replacing = replacements ?? (await this.replacementsOf(trx, p, [row]));
@@ -1261,12 +1278,15 @@ export class DocumentService {
       source_folder: seesLocation(p.role) ? (row.source_folder ?? null) : null,
       is_essential: row.is_essential,
       tags: row.tags,
-      notes: onlyMe ? (opened?.notes ?? null) : row.notes,
+      notes: withheld ? null : onlyMe ? (opened?.notes ?? null) : row.notes,
       // A caregiver is not told whether their person wrote a note on it.
       has_notes: byGrant(p, row) ? false : row.notes !== null || row.notes_sealed !== null,
       // A note with no title, named by its first words where its words are
-      // given (the N1 re-check): never an Only me one's in a list.
-      ...noteName(row.type_key, row.title, onlyMe ? (opened?.notes ?? null) : row.notes),
+      // given: never an Only me one's in a list, nor one
+      // whose words are behind "Confirm it's you" (0.9.0-dev.87).
+      ...(withheld
+        ? { confirm_to_read: confirm }
+        : noteName(row.type_key, row.title, onlyMe ? (opened?.notes ?? null) : row.notes)),
       // Who last changed its note's words, and when (5.35): the moment to
       // whoever sees the document, the name on the activity log's terms.
       // A caregiver is told nothing of their person's note: not when, nor by whom.
@@ -1451,7 +1471,7 @@ export class DocumentService {
     const replacing = await this.replacementsOf(trx, p, rows);
     return Promise.all(
       rows.map((r) =>
-        this.view(trx, p, r, typeOf, null, versions.get(r.id) ?? [], editors, replacing),
+        this.view(trx, p, r, typeOf, null, versions.get(r.id) ?? [], editors, replacing, true),
       ),
     );
   }
@@ -1572,7 +1592,21 @@ export class DocumentService {
       detail: { title: row.title, type_key: row.type_key },
       ip: meta.ip,
     });
-    return this.view(trx, p, row, typeLookup(trx), await this.opened(trx, p, row));
+    // Its words given back: the caller has just written them (0.9.0-dev.87),
+    // an Essential note's too.
+    const opened = await this.opened(trx, p, row);
+    return this.view(
+      trx,
+      p,
+      row,
+      typeLookup(trx),
+      opened,
+      undefined,
+      undefined,
+      undefined,
+      false,
+      true,
+    );
   }
 
   /**
@@ -1680,12 +1714,20 @@ export class DocumentService {
       const was = await documentSensitive(trx, id);
       const done = await this.edit(trx, p, id, input, ifMatch, meta, place);
       drawNow = done.drawNow;
+      // Its words given back (0.9.0-dev.87): the route asked to confirm it's
+      // them first where the note asked, and a note that asked nothing — made
+      // Essential just now, say — was the caller's to read already.
       const seen = await this.view(
         trx,
         p,
         done.row,
         typeLookup(trx),
         await this.opened(trx, p, done.row),
+        undefined,
+        undefined,
+        undefined,
+        false,
+        true,
       );
       // Made sensitive while links outside the family still give it: the
       // edit is made, and the answer says so, for the client to ask whether
@@ -2490,7 +2532,7 @@ export class DocumentService {
       const replacing = await this.replacementsOf(trx, p, page);
       const items = await Promise.all(
         page.map((r) =>
-          this.view(trx, p, r, typeOf, null, versions.get(r.id) ?? [], editors, replacing),
+          this.view(trx, p, r, typeOf, null, versions.get(r.id) ?? [], editors, replacing, true),
         ),
       );
       const shown = statusAllowed(q, q.status);
@@ -2514,14 +2556,17 @@ export class DocumentService {
    * The caller's notes (0.9.0, N1, GET /notes): the notes they may see, as
    * every list of documents gives them, newest first, each with its first
    * words. An Only me note is in its owner's list alone — the rule every
-   * list keeps (`visibleTo`) — and its words, sealed (0033), are opened for
-   * its owner here, with one key for them all, as their own request for
-   * them: never for anybody else, who is never given the row.
+   * list keeps (`visibleTo`).
    *
-   * `q` finds within them, whatever its case: in a note's name, or its
-   * words as written. The family's are matched by the database; the
-   * caller's own Only me notes, whose words it cannot read, here, once
-   * opened. Nothing is parsed but the start of each note, for its preview.
+   * An Only me note and an Essential one (0.9.0-dev.87) are listed by their
+   * title and their date alone: their words are behind "Confirm it's you"
+   * (GET /documents/{id} asks), so none of them is given here — no first
+   * words — and `q` never finds one by them. `confirm_to_read` says which
+   * confirmation reading them asks.
+   *
+   * `q` finds within the rest, whatever its case: in a note's name, or its
+   * words as written, matched by the database. Nothing is parsed but the
+   * start of each note, for its preview.
    */
   async notes(
     p: Principal,
@@ -2538,80 +2583,52 @@ export class DocumentService {
       base = q.deleted
         ? base.where('deleted_at', 'is not', null)
         : base.where('deleted_at', 'is', null);
-      // The family's: matched by the database.
-      let plain = base.where('visibility', '<>', 'private');
       if (words) {
         const like = `%${words.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
         // Its name, or its words without their marks: "ann first" finds
-        // `**Ann** first`, as the caller's own are matched below.
+        // `**Ann** first`.
         const flat = (column: 'title' | 'notes') =>
-          // A no-break space is a space here (the N1 re-check), as it is in
-          // the caller's own, matched in JavaScript: Chrome writes a run of
-          // typed spaces with them.
+          // A no-break space is a space here: Chrome
+          // writes a run of typed spaces with them.
           sql<string>`lower(regexp_replace(regexp_replace(coalesce(${sql.ref(column)}, ''), ${NOTE_MARK_CHARACTERS}, '', 'g'), '[\\s\\u00a0\\u2007\\u202f]+', ' ', 'g'))`;
-        plain = plain.where((eb) =>
-          eb.or([eb(flat('title'), 'like', like), eb(flat('notes'), 'like', like)]),
+        base = base.where((eb) =>
+          eb.or([
+            eb(flat('title'), 'like', like),
+            // Never by the words of one that asks first (0.9.0-dev.87).
+            eb.and([
+              eb('visibility', '<>', 'private'),
+              eb('is_essential', '=', false),
+              eb(flat('notes'), 'like', like),
+            ]),
+          ]),
         );
       }
-      const shared = (await plain
+      const rows = (await base
         .orderBy('updated_at', 'desc')
         .orderBy('id')
         .limit(limit + 1)
         .execute()) as unknown as DocRow[];
-      // The caller's own Only me notes (`visibleTo` gives nobody else's):
-      // opened, with one key, and matched here.
-      const own = (await base
-        .where('visibility', '=', 'private')
-        .where('owner_member_id', '=', p.memberId)
-        .orderBy('updated_at', 'desc')
-        .orderBy('id')
-        .limit(NOTES_OWN_MAX)
-        .execute()) as unknown as DocRow[];
-      const opened = new Map<string, string | null>();
-      if (own.length > 0) {
-        const key = await this.keys.unwrap(trx, {
-          householdId: p.householdId,
-          kind: 'member',
-          memberId: p.memberId,
-        });
-        for (const r of own) {
-          let body = r.notes;
-          if (r.notes_sealed) {
-            try {
-              body = openPrivate(key.key, r.id, {
-                notes_sealed: r.notes_sealed,
-                extra_sealed: null,
-              }).notes;
-            } catch {
-              // One that does not open is listed with no words.
-              body = null;
-            }
-          }
-          opened.set(r.id, body);
-        }
-      }
-      const mine = own.filter(
-        (r) =>
-          !words ||
-          noteMatchWords(r.title).includes(words) ||
-          noteMatchWords(opened.get(r.id)).includes(words),
-      );
-      const all = [...shared, ...mine].sort(
-        (a, b) => b.updated_at.getTime() - a.updated_at.getTime() || (a.id < b.id ? -1 : 1),
-      );
+      const kind = await typeLookup(trx)(NOTE_KIND);
       return {
-        items: all.slice(0, limit).map((r) => ({
-          id: r.id,
-          title: r.title,
-          preview: notePreview(r.visibility === 'private' ? opened.get(r.id) : r.notes),
-          visibility: r.visibility,
-          owner_member_id: r.owner_member_id,
-          tags: r.tags,
-          updated_at: r.updated_at.toISOString(),
-          notes_updated_at: r.notes_updated_at?.toISOString() ?? null,
-          deleted_at: r.deleted_at?.toISOString() ?? null,
-        })),
-        truncated: all.length > limit || own.length >= NOTES_OWN_MAX,
+        items: rows.slice(0, limit).map((r) => {
+          const confirm = noteConfirm(r);
+          return {
+            id: r.id,
+            title: r.title,
+            preview: confirm ? '' : notePreview(r.notes),
+            visibility: r.visibility,
+            is_essential: r.is_essential,
+            sensitive: r.sensitive,
+            sensitive_effective: sensitiveOf(r, kind),
+            confirm_to_read: confirm,
+            owner_member_id: r.owner_member_id,
+            tags: r.tags,
+            updated_at: r.updated_at.toISOString(),
+            notes_updated_at: r.notes_updated_at?.toISOString() ?? null,
+            deleted_at: r.deleted_at?.toISOString() ?? null,
+          };
+        }),
+        truncated: rows.length > limit,
       };
     });
   }
@@ -3955,6 +3972,7 @@ export class DocumentService {
         sealed_details: string[];
         no_longer_needed_at: Date | null;
         words_shown: boolean;
+        words_asked: boolean;
         details_text: string;
         rank: number;
         snippet: string;
@@ -3970,7 +3988,10 @@ export class DocumentService {
                    coalesce(d.title, '') || ' ' || coalesce(d.issued_by, '') || ' ' ||
                    coalesce(d.identifier, '') || ' ' ||
                    case when d.visibility in ('household', 'adults')
-                        then fdv_details_text(d.extra) || ' ' || coalesce(d.notes, '')
+                        then fdv_details_text(d.extra) || ' ' ||
+                             -- Never an Essential note's words (0.9.0-dev.87).
+                             case when d.type_key is not distinct from ${NOTE_KIND} and d.is_essential
+                                  then '' else coalesce(d.notes, '') end
                         else '' end,
                    query.tsq, 'MaxFragments=1, MaxWords=18, MinWords=6, StartSel=<em>, StopSel=</em>') as snippet,
                  'title'::text as matched_in
@@ -4001,6 +4022,9 @@ export class DocumentService {
                d.notes_sealed is not null as notes_sealed_present, d.sealed_details,
                d.no_longer_needed_at,
                d.visibility in ('household', 'adults') as words_shown,
+               -- A note whose words are behind "Confirm it's you" (0.9.0-dev.87).
+               (d.type_key is not distinct from ${NOTE_KIND}
+                and (d.visibility = 'private' or d.is_essential)) as words_asked,
                case when d.visibility in ('household', 'adults')
                     then fdv_details_text(d.extra) else '' end as details_text,
                h.rank, h.snippet, h.matched_in, d.visibility
@@ -4025,7 +4049,7 @@ export class DocumentService {
       // "**Blue** on *Mondays*". The same words as above, the note's
       // without its marks, in one statement for the page.
       const withNotes = rows.rows.filter(
-        (r) => r.matched_in === 'title' && r.words_shown && r.notes !== null,
+        (r) => r.matched_in === 'title' && r.words_shown && !r.words_asked && r.notes !== null,
       );
       const snippets = new Map<string, string>();
       if (withNotes.length > 0) {
@@ -4070,8 +4094,13 @@ export class DocumentService {
         items.push({
           document_id: r.document_id,
           title: r.title,
-          // Not a sensitive note's first words either (H1a): they are its words.
-          ...noteName(r.type_key, r.title, r.words_shown && !sensitive ? r.notes : null),
+          // Not a sensitive note's first words either: they are its
+          // words; nor an Only me or an Essential one's (0.9.0-dev.87).
+          ...noteName(
+            r.type_key,
+            r.title,
+            r.words_shown && !sensitive && !r.words_asked ? r.notes : null,
+          ),
           type_key: r.type_key,
           category: r.category,
           owner_member_id: r.owner_member_id,
@@ -4092,7 +4121,8 @@ export class DocumentService {
           ),
           // A sensitive paper's words are never shown in a snippet, nor
           // marked (0.9.0, H1a): its title alone says what was found.
-          snippet: sensitive ? '' : (snippets.get(r.document_id) ?? r.snippet),
+          // Nor an Only me or an Essential note's (0.9.0-dev.87).
+          snippet: sensitive || r.words_asked ? '' : (snippets.get(r.document_id) ?? r.snippet),
           matched_in: r.matched_in,
           rank: Number(r.rank),
           // Found only as its person's caregiver (H1b), as a list says it
@@ -4115,6 +4145,9 @@ export class DocumentService {
          where d.owner_member_id = ${p.memberId}::uuid
            and d.visibility = 'private'
            and d.deleted_at is null
+           -- A note's words are never searched before it is confirmed to be
+           -- them (0.9.0-dev.87); its title is, in this pass.
+           and d.type_key is distinct from ${NOTE_KIND}
            and (${sql.raw(HAS_PRIVATE_WORDS)})`.execute(trx);
       const count = sealed.rows[0]?.n ?? 0;
       if (count === 0 || !this.sealedKey) return { items, sealed_pending: { count } };
@@ -4173,6 +4206,34 @@ export class DocumentService {
         .executeTakeFirst();
       if (!row || !canSee(p, row)) return null;
       return sensitiveAction(row);
+    });
+  }
+
+  /**
+   * Which confirmation reading or saving this note's words asks first
+   * (0.9.0-dev.87): an Only me note `open_private_document`, an Essential one
+   * `open_essential`, as opening a document's file asks; null for anything
+   * else — a document, any other note, one the caller cannot see (a 404
+   * further down, never "it is there, and it asks"). Sensitive alone never
+   * asks. In the Trash too: its words are as much its words there.
+   */
+  async stepUpForNote(
+    p: Principal,
+    documentId: string,
+    /** A change, not a read: one the caller may not make is refused, never asked first. */
+    forChange = false,
+  ): Promise<SensitiveAction | null> {
+    if (forChange && !allows(p, 'document.edit')) return null;
+    return withPrincipal(this.db, p, async (trx) => {
+      const row = await trx
+        .selectFrom('document')
+        .select(['type_key', 'visibility', 'is_essential', 'owner_member_id'])
+        .where('id', '=', documentId)
+        .executeTakeFirst();
+      if (!row || !canSee(p, row)) return null;
+      // A teen changes only their own: the rest is refused, not asked.
+      if (forChange && p.role === 'teen' && row.owner_member_id !== p.memberId) return null;
+      return noteConfirm(row);
     });
   }
 
@@ -4321,6 +4382,57 @@ export class DocumentService {
         });
       }
       return { items, truncated: rows.length > OFFLINE_SET_MAX };
+    });
+  }
+
+  /**
+   * The Essential notes a phone may keep (0.9.0-dev.87), words and all: by
+   * the rule its Essentials are kept by (`mayKeepOffline`) — owners and
+   * adults all they see, a teen their own, a viewer none, an Only me one (its
+   * owner's alone) only when the grant includes them. The grant, which took
+   * the password again, is what confirmed it's them; it is asked by the
+   * caller (`OfflineService.set`).
+   */
+  async offlineNotes(
+    p: Principal,
+    includePrivate: boolean,
+  ): Promise<{ notes: OfflineNote[]; truncated: boolean }> {
+    if (p.role === 'viewer') return { notes: [], truncated: false };
+    return withPrincipal(this.db, p, async (trx) => {
+      let q = trx
+        .selectFrom('document')
+        .selectAll('document')
+        .where(this.visibleTo(p) as never)
+        .where('document.type_key', '=', NOTE_KIND)
+        .where('document.is_essential', '=', true)
+        .where('document.deleted_at', 'is', null);
+      if (p.role === 'teen') q = q.where('document.owner_member_id', '=', p.memberId);
+      if (!includePrivate) q = q.where('document.visibility', '<>', 'private');
+      const rows = await q
+        .orderBy('document.id')
+        .limit(OFFLINE_SET_MAX + 1)
+        .execute();
+      const typeOf = typeLookup(trx);
+      const notes: OfflineNote[] = [];
+      for (const row of rows.slice(0, OFFLINE_SET_MAX)) {
+        const opened = await this.opened(trx, p, row);
+        notes.push({
+          document: await this.view(
+            trx,
+            p,
+            row,
+            typeOf,
+            opened,
+            [],
+            undefined,
+            undefined,
+            false,
+            true,
+          ),
+          private: row.visibility === 'private',
+        });
+      }
+      return { notes, truncated: rows.length > OFFLINE_SET_MAX };
     });
   }
 
@@ -5006,6 +5118,21 @@ function dateValueOf(on: string | null, precision: string | null): DateValue | n
 const fileRemoved = () => new ApiError(410, 'file_removed', FILE_REMOVED);
 
 /** The step-up opening a document asks for: "only me" first, then Essentials. */
+/**
+ * Whether this session confirmed it's them within the last five minutes
+ * (0.9.0-dev.87), as step-up counts it: an Only me or an Essential note's
+ * words are given only then, outside GET and PATCH /documents/{id}, which ask.
+ */
+async function confirmedLately(trx: Db, p: Principal): Promise<boolean> {
+  const row = await trx
+    .selectFrom('session')
+    .select('verified_at')
+    .where('id', '=', p.sessionId)
+    .executeTakeFirst();
+  const at = row?.verified_at ? new Date(row.verified_at).getTime() : 0;
+  return Date.now() - at <= STEP_UP_WINDOW_MS;
+}
+
 export type SensitiveAction = 'open_private_document' | 'open_essential';
 function sensitiveAction(d: { visibility: string; is_essential: boolean }): SensitiveAction | null {
   if (d.visibility === 'private') return 'open_private_document';

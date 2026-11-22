@@ -6,6 +6,24 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.9.0-dev.87] - 2026-11-21 — notes that ask, locking after a while away, a wider Share
+
+### Added
+
+- **Notes ask "Confirm it's you", as documents do.** An Only me note and an Essential note ask you to confirm it's you — your passkey, your password, or a code — before their words are shown, and before a change to them is saved. Once you have, nothing asks again for five minutes. A Sensitive note asks nothing, as a Sensitive document doesn't.
+- **Until then, only their title and date.** In the Notes list, in search and everywhere else notes are listed, an Only me or Essential note shows its title and when it changed, never its first words, and no search finds it by a word inside it: only by its title. If you choose not to confirm, the note says "This note asks you to confirm it's you before its words are shown", with a button to try again.
+- **Essential and Sensitive notes.** A note can be Essential or Sensitive, as a document can: under a note, Essential and sensitive switches each one on or off, and New note offers both. Turning Essential off asks you to confirm it's you, as it does for a document. A teen can make a note sensitive, but only an adult can make it not sensitive. A Sensitive note is never sent to a cloud AI reader.
+- **Phones can keep Essential notes.** The vault can now give the family's phones an Essential note's words to keep for when there is no connection, behind the same password the phone's Essentials already ask for; Only me ones only when you choose to keep those too. (The phone app keeps them from a coming version.)
+- **Lock after a while away.** A browser nobody has used for a while locks itself, as Lock does: what was on the screen is put away until somebody confirms it's them. Owners choose the family's time in Settings → Privacy: Off, or 5, 10, 15, 30 or 60 minutes — 15 unless an owner chooses otherwise. In Settings → Your account, anyone can choose a shorter time for themselves, never a longer one. Choosing a longer time, or Off, asks you to confirm it's you first.
+- **Only real use counts.** Moving the mouse, typing, scrolling and touching the screen keep the vault open, in every tab of the browser at once, so reading a long document counts too. What the page checks by itself, such as the counts in the sidebar, doesn't. A minute before it locks, a quiet line says so: "The vault locks in a minute. Move the mouse, press a key or tap the screen to keep it open." An upload of many documents that is still sending keeps the vault open; if nobody has come back by the time it finishes, it locks then. The phone app is never locked this way.
+- **Activity** says when the vault locked itself in one browser after a while away ("was away for 15 minutes or more"), when an owner changes the family's time, and when someone chooses a time of their own.
+
+### Changed
+
+- **Share a link opens wide enough.** Share a link from a document's or a note's ⋯ menu, and a collection's Share, now open wide enough for their form on a computer or a tablet, and use the whole width of a phone's screen.
+- In the Notes list, an Only me note no longer shows its first words, and searching notes no longer finds one by its words, even your own: only by its title.
+- **The phone app needs its next version for these notes.** Until it is updated, opening or editing an Only me or Essential note on the phone says "Confirm it's you to carry on." and goes no further. Other notes, and everything else, work as before.
+
 ## [0.9.0-dev.86] - 2026-11-21 — Lock
 
 ### Added

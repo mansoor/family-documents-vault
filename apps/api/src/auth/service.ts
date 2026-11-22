@@ -1,4 +1,7 @@
 import {
+  autoLockInEffect,
+  isAutoLockMinutes,
+  type AutoLockMinutes,
   guestAccessEnded,
   guestAccessEndedWords,
   restrictionMayWiden,
@@ -79,6 +82,23 @@ export interface RequestMeta {
    * (0.9.0): a browser's cookie, or an app's `device_proof` sent back.
    */
   deviceProof?: string | null;
+  /**
+   * The vault's own page asked (0.9.0-dev.87): its refresh token in a cookie,
+   * and no app installation. A session it signs in is a browser's, which
+   * locks by itself after a while away.
+   */
+  browser?: boolean;
+}
+
+/**
+ * How often a browser's session writes down that it was used (0.9.0-dev.87):
+ * at most this often, whatever it asks. The times on offer are minutes.
+ */
+export const LAST_ACTIVE_EVERY_MS = 15_000;
+
+/** A stored time, as the API says it: one of those on offer (the database holds it to them), or none. */
+export function autoLockOf(minutes: number | null | undefined): AutoLockMinutes | null {
+  return isAutoLockMinutes(minutes) ? minutes : null;
 }
 
 /**
@@ -150,6 +170,12 @@ export interface Principal {
    * session_locked` (`authenticate`). Absent while it is not.
    */
   locked?: true;
+  /**
+   * After how many minutes with nobody using it this session locks by
+   * itself (0.9.0-dev.87): a browser's, the household's time or the
+   * person's own shorter one. Absent for a phone's, and where it is Off.
+   */
+  autoLockMinutes?: AutoLockMinutes;
 }
 
 /** Why a session must deal with two-step sign-in before anything else (0.9.0). */
@@ -937,6 +963,8 @@ export class AuthService {
         user_agent: meta.userAgent ?? null,
         ip: meta.ip ?? null,
         installation_id: meta.installationId ?? null,
+        // A browser's (0.9.0-dev.87): only it locks by itself after a while away.
+        in_browser: meta.browser === true && !meta.installationId,
         rotated_at: new Date(now),
         expires_at: expiresAt,
         absolute_expires_at: new Date(now + SESSION_MAX_MS),
@@ -1298,7 +1326,17 @@ export class AuthService {
    */
   async authenticate(
     bearer: string,
-    opts: { enrolling?: boolean; whileLocked?: boolean } = {},
+    opts: {
+      enrolling?: boolean;
+      whileLocked?: boolean;
+      /**
+       * Asked by a browser by itself (`X-FDV-Background`, 0.9.0-dev.87): not
+       * use, so the time it was last used stays as it was.
+       */
+      background?: boolean;
+      /** Where it came from, for the line a lock after a while away writes. */
+      ip?: string | null;
+    } = {},
   ): Promise<Principal> {
     let claims: AccessClaims;
     try {
@@ -1332,6 +1370,15 @@ export class AuthService {
           'account_household.access_expires_at',
           'session.factor_verified_at',
           'session.locked_at',
+          'session.in_browser',
+          'session.last_active_at',
+          'account_household.auto_lock_minutes as own_auto_lock',
+          (eb) =>
+            eb
+              .selectFrom('household')
+              .select('household.auto_lock_minutes')
+              .whereRef('household.id', '=', 'session.household_id')
+              .as('household_auto_lock'),
         ])
         .where('session.id', '=', claims.sid)
         .where('session.revoked_at', 'is', null)
@@ -1366,13 +1413,6 @@ export class AuthService {
     if (guestAccessEnded(open.access_expires_at)) {
       throw sessionEnded('guest access ended', 'access_ended');
     }
-    // A locked session (0.9.0-dev.86): refused everywhere but the few routes
-    // that draw the lock screen, unlock it or sign out — whichever route
-    // asks, by default; a renewed access token names the same session, so
-    // it is as locked. Asked before two-step sign-in: nothing else is said
-    // to a locked session.
-    if (open.locked_at !== null && !opts.whileLocked) throw sessionLocked();
-    if (pending && !opts.enrolling) throw twoStepSetupRequired(open.role, pending);
     const who = {
       accountId: open.account_id,
       sessionId: claims.sid,
@@ -1380,6 +1420,31 @@ export class AuthService {
       memberId: open.member_id,
       role: open.role,
     };
+    // Lock by itself after a while away (0.9.0-dev.87): a browser's session
+    // with a time in effect, last used longer ago than that, is locked now,
+    // with its line, before anything is answered — as Lock would have locked
+    // it. Whatever asks: a request the page made by itself too.
+    const away = open.in_browser
+      ? autoLockInEffect(autoLockOf(open.household_auto_lock), autoLockOf(open.own_auto_lock))
+      : null;
+    let lockedAt = open.locked_at;
+    const idleMs = Date.now() - new Date(open.last_active_at).getTime();
+    if (lockedAt === null && away !== null && idleMs > away * 60_000) {
+      await this.lockAway(who, away, opts.ip ?? null);
+      lockedAt = new Date();
+    }
+    // A locked session (0.9.0-dev.86): refused everywhere but the few routes
+    // that draw the lock screen, unlock it or sign out — whichever route
+    // asks, by default; a renewed access token names the same session, so
+    // it is as locked. Asked before two-step sign-in: nothing else is said
+    // to a locked session.
+    if (lockedAt !== null && !opts.whileLocked) throw sessionLocked();
+    if (pending && !opts.enrolling) throw twoStepSetupRequired(open.role, pending);
+    // Used now (0.9.0-dev.87): a browser's, not locked, asked by somebody and
+    // not by the page by itself — written at most every few seconds.
+    if (open.in_browser && lockedAt === null && !opts.background && idleMs > LAST_ACTIVE_EVERY_MS) {
+      await this.usedNow(who);
+    }
     const sight = await this.sightOf(who);
     return {
       ...who,
@@ -1391,8 +1456,53 @@ export class AuthService {
       // where files are kept nor of the mail server (the 5.34 review).
       ...(sight.restricted || open.access_expires_at ? { restricted: true } : {}),
       ...(pending ? { twoStepPending: pending } : {}),
-      ...(open.locked_at !== null ? { locked: true as const } : {}),
+      ...(lockedAt !== null ? { locked: true as const } : {}),
+      ...(away !== null ? { autoLockMinutes: away } : {}),
     };
+  }
+
+  /**
+   * A browser's session locked after a while away (0.9.0-dev.87), with its
+   * line: "… was away for 15 minutes or more, so the vault locked itself in one
+   * browser". Locked already — by another request at the same moment, or by
+   * Lock — it stays as it was, and nothing more is written.
+   */
+  private async lockAway(
+    who: Omit<Principal, 'seesAdults'>,
+    minutes: AutoLockMinutes | null,
+    ip: string | null,
+  ): Promise<void> {
+    await withPrincipal(this.db, who, async (trx) => {
+      const locked = await trx
+        .updateTable('session')
+        .set({ locked_at: new Date() })
+        .where('id', '=', who.sessionId)
+        .where('revoked_at', 'is', null)
+        .where('locked_at', 'is', null)
+        .executeTakeFirst();
+      if (Number(locked.numUpdatedRows) !== 1) return;
+      await appendAudit(trx, {
+        householdId: who.householdId,
+        actorAccountId: who.accountId,
+        action: 'session.locked_away',
+        objectType: 'session',
+        objectId: who.sessionId,
+        detail: { minutes },
+        ip,
+      });
+    });
+  }
+
+  /** A browser's session used just now (0.9.0-dev.87): its time away starts again. */
+  private async usedNow(who: Omit<Principal, 'seesAdults'>): Promise<void> {
+    await withPrincipal(this.db, who, (trx) =>
+      trx
+        .updateTable('session')
+        .set({ last_active_at: new Date() })
+        .where('id', '=', who.sessionId)
+        .where('locked_at', 'is', null)
+        .execute(),
+    );
   }
 
   /**
@@ -1400,7 +1510,14 @@ export class AuthService {
    * unlocked with a credential (`StepUpService.unlock`). Locked already, it
    * stays as it was, and nothing more is written.
    */
-  async lockSession(p: Principal, meta: RequestMeta): Promise<void> {
+  async lockSession(p: Principal, meta: RequestMeta, opts: { away?: boolean } = {}): Promise<void> {
+    // The page locked itself as the time in effect ran out (0.9.0-dev.87):
+    // the line says so, with the time, as the vault's own lock does — and
+    // with none where the time is Off now (changed since the page heard it).
+    if (opts.away) {
+      await this.lockAway(p, p.autoLockMinutes ?? null, meta.ip ?? null);
+      return;
+    }
     await withPrincipal(this.db, p, async (trx) => {
       const locked = await trx
         .updateTable('session')

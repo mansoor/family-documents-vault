@@ -5,7 +5,7 @@ import {
   type DevicePlatform,
   type PairedDevice,
 } from '@fdv/shared';
-import { api } from '../api.js';
+import { api, quiet } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
 import { storedRole } from '../session.js';
 import { Button, ConfirmDialog, ErrorNote, LoadFailed, OnTop, useSheetFocus } from '../ui.js';
@@ -282,7 +282,8 @@ function PairingDialog(props: {
   useEffect(() => {
     if (paired || ran) return;
     const t = setInterval(() => {
-      void withToken((tk) => api.listDevices(tk))
+      // On a timer: never somebody using the vault.
+      void withToken((tk) => quiet.listDevices(tk))
         .then((r) => {
           const fresh = r?.items.find((d) => d.mine && !known.current.has(d.id));
           if (fresh) setPaired(fresh);

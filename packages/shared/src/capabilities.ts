@@ -813,6 +813,16 @@ export interface CapabilityFeatures {
    * session: another device is never locked by it. Absent from older vaults.
    */
   session_lock?: boolean;
+  /**
+   * Lock by itself after a while away (0.9.0-dev.87): a browser's session
+   * with nobody using it for the household's time (GET /household/auto-lock;
+   * an owner's, 15 minutes unless one chose otherwise, or Off) or the
+   * person's own shorter one is locked by the vault as Lock locks it. A
+   * request marked `X-FDV-Background: 1` is not use; `POST /auth/still-here`
+   * is. A phone's session and a connected app are never locked so. Absent
+   * from older vaults.
+   */
+  auto_lock?: boolean;
 }
 
 export interface CapabilityLimits {
@@ -876,8 +886,9 @@ export const CODE_USED_REASON = 'code_used';
  * `error.code` this, on every route but those that draw the lock screen,
  * unlock it (`POST /auth/unlock`) or sign out. The session is not over: a
  * client shows its lock screen and keeps the sign-in. Only a session locked
- * by `POST /auth/lock` is ever answered so, and a client that never locks
- * never sees it.
+ * by `POST /auth/lock`, or a browser's left unused for its time
+ * (`features.auto_lock`), is ever answered so: a phone that never locks never
+ * sees it.
  */
 export const SESSION_LOCKED_CODE = 'session_locked';
 export const SESSION_LOCKED_MESSAGE = 'The vault is locked. Confirm it’s you to unlock it.';

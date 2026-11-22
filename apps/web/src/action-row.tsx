@@ -46,7 +46,7 @@ import { TrashIcon } from './ui.js';
  */
 
 export type ActionSectionKey =
-  'visibility' | 'tags' | 'collections' | 'share' | 'history' | 'activity';
+  'visibility' | 'marks' | 'tags' | 'collections' | 'share' | 'history' | 'activity';
 
 export interface ActionSection {
   key: ActionSectionKey;
@@ -68,6 +68,9 @@ export interface ActionSection {
 const HASHES: Record<string, ActionSectionKey> = {
   'who-can-see-it': 'visibility',
   visibility: 'visibility',
+  // A note's Essential and Sensitive (0.9.0-dev.87).
+  'essential-and-sensitive': 'marks',
+  marks: 'marks',
   tags: 'tags',
   collections: 'collections',
   share: 'share',
@@ -366,7 +369,16 @@ export function countBadge(n: number, one: string, many: string) {
 }
 
 type IconName =
-  'download' | 'print' | 'eye' | 'tag' | 'collection' | 'link' | 'history' | 'info' | 'activity';
+  | 'download'
+  | 'print'
+  | 'eye'
+  | 'tag'
+  | 'collection'
+  | 'link'
+  | 'history'
+  | 'info'
+  | 'activity'
+  | 'star';
 
 const PATHS: Record<IconName, ReactNode> = {
   download: (
@@ -382,6 +394,12 @@ const PATHS: Record<IconName, ReactNode> = {
       <path d="M6 9V3h12v6" />
       <path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2" />
       <path d="M6 14h12v7H6z" />
+    </>
+  ),
+  // A star: Essential, and Sensitive with it (0.9.0-dev.87).
+  star: (
+    <>
+      <path d="M12 3l2.8 5.7 6.2.9-4.5 4.4 1.1 6.2L12 17.3 6.4 20.2l1.1-6.2L3 9.6l6.2-.9z" />
     </>
   ),
   eye: (

@@ -57,7 +57,8 @@ export type StepUpAction =
   | 'download_sensitive'
   | 'connect_app'
   | 'sign_out_others'
-  | 'change_backups';
+  | 'change_backups'
+  | 'change_auto_lock';
 
 const WHY: Record<StepUpAction, string> = {
   open_private_document: 'to open a document only you can see',
@@ -175,6 +176,11 @@ const WHY: Record<StepUpAction, string> = {
   // a session picked up from an unlocked device could otherwise send every
   // backup to a bucket of its own, or quietly stop the copies.
   change_backups: 'to change where backups are copied',
+  // The vault left unlocked longer in a browser nobody is using, or never
+  // locked so (0.9.0-dev.87): a session picked up from an unlocked browser
+  // could otherwise keep itself, and every browser of the family's, open.
+  // Any credential. A shorter time never asks.
+  change_auto_lock: 'to let the vault stay unlocked longer',
 };
 
 /**
@@ -482,7 +488,9 @@ export class StepUpService {
       await withPrincipal(this.db, p, async (trx) => {
         const unlocked = await trx
           .updateTable('session')
-          .set({ locked_at: null })
+          // Used just now (0.9.0-dev.87): its time away starts again, or it
+          // would lock by itself at its next request.
+          .set({ locked_at: null, last_active_at: now })
           .where('id', '=', p.sessionId)
           .where('locked_at', 'is not', null)
           .executeTakeFirst();

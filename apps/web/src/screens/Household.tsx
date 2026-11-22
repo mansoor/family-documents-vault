@@ -5,6 +5,7 @@ import { api, ApiRequestError } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
 import { TwoStepNeeded } from '../identity.js';
 import { EndedSharingCard } from '../ended-sharing.js';
+import { FamilyAutoLockCard } from '../auto-lock-settings.js';
 import { NeutralWordingCard } from '../neutral-wording.js';
 import { TwoStepRuleCard } from '../two-step-rule.js';
 import { endedSharingCard, privacyRows, SettingsRows, wordingCard } from '../settings-sections.js';
@@ -36,6 +37,8 @@ export function PrivacyScreen() {
       {endedSharingCard(role, caps) && <EndedSharingCard />}
       {/* Two-step sign-in for adults (0.9.0): an owner's to change. */}
       {role === 'owner' && <TwoStepRuleCard />}
+      {/* Lock after a while away (0.9.0-dev.87): the family's time, an owner's. */}
+      {role === 'owner' && caps?.features.auto_lock === true && <FamilyAutoLockCard />}
       {/* Its page: who sees identity details, where it was shown before. */}
       <SettingsRows rows={rows} label="More about privacy" />
     </SettingsPage>

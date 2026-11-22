@@ -1575,6 +1575,23 @@ fieldset.limits-set {
   width: min(680px, 100%);
 }
 
+/* Share a link, from a row's ⋯ or a collection's page (0.9.0-dev.87, the
+   owner's ask of 21 Nov 2026): wide enough for its form on a desktop or a
+   tablet — its choices side by side, its end and its code on a line each —
+   and the whole width of a phone, from its bottom edge. */
+.sheet.share-sheet {
+  width: min(680px, 100%);
+}
+
+@media (max-width: 639px) {
+  .sheet.share-sheet {
+    width: calc(100% + 32px);
+    max-width: none;
+    margin: 0 -16px -16px;
+    border-radius: var(--radius-m) var(--radius-m) 0 0;
+  }
+}
+
 .dialog-title {
   font-size: 20px;
   overflow-wrap: anywhere;
@@ -8862,4 +8879,40 @@ html:has(.shell-phone):has(.has-toast) {
 /* Lock in the bar on top: beside the account's button. */
 .lock-btn {
   white-space: nowrap;
+}
+
+/*
+ * Lock after a while away (0.9.0-dev.87): a minute before it locks, a quiet
+ * line where the renewal's wait is said, never over what is being read for
+ * long. The region is always there, empty until then, so it is heard.
+ */
+.auto-lock-soon {
+  position: fixed;
+  bottom: calc(84px + env(safe-area-inset-bottom));
+  left: 50%;
+  z-index: 60;
+  transform: translateX(-50%);
+  width: max-content;
+  max-width: calc(100vw - 32px);
+  padding: 10px 16px;
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--warn);
+  border-radius: var(--radius-m);
+  background: var(--surface);
+  color: var(--ink);
+  box-shadow: 0 6px 24px var(--scrim);
+}
+.auto-lock-soon p {
+  margin: 0;
+}
+/* Empty, it takes no room and shows nothing, and is still heard when it speaks. */
+.auto-lock-soon:empty {
+  padding: 0;
+  border: 0;
+  box-shadow: none;
+}
+@media (min-width: 768px) {
+  .auto-lock-soon {
+    bottom: 24px;
+  }
 }

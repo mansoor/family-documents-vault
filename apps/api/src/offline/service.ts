@@ -190,12 +190,17 @@ export class OfflineService {
     const { items, truncated } = grant
       ? await this.docs.offlineEssentials(p, grant.include_private)
       : { items: [], truncated: false };
+    // Essential notes, words and all (0.9.0-dev.87): behind the same grant.
+    const kept = grant
+      ? await this.docs.offlineNotes(p, grant.include_private)
+      : { notes: [], truncated: false };
     return {
       items,
+      notes: kept.notes,
       grant,
       max_offline_days: this.maxOfflineDays,
       server_time: new Date().toISOString(),
-      truncated,
+      truncated: truncated || kept.truncated,
     };
   }
 

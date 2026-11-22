@@ -1,6 +1,9 @@
 import {
   looksSecret,
   noteLinkAllowed,
+  SENSITIVE_LABEL,
+  SENSITIVE_MEANS,
+  TEEN_KEEPS_SENSITIVE,
   NOTES_MAX,
   notesPlainText,
   noteTreeText,
@@ -22,9 +25,17 @@ import {
 import { createPortal } from 'react-dom';
 import { api, ApiRequestError } from './api.js';
 import { describeError, useApp } from './app-context.js';
-import { draftOf, forgetDraft, keepDraft, type DraftOwner, type NoteDraft } from './note-drafts.js';
+import {
+  draftOf,
+  forgetDraft,
+  keepDraft,
+  keepsDrafts,
+  type DraftOwner,
+  type NoteDraft,
+} from './note-drafts.js';
 import { RichTextEditor } from './rich-text.js';
-import { Button, ErrorNote, useNamedWithin } from './ui.js';
+import { Button, ErrorNote, Switch, useNamedWithin } from './ui.js';
+import { storedRole } from './session.js';
 import { exactWords } from './family-time.js';
 
 /**
@@ -292,11 +303,16 @@ export function NotesSection(props: {
    * title, on the same line — rather than above its words.
    */
   editSlot?: HTMLElement | null;
+  /**
+   * Its words withheld until it is confirmed to be you (0.9.0-dev.87): asked
+   * again, rather than an editor begun with nothing in it.
+   */
+  onConfirm?: () => void;
 }) {
   const { doc, mayEdit } = props;
   const variant = props.variant ?? 'document';
   const own = variant === 'note';
-  const { withToken, session } = useApp();
+  const { guarded, session } = useApp();
   const info = session.info;
   const householdId = info?.household_id ?? null;
   const memberId = info?.member_id ?? null;
@@ -356,13 +372,15 @@ export function NotesSection(props: {
     return () => window.removeEventListener('beforeunload', ask);
   }, [dirty]);
 
-  // A document no longer for everyone keeps no draft (A32), however that
-  // is learnt: the page, or a refused save (the 5.35 review, W535-02).
+  // A document no longer for everyone keeps no draft, however that is
+  // learnt: the page, or a refused save; nor one made Essential
+  // (0.9.0-dev.87), whose words ask to confirm it's you.
+  const draftsKept = keepsDrafts(doc);
   useEffect(() => {
-    if (householdId && memberId && doc.visibility !== 'household') {
+    if (householdId && memberId && !draftsKept) {
       forgetDraft(doc.id, { household_id: householdId, member_id: memberId });
     }
-  }, [doc.id, doc.visibility, householdId, memberId]);
+  }, [doc.id, draftsKept, householdId, memberId]);
 
   useEffect(() => {
     if (editing || !back.current) return;
@@ -434,7 +452,10 @@ export function NotesSection(props: {
     try {
       for (let tries = 0; tries < 2; tries++) {
         try {
-          const saved = await withToken((t) =>
+          // An Only me or an Essential note asks to confirm it's you first,
+          // once in five minutes (0.9.0-dev.87); cancelled, nothing is saved,
+          // and the words stay in the editor.
+          const saved = await guarded((t) =>
             api.updateDocument(
               t,
               doc.id,
@@ -460,7 +481,7 @@ export function NotesSection(props: {
           // on a document no longer for everyone (A32).
           known.current = now;
           props.onRefreshed(now);
-          if (who && now.visibility !== 'household') forgetDraft(doc.id, who);
+          if (who && !keepsDrafts(now)) forgetDraft(doc.id, who);
           if (changedMeanwhile(now, began)) {
             setEditing((e) => e && { ...e, sendEtag: now.etag, theirs: now });
             return;
@@ -497,8 +518,11 @@ export function NotesSection(props: {
   const tooLong = editing !== null && editing.text.length > NOTES_MAX;
   const secret = editing ? secretNoteWarning(editing.text, doc.visibility) : null;
 
+  // Its words withheld (0.9.0-dev.87): never an editor begun with nothing
+  // in it, whose save would put nothing over them.
+  const withheld = doc.confirm_to_read !== undefined && doc.notes === null;
   const editButton =
-    mayEdit && !editing ? (
+    mayEdit && !editing && !withheld ? (
       <Button kind={own ? 'primary' : 'quiet'} ref={opener} onClick={start}>
         {own ? 'Edit' : doc.notes ? 'Edit note' : 'Add a note'}
       </Button>
@@ -522,7 +546,19 @@ export function NotesSection(props: {
             </div>
           )}
       {!editing && doc.notes && <NoteText source={doc.notes} />}
-      {!editing && own && !doc.notes && <p className="muted">Nothing written in it yet.</p>}
+      {!editing && withheld && (
+        <div className="stack">
+          <p>{NOTE_ASKS}</p>
+          {props.onConfirm && (
+            <div className="row">
+              <Button onClick={props.onConfirm}>Confirm it’s you</Button>
+            </div>
+          )}
+        </div>
+      )}
+      {!editing && own && !doc.notes && !withheld && (
+        <p className="muted">Nothing written in it yet.</p>
+      )}
       {!editing && stamp && !own && <p className="muted note-stamp">{stamp}</p>}
       {editing && (
         <div className="note-editor">
@@ -618,5 +654,154 @@ export function NotesSection(props: {
         </>
       )}
     </section>
+  );
+}
+
+// ------------------------------------------------- Essential and Sensitive
+
+/**
+ * A note as an answer gives it, its words kept from the copy in hand where
+ * the answer withholds them (0.9.0-dev.87): a change to a note made Essential
+ * just now, say, is answered without its words, which the page has already.
+ */
+export function keepWords(had: DocumentView, next: DocumentView): DocumentView {
+  if (next.notes !== null || !next.confirm_to_read || had.notes === null) return next;
+  const { confirm_to_read: _withheld, ...rest } = next;
+  void _withheld;
+  return {
+    ...rest,
+    notes: had.notes,
+    ...(had.note_name !== undefined ? { note_name: had.note_name } : {}),
+  };
+}
+
+/** Said where an Only me or an Essential note waits to be confirmed (0.9.0-dev.87). */
+export const NOTE_ASKS = 'This note asks you to confirm it’s you before its words are shown.';
+
+/** What Essential means for a note, said where it is chosen (0.9.0-dev.87). */
+export const ESSENTIAL_NOTE_MEANS =
+  'An Essential note asks you to confirm it’s you before its words are shown, and the family’s phones can keep it for when there is no connection.';
+
+/**
+ * A note's Essential and Sensitive (0.9.0-dev.87), with the rules and the
+ * questions a document's have: each saved as it is switched, on the note as
+ * it was loaded. Turning Essential off asks to confirm it's you first, as it
+ * does for a document; a teen may make a note sensitive, never not.
+ * Sensitive alone never asks to confirm it's you, and is never sent to a
+ * cloud AI reader.
+ */
+export function NoteMarks(props: {
+  doc: DocumentView;
+  mayEdit: boolean;
+  /** Where the vault offers Sensitive. */
+  sensitiveOffered: boolean;
+  onSaved: (doc: DocumentView) => void;
+  /** Changed somewhere else since it was loaded (409): it is loaded again. */
+  onStale: () => void;
+}) {
+  const { doc } = props;
+  const { guarded, session } = useApp();
+  const role = session.info?.role ?? storedRole();
+  const id = useId();
+  const [busy, setBusy] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
+  const [said, setSaid] = useState<string | null>(null);
+  const sensitive = doc.sensitive_effective === true;
+  const teenKeeps = role === 'teen' && sensitive;
+
+  const change = async (
+    body: { is_essential?: boolean; sensitive?: boolean },
+    words: (next: DocumentView) => string,
+  ) => {
+    if (busy) return;
+    setBusy(true);
+    setProblem(null);
+    setSaid(null);
+    try {
+      const next = await guarded((t) => api.updateDocument(t, doc.id, body, doc.etag));
+      if (!next) return;
+      props.onSaved(next);
+      const shared = next.warnings?.find((w) => w.code === 'sensitive_still_shared');
+      // Made sensitive while links outside the family still give it: said,
+      // and where to end them.
+      const links = shared?.links ?? 0;
+      setSaid(
+        [
+          words(next),
+          links > 0
+            ? `It is still shared outside the family by ${links === 1 ? 'a link' : `${links} links`}: end ${links === 1 ? 'it' : 'them'} in Share a link if ${links === 1 ? 'it' : 'they'} should stop.`
+            : null,
+        ]
+          .filter(Boolean)
+          .join(' '),
+      );
+    } catch (err) {
+      if (err instanceof ApiRequestError && err.status === 409) {
+        setProblem(
+          'This note was changed somewhere else, so it has been loaded again. Try again if it still needs changing.',
+        );
+        props.onStale();
+        return;
+      }
+      setProblem(describeError(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (!props.mayEdit) {
+    return (
+      <dl className="facts">
+        <dt>Essential</dt>
+        <dd>{doc.is_essential ? 'Yes' : 'No'}</dd>
+        {props.sensitiveOffered && (
+          <>
+            <dt>{SENSITIVE_LABEL}</dt>
+            <dd>{sensitive ? 'Yes' : 'No'}</dd>
+          </>
+        )}
+      </dl>
+    );
+  }
+  return (
+    <div className="stack note-marks">
+      <Switch
+        id={`${id}-essential`}
+        label="Essential"
+        checked={doc.is_essential}
+        onChange={(on) =>
+          void change({ is_essential: on }, () =>
+            on ? 'This note is Essential now.' : 'This note is not Essential any more.',
+          )
+        }
+      />
+      <p className="muted">{ESSENTIAL_NOTE_MEANS}</p>
+      {props.sensitiveOffered &&
+        (teenKeeps ? (
+          <dl className="facts">
+            <dt>{SENSITIVE_LABEL}</dt>
+            <dd>Yes. {TEEN_KEEPS_SENSITIVE}</dd>
+          </dl>
+        ) : (
+          <>
+            <Switch
+              id={`${id}-sensitive`}
+              label={SENSITIVE_LABEL}
+              checked={sensitive}
+              onChange={(on) =>
+                void change({ sensitive: on }, () =>
+                  on ? 'This note is sensitive now.' : 'This note is not sensitive any more.',
+                )
+              }
+            />
+            <p className="muted">{SENSITIVE_MEANS}</p>
+          </>
+        ))}
+      {busy && <p className="muted">Saving…</p>}
+      <ErrorNote message={problem} />
+      <p className="muted" role="status">
+        {said}
+      </p>
+    </div>
   );
 }

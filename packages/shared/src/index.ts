@@ -63,3 +63,4 @@ export * from './zip-download.js';
 export * from './original-place.js';
 export * from './record-formats.js';
 export * from './apps.js';
+export * from './auto-lock.js';

@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'rea
 import QRCode from 'qrcode';
 import { Link, Navigate, useLocation } from 'react-router';
 import * as passkeys from '../passkeys.js';
-import { api, type ExportRow, type NewVault, type Provider } from '../api.js';
+import { api, quiet, type ExportRow, type NewVault, type Provider } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
 import { Button, Check, ConfirmDialog, ErrorNote, Field, LoadFailed, TopBar } from '../ui.js';
 import { can, refusalFor } from '@fdv/shared';
@@ -13,6 +13,7 @@ import { ElsewhereNote, GroupName, ServerLine, useSettingsGroups } from '../sett
 import { ChangePassword } from './Password.js';
 import { dateTimeWords, dayWordsOf, useFamilyZone } from '../family-time.js';
 import { CodesByTextCard } from '../text-messages.js';
+import { MyAutoLockCard } from '../auto-lock-settings.js';
 
 /**
  * A section's page: its heading names the section. On a phone its bar has
@@ -87,7 +88,7 @@ export function SettingsScreen() {
  * passkeys, the devices signed in, and the single keys on this device.
  */
 export function AccountScreen() {
-  const { authVersion, withToken, guarded } = useApp();
+  const { authVersion, withToken, guarded, caps } = useApp();
   const {
     data: sessions,
     error: sessionsError,
@@ -132,6 +133,8 @@ export function AccountScreen() {
       <Passkeys />
       {/* A code by text at a reset and at sign-in (0.9.0, SMS3): only ever as well. */}
       <CodesByTextCard />
+      {/* Lock after a while away (0.9.0-dev.87): a shorter time of your own. */}
+      {caps?.features.auto_lock === true && <MyAutoLockCard />}
       <section aria-labelledby="devices-h">
         <h2 id="devices-h" className="section-h">
           Signed-in devices
@@ -466,7 +469,8 @@ function ExportSection() {
     data,
     error: loadError,
     reload,
-  } = useLoad(async (t) => (await api.exports(t)).items, [authVersion]);
+    // Asked again on a timer while one is made: never somebody using the vault.
+  } = useLoad(async (t) => (await quiet.exports(t)).items, [authVersion]);
   const [error, setError] = useState<string | null>(null);
   const pending = (data ?? []).some((e) => e.state === 'queued' || e.state === 'running');
 

@@ -39,7 +39,7 @@ import {
   type ReactNode,
 } from 'react';
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from 'react-router';
-import { api, ApiRequestError, type Member } from '../api.js';
+import { api, ApiRequestError, quiet, type Member } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
 import { askPage, forgetPages, heldPage } from '../batch-pages.js';
 import { labelOfDay, progressOf, useUploads, type ChosenFile } from '../batch-store.js';
@@ -1431,17 +1431,19 @@ export function BatchScreen() {
   const heading = useRef<HTMLHeadingElement>(null);
   // Removed — here, elsewhere, or by its end — while on the screen (the I2 review).
   const [gone, setGone] = useState(false);
+  // Asked again on a timer while its files are read (`batchPolling`), so
+  // asked by the page by itself: never somebody using the vault (0.9.0-dev.87).
   const { data, error, loading, reload } = useLoad(
     async (t) => {
       const [batch, members, types, collections] = await Promise.all([
-        api.batch(t, id as string).catch((err: unknown) => {
+        quiet.batch(t, id as string).catch((err: unknown) => {
           if (err instanceof ApiRequestError && err.status === 404) setGone(true);
           throw err;
         }),
-        api.members(t),
-        api.documentTypes(t),
+        quiet.members(t),
+        quiet.documentTypes(t),
         caps?.features.collections && can(role, 'collection.manage')
-          ? api.collections(t).then((r) => r.items)
+          ? quiet.collections(t).then((r) => r.items)
           : Promise.resolve([] as CollectionView[]),
       ]);
       return { batch, members: members.items, types: types.items, collections };

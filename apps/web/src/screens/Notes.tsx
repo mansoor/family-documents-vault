@@ -3,6 +3,8 @@ import {
   NOTE_KIND,
   NOTES_MAX,
   noteFirstWords,
+  SENSITIVE_LABEL,
+  SENSITIVE_MEANS,
   type DocumentView,
   type NoteSummary,
   type Visibility,
@@ -13,7 +15,16 @@ import { api } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
 import { collectionsOffered } from '../collections.js';
 import { mayChange } from '../DocActions.js';
-import { NoteText, NotesSection, ONLY_ME_TITLE, secretNoteWarning } from '../notes.js';
+import {
+  ESSENTIAL_NOTE_MEANS,
+  keepWords,
+  NOTE_ASKS,
+  NoteMarks,
+  NoteText,
+  NotesSection,
+  ONLY_ME_TITLE,
+  secretNoteWarning,
+} from '../notes.js';
 import { PrintOut } from '../print.js';
 import { release, useLeaveGuard } from '../leave-guard.js';
 import { RichTextEditor } from '../rich-text.js';
@@ -21,7 +32,7 @@ import { storedRole } from '../session.js';
 import { useShellMode } from '../shell.js';
 import { Splitter, useKeptWidth, type WidthBounds } from '../splitter.js';
 import { TagSection } from '../tags.js';
-import { Button, ErrorNote, MoveToTrashDialog, Pills, TopBar } from '../ui.js';
+import { Button, ErrorNote, MoveToTrashDialog, Pills, Switch, TopBar } from '../ui.js';
 import { ActionIcon, ActionRow, countBadge } from '../action-row.js';
 import { DocumentCollections } from './Document.js';
 import { SharePanel } from './Share.js';
@@ -125,7 +136,14 @@ export function NotesScreen() {
   const pane = creating ? (
     <NewNote key="new" onMade={changed} onDirty={setDirty} />
   ) : id ? (
-    <NotePane key={id} id={id} phone={phone} onChanged={changed} onDirty={setDirty} />
+    <NotePane
+      key={id}
+      id={id}
+      phone={phone}
+      summary={data?.items.find((n) => n.id === id) ?? null}
+      onChanged={changed}
+      onDirty={setDirty}
+    />
   ) : (
     <div className="notes-none">
       <p className="muted">
@@ -241,11 +259,22 @@ function NotesList(props: {
                     {shortDate(n.updated_at)}
                   </span>
                 </span>
-                <span className="notes-item-preview muted">
-                  {n.preview || 'Nothing written in it yet.'}
-                </span>
-                {n.visibility !== 'household' && (
-                  <span className="notes-item-who">{visibilityWords[n.visibility]}</span>
+                {/* An Only me or an Essential note: its title and date alone, its
+                    words only once it is confirmed to be you (0.9.0-dev.87). */}
+                {!n.confirm_to_read && (
+                  <span className="notes-item-preview muted">
+                    {n.preview || 'Nothing written in it yet.'}
+                  </span>
+                )}
+                {(n.visibility !== 'household' || n.is_essential === true) && (
+                  <span className="notes-item-who">
+                    {[
+                      n.visibility !== 'household' ? visibilityWords[n.visibility] : null,
+                      n.is_essential === true ? 'Essential' : null,
+                    ]
+                      .filter(Boolean)
+                      .join(' · ')}
+                  </span>
                 )}
               </NavLink>
             </li>
@@ -254,6 +283,21 @@ function NotesList(props: {
       )}
     </section>
   );
+}
+
+/** The marks a note has, beside its section's button: "Essential", "Essential, sensitive". */
+function marksBadge(
+  doc: DocumentView,
+  sensitiveOffered: boolean,
+): { shown: string; spoken: string } | null {
+  const marks = [
+    doc.is_essential ? 'Essential' : null,
+    sensitiveOffered && doc.sensitive_effective === true ? 'sensitive' : null,
+  ].filter((m): m is string => m !== null);
+  if (marks.length === 0) return null;
+  const words = marks.join(', ');
+  const shown = words.charAt(0).toUpperCase() + words.slice(1);
+  return { shown, spoken: shown };
 }
 
 /** A note's words, as a file of their own: Markdown, which any editor opens. */
@@ -277,11 +321,18 @@ function downloadNote(doc: DocumentView) {
 function NotePane(props: {
   id: string;
   phone: boolean;
+  /** As the list gives it: its title and date, while its words wait to be confirmed. */
+  summary: NoteSummary | null;
   onChanged: () => void;
   onDirty: (dirty: boolean) => void;
 }) {
   const { authVersion, session, withToken, caps } = useApp();
   const navigate = useNavigate();
+  // A note made just now (0.9.0-dev.87): opened with the words in hand, its
+  // maker never asked to confirm it's them for what they have just written.
+  const { state: carried } = useLocation() as { state: { made?: DocumentView } | null };
+  const made = carried?.made?.id === props.id ? carried.made : null;
+  const confirmButton = useRef<HTMLButtonElement>(null);
   const titleId = useId();
   const heading = useRef<HTMLHeadingElement>(null);
   const trashButton = useRef<HTMLButtonElement>(null);
@@ -299,7 +350,9 @@ function NotePane(props: {
     [],
   );
   const onLinks = useCallback((n: number) => setCounts((c) => ({ ...c, links: n })), []);
-  const { data, error, reload, setData } = useLoad(
+  // An Only me or an Essential note asks to confirm it's you before its
+  // words are shown (0.9.0-dev.87), as opening such a document's file does.
+  const { data, error, reload, setData, declined } = useLoad(
     async (t) => {
       const [doc, profile] = await Promise.all([
         api.document(t, props.id),
@@ -308,6 +361,7 @@ function NotePane(props: {
       return { doc, timezone: profile?.timezone ?? null };
     },
     [props.id, authVersion],
+    { guarded: true, initial: made ? { doc: made, timezone: null } : null },
   );
 
   // A note chosen: its name takes the focus, so it is said.
@@ -315,12 +369,45 @@ function NotePane(props: {
   useEffect(() => {
     if (shownId) heading.current?.focus({ preventScroll: true });
   }, [shownId]);
+  // Waiting to be confirmed: the way on takes the focus (0.9.0-dev.87).
+  const waiting = !data && declined;
+  useEffect(() => {
+    if (waiting) confirmButton.current?.focus();
+  }, [waiting]);
 
   if (error) {
     return (
       <section className="note-pane" aria-label="Note">
         <ErrorNote message={error} />
       </section>
+    );
+  }
+  if (!data && declined) {
+    // Its title and date as the list gives them, and the way on, focused.
+    const s = props.summary;
+    return (
+      <article className="note-pane stack" aria-labelledby={titleId}>
+        <header className="note-pane-head">
+          <div className="note-pane-heading">
+            <h2 id={titleId} className="note-pane-title">
+              {s ? noteTitle(s.title, s.preview) : 'Note'}
+            </h2>
+            {s && (
+              <p className="muted note-pane-meta">
+                {visibilityWords[s.visibility]}
+                {s.is_essential ? ' · Essential' : ''} · changed{' '}
+                {exactWords(s.notes_updated_at ?? s.updated_at)}
+              </p>
+            )}
+          </div>
+        </header>
+        <p>{NOTE_ASKS}</p>
+        <div className="row">
+          <Button ref={confirmButton} onClick={() => void reload()}>
+            Confirm it’s you
+          </Button>
+        </div>
+      </article>
     );
   }
   if (!data) {
@@ -347,8 +434,10 @@ function NotePane(props: {
   const isMine = doc.owner_member_id !== null && doc.owner_member_id === memberId;
   const filedByMe = doc.filed_by_me === true;
   const title = noteTitle(doc.title, doc.notes);
+  const sensitiveOffered = caps?.features.sensitive_documents === true;
+  // An answer that withholds its words keeps those in hand (0.9.0-dev.87).
   const saved = (next: DocumentView) => {
-    setData((d) => (d ? { ...d, doc: next } : d));
+    setData((d) => (d ? { ...d, doc: keepWords(d.doc, next) } : d));
     props.onChanged();
   };
 
@@ -393,7 +482,8 @@ function NotePane(props: {
         mayEdit={mayEdit}
         timezone={data.timezone}
         onSaved={saved}
-        onRefreshed={(now) => setData((d) => (d ? { ...d, doc: now } : d))}
+        onRefreshed={(now) => setData((d) => (d ? { ...d, doc: keepWords(d.doc, now) } : d))}
+        onConfirm={() => void reload()}
         onDirty={props.onDirty}
         editSlot={editSlot}
       />
@@ -433,6 +523,29 @@ function NotePane(props: {
                       }}
                       onClose={done}
                       onBusy={(on) => setBusy((b) => ({ ...b, visibility: on }))}
+                    />
+                  ),
+                },
+              ]
+            : []),
+          // Essential and Sensitive (0.9.0-dev.87): as a document's, for
+          // whoever may change it; read by anybody where it is either.
+          ...(mayEdit || doc.is_essential || doc.sensitive_effective === true
+            ? [
+                {
+                  key: 'marks' as const,
+                  label: 'Essential and sensitive',
+                  icon: <ActionIcon name="star" />,
+                  badge: marksBadge(doc, sensitiveOffered),
+                  heading: 'Essential and sensitive',
+                  render: () => (
+                    <NoteMarks
+                      key={`marks-${doc.id}`}
+                      doc={doc}
+                      mayEdit={mayEdit}
+                      sensitiveOffered={sensitiveOffered}
+                      onSaved={saved}
+                      onStale={() => void reload()}
                     />
                   ),
                 },
@@ -536,7 +649,11 @@ function NotePane(props: {
 
 /** A new note: its title, who can see it, and its words; nothing is kept until Save. */
 function NewNote(props: { onMade: () => void; onDirty: (dirty: boolean) => void }) {
-  const { withToken, session } = useApp();
+  const { withToken, session, caps } = useApp();
+  // Essential and Sensitive from the start (0.9.0-dev.87), as a document's.
+  const [essential, setEssential] = useState(false);
+  const [sensitive, setSensitive] = useState(false);
+  const sensitiveOffered = caps?.features.sensitive_documents === true;
   const navigate = useNavigate();
   const id = useId();
   const role = session.info?.role ?? storedRole();
@@ -585,6 +702,8 @@ function NewNote(props: { onMade: () => void; onDirty: (dirty: boolean) => void 
           notes: text.trim() || null,
           visibility,
           owner_member_id: memberId,
+          ...(essential ? { is_essential: true } : {}),
+          ...(sensitiveOffered && sensitive ? { sensitive: true } : {}),
         }),
       );
       if (!made) return;
@@ -593,7 +712,8 @@ function NewNote(props: { onMade: () => void; onDirty: (dirty: boolean) => void 
       await release();
       onDirty(false);
       props.onMade();
-      void navigate(`/notes/${made.id}`, { replace: true });
+      // Opened with what was just written, never asked for it again.
+      void navigate(`/notes/${made.id}`, { replace: true, state: { made } });
     } catch (err) {
       setError(describeError(err));
     } finally {
@@ -630,6 +750,24 @@ function NewNote(props: { onMade: () => void; onDirty: (dirty: boolean) => void 
         options={choices.map((v) => ({ value: v, label: visibilityWords[v] }))}
         onChange={setVisibility}
       />
+      <Switch
+        id={`${id}-essential`}
+        label="Essential"
+        checked={essential}
+        onChange={setEssential}
+      />
+      <p className="muted">{ESSENTIAL_NOTE_MEANS}</p>
+      {sensitiveOffered && (
+        <>
+          <Switch
+            id={`${id}-sensitive`}
+            label={SENSITIVE_LABEL}
+            checked={sensitive}
+            onChange={setSensitive}
+          />
+          <p className="muted">{SENSITIVE_MEANS}</p>
+        </>
+      )}
       <RichTextEditor
         label="Note"
         initial=""

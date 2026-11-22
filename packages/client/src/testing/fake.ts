@@ -177,6 +177,15 @@ import {
   SENSITIVE_BY_DEFAULT,
   SENSITIVE_SHARE_CONFIRM,
   sensitiveOf,
+  AUTO_LOCK_DEFAULT,
+  AUTO_LOCK_LONGER,
+  autoLockAllowed,
+  autoLockInEffect,
+  isAutoLockMinutes,
+  noteConfirm,
+  mayKeepOffline,
+  type AutoLock,
+  type AutoLockMinutes,
   claimedRecordFormat,
   deliveredType,
   recordFileName,
@@ -420,6 +429,12 @@ interface FakeSession {
   memberId?: string;
   /** Locked (0.9.0-dev.86): `423 session_locked` but on FAKE_LOCK_ROUTES, until unlocked. */
   locked?: boolean;
+  /**
+   * When it last confirmed it's them (0.9.0-dev.87): signing in, a step-up
+   * with the password, an unlock. An Only me or an Essential note's words
+   * are given only within five minutes of it, as the real vault gives them.
+   */
+  verifiedAt?: number;
 }
 
 /** What a locked session may still ask (0.9.0-dev.86), as the real vault lets it. */
@@ -445,6 +460,12 @@ export interface FakePhone {
 }
 
 export interface FakeVaultState {
+  /**
+   * Whether an Only me or an Essential note asks to confirm it's them before
+   * its words are read or saved (0.9.0-dev.87), as the real vault does:
+   * on unless a test sets it false, for the fake's behaviour before.
+   */
+  noteStepUps?: boolean;
   setupRequired: boolean;
   /**
    * Each person's own cabinet (0.9.0, C1), by member id, as GET /cabinet
@@ -569,6 +590,14 @@ export interface FakeVaultState {
    * the fake removes nothing.
    */
   endedSharingDays: EndedSharingDays | null;
+  /**
+   * When the vault locks itself in a browser left unused (0.9.0-dev.87): the
+   * household's time (null, Off) and, by member id, each person's own (null,
+   * as the household says). GET and PUT /household/auto-lock and PUT
+   * /me/auto-lock answer them; the fake's sessions are a phone's, never
+   * locked so.
+   */
+  autoLock: { household: AutoLockMinutes | null; mine: Map<string, AutoLockMinutes | null> };
   /**
    * What an owner has limited each viewer to (5.33), by member id: what PUT
    * and DELETE /members/{id}/access write, what the preview counts by the
@@ -1521,6 +1550,12 @@ export function createFakeVault(): {
    */
   pauseSignIns: () => void;
   /**
+   * Five minutes on since every session last confirmed it's them
+   * (0.9.0-dev.87): an Only me or an Essential note then answers `403
+   * step_up_required` until `stepUp` is given the password.
+   */
+  forgetConfirmation: () => void;
+  /**
    * What a person's filing does to what a connected app sent (0.9.0, APP2),
    * as the fake has no Inbox for it: the send, by its external id, filed as
    * this document, its newest file the one it became: as a document of its
@@ -1599,6 +1634,7 @@ export function createFakeVault(): {
     timezoneSource: 'server_default',
     serverTimezone: 'UTC',
     endedSharingDays: 90,
+    autoLock: { household: AUTO_LOCK_DEFAULT, mine: new Map() },
     restrictions: new Map(),
     operatorMail: true,
     keepsPrivate: [],
@@ -2035,6 +2071,8 @@ export function createFakeVault(): {
       installation,
       rotatedAt: Date.now(),
       graceUsed: false,
+      // Signing in confirms it's them, as the real vault counts it.
+      verifiedAt: Date.now(),
       ...(memberId !== undefined ? { memberId } : {}),
     };
     state.sessions.push(s);
@@ -2511,6 +2549,22 @@ export function createFakeVault(): {
       if (!textCodeTo(who.memberId, 'step_up')) return textNotOffered();
       const refused = tryTextCode(who.memberId, 'step_up', body.text_code);
       if (refused) return refused;
+      s.verifiedAt = Date.now();
+      return ok({ verified_at: new Date().toISOString(), expires_in: 300 });
+    }
+    // Confirming it's them with the password (0.9.0-dev.87), as the real
+    // vault takes it; a code or a passkey the fake does not check.
+    if (path === '/api/v1/auth/step-up' && init.method === 'POST') {
+      const s = sessionOf();
+      if (!('id' in s)) return s;
+      const theirs =
+        s.memberId === undefined
+          ? state.password
+          : state.signIns.find((x) => x.member_id === s.memberId)?.password;
+      if (typeof body.password !== 'string' || body.password !== theirs) {
+        return fail(401, 'invalid_credentials', "That didn't match. Try again.");
+      }
+      s.verifiedAt = Date.now();
       return ok({ verified_at: new Date().toISOString(), expires_in: 300 });
     }
     // What somebody wants to hear, and how (SMS2: by text too, each off
@@ -3941,6 +3995,7 @@ export function createFakeVault(): {
           activity_export: true,
           // Lock (0.9.0-dev.86).
           session_lock: true,
+          auto_lock: true,
           // Connected apps (0.9.0, APP1).
           connected_apps: true,
           connected_app_reads: true,
@@ -4124,6 +4179,13 @@ export function createFakeVault(): {
       s.locked = true;
       return empty();
     }
+    // Somebody still here (0.9.0-dev.87): a browser's word; the fake's
+    // sessions never lock by themselves, so it changes nothing.
+    if (path === '/api/v1/auth/still-here' && init.method === 'POST') {
+      const s = session();
+      if (!('id' in s)) return s;
+      return empty();
+    }
     if (path === '/api/v1/auth/unlock' && init.method === 'POST') {
       const s = session();
       if (!('id' in s)) return s;
@@ -4138,6 +4200,7 @@ export function createFakeVault(): {
         return fail(401, 'invalid_credentials', "That didn't match. Try again.");
       }
       s.locked = false;
+      s.verifiedAt = Date.now();
       return ok({ verified_at: new Date().toISOString(), expires_in: 300 });
     }
     if (path === '/api/v1/me') {
@@ -4162,6 +4225,8 @@ export function createFakeVault(): {
           state.members.find((m) => m.id === who.memberId)?.access_expires_at ?? null,
         // 0.9.0-dev.86: this session is locked.
         locked: s.locked === true,
+        // 0.9.0-dev.87: the fake's sessions are a phone's, never locked by themselves.
+        auto_lock_minutes: null,
       });
     }
     if (path === '/api/v1/me/reset-notice' && init.method === 'DELETE') {
@@ -4512,18 +4577,34 @@ export function createFakeVault(): {
       const me = whoOf(s).memberId;
       const inTrash = param(url, 'deleted') === 'true';
       const q = noteMatchWords(param(url, 'q'));
+      // An Only me or an Essential note (0.9.0-dev.87): its title and date
+      // alone — no first words, and never found by them.
+      const asks = (d: FakeDocument) =>
+        noteConfirm({
+          type_key: d.type_key ?? null,
+          visibility: d.visibility ?? 'household',
+          is_essential: d.is_essential === true,
+        });
+      const kind = state.types.find((t) => t.key === NOTE_KIND) ?? null;
       const items = state.documents
         .filter((d) => d.type_key === NOTE_KIND && Boolean(d.deleted_at) === inTrash)
         .filter((d) => d.visibility !== 'private' || d.owner_member_id === me)
         .filter(
-          (d) => !q || noteMatchWords(d.title).includes(q) || noteMatchWords(d.notes).includes(q),
+          (d) =>
+            !q ||
+            noteMatchWords(d.title).includes(q) ||
+            (!asks(d) && noteMatchWords(d.notes).includes(q)),
         )
         .sort((a, b) => (b.notes_updated_at ?? '').localeCompare(a.notes_updated_at ?? ''))
         .map((d) => ({
           id: d.id,
           title: d.title,
-          preview: notePreview(d.notes),
+          preview: asks(d) ? '' : notePreview(d.notes),
           visibility: d.visibility ?? 'household',
+          is_essential: d.is_essential === true,
+          sensitive: d.sensitive ?? null,
+          sensitive_effective: sensitiveOf(d, kind),
+          confirm_to_read: asks(d),
           owner_member_id: d.owner_member_id ?? null,
           tags: d.tags ?? [],
           updated_at: d.notes_updated_at ?? new Date(0).toISOString(),
@@ -5196,6 +5277,8 @@ export function createFakeVault(): {
           tags: tagsOf(body.tags as string[] | undefined),
           notes: note(body.notes as string | null | undefined),
           ...(visibility !== undefined ? { visibility } : {}),
+          // Essential from the start, as the real vault keeps it (0.9.0-dev.87).
+          ...(body.is_essential === true ? { is_essential: true } : {}),
           extra,
         };
         stampNotes(doc, null, whoOf(s).memberId);
@@ -5464,6 +5547,37 @@ export function createFakeVault(): {
         (d) => d.id === decodeURIComponent(one[1] as string) && !d.deleted_at,
       );
       if (!doc) return fail(404, 'not_found', 'That document is not in the vault.');
+      // An Only me or an Essential note (0.9.0-dev.87), as the real vault
+      // asks: its words read, or any change to it saved, only within five
+      // minutes of confirming it's them (`forgetConfirmation` ages every
+      // session's) — unless a test turned it off (`state.noteStepUps`).
+      const asks = noteConfirm({
+        type_key: doc.type_key ?? null,
+        visibility: doc.visibility ?? 'household',
+        is_essential: doc.is_essential === true,
+      });
+      const mayChangeIt =
+        can(whoOf(s).role, 'document.edit') &&
+        (whoOf(s).role !== 'teen' || doc.owner_member_id === whoOf(s).memberId);
+      if (
+        asks &&
+        state.noteStepUps !== false &&
+        (init.method === 'GET' || mayChangeIt) &&
+        Date.now() - (s.verifiedAt ?? 0) > 5 * 60_000
+      ) {
+        return respond(403, {
+          error: {
+            code: 'step_up_required',
+            message:
+              asks === 'open_essential'
+                ? 'Please confirm it is you to open an Essential document.'
+                : 'Please confirm it is you to open a document only you can see.',
+            action: asks,
+            retriable: false,
+            request_id: 'fake',
+          },
+        });
+      }
       if (init.method === 'GET') return ok(viewOf(doc));
       // As the real vault: a viewer (a guest among them) changes nothing,
       // and a teen only their own (5.35's notes, as every edit).
@@ -6070,8 +6184,28 @@ export function createFakeVault(): {
       }
       if (path === '/api/v1/offline/essentials' && init.method === 'GET') {
         // No grant in force: keep nothing.
+        // Essential notes, words and all (0.9.0-dev.87), by the same rule.
+        const notes = grant
+          ? state.documents
+              .filter(
+                (d) =>
+                  d.type_key === NOTE_KIND &&
+                  !d.deleted_at &&
+                  mayKeepOffline(
+                    whoOf(s),
+                    {
+                      visibility: d.visibility ?? 'household',
+                      owner_member_id: d.owner_member_id ?? null,
+                      is_essential: d.is_essential === true,
+                    },
+                    grant.include_private,
+                  ),
+              )
+              .map((d) => ({ document: viewOf(d), private: d.visibility === 'private' }))
+          : [];
         return ok({
           items: grant ? o.items.filter(visible) : [],
+          notes,
           grant,
           max_offline_days: FAKE_OFFLINE_MAX_DAYS,
           server_time: new Date().toISOString(),
@@ -9160,6 +9294,42 @@ export function createFakeVault(): {
       state.endedSharingDays = to;
       return ok(view());
     }
+    // When the vault locks itself in a browser left unused (0.9.0-dev.87), as
+    // the real vault answers it: every role reads it; an owner chooses the
+    // household's, 5, 10, 15, 30 or 60 minutes or Off (null); anybody their
+    // own, no longer than the household's. The fake asks no step-up.
+    if (path === '/api/v1/household/auto-lock' || path === '/api/v1/me/auto-lock') {
+      const s = session();
+      if (!('id' in s)) return s;
+      const me = whoOf(s).memberId;
+      const view = (): AutoLock => {
+        const mine = state.autoLock.mine.get(me) ?? null;
+        return {
+          household: state.autoLock.household,
+          mine,
+          in_effect: autoLockInEffect(state.autoLock.household, mine),
+          can_change: can(whoOf(s).role, 'household.auto_lock'),
+        };
+      };
+      if (path === '/api/v1/household/auto-lock' && init.method === 'GET') return ok(view());
+      if (init.method !== 'PUT') return fail(404, 'not_found', 'Not here.');
+      const to = (body as { minutes?: unknown }).minutes;
+      if (to !== null && !isAutoLockMinutes(to)) {
+        return fail(422, 'validation_failed', 'Choose 5, 10, 15, 30 or 60 minutes, or Off.');
+      }
+      if (path === '/api/v1/household/auto-lock') {
+        if (!can(whoOf(s).role, 'household.auto_lock')) {
+          return fail(403, 'forbidden', refusalFor('household.auto_lock'));
+        }
+        state.autoLock.household = to;
+        return ok(view());
+      }
+      if (!autoLockAllowed(state.autoLock.household, to)) {
+        return fail(422, 'validation_failed', AUTO_LOCK_LONGER, 'minutes');
+      }
+      state.autoLock.mine.set(me, to);
+      return ok(view());
+    }
     if (path === '/api/v1/household/identity-audience') {
       const s = session();
       if (!('id' in s)) return s;
@@ -10613,7 +10783,21 @@ export function createFakeVault(): {
 
   const expireAppTokens = () => fakeExpireAppTokens(state.connectedApps ?? []);
 
-  return { fetch, state, pauseSignIns, fileAppIntake, readAppFile, expireAppKey, expireAppTokens };
+  /** Five minutes on (0.9.0-dev.87): no session has confirmed it's them lately. */
+  const forgetConfirmation = () => {
+    for (const s of state.sessions) s.verifiedAt = 0;
+  };
+
+  return {
+    fetch,
+    state,
+    pauseSignIns,
+    fileAppIntake,
+    readAppFile,
+    expireAppKey,
+    expireAppTokens,
+    forgetConfirmation,
+  };
 }
 
 /**
@@ -11039,6 +11223,16 @@ function documentView(
   const type = types.find((t) => t.key === doc.type_key);
   const expires = doc.expires ?? null;
   const sealed = opts.listed === true && doc.visibility === 'private';
+  // An Only me or an Essential note's words (0.9.0-dev.87): never in a list.
+  // The fake asks nobody to confirm it's them, so one read alone gives them.
+  const confirm =
+    opts.listed === true
+      ? noteConfirm({
+          type_key: doc.type_key ?? null,
+          visibility: doc.visibility ?? 'household',
+          is_essential: doc.is_essential === true,
+        })
+      : null;
   return {
     id: doc.id,
     title: doc.title,
@@ -11069,8 +11263,9 @@ function documentView(
     is_essential: doc.is_essential ?? false,
     tags: doc.tags ?? [],
     visibility: doc.visibility ?? 'household',
-    notes: sealed ? null : (doc.notes ?? null),
+    notes: sealed || confirm ? null : (doc.notes ?? null),
     has_notes: (doc.notes ?? null) !== null,
+    ...(confirm ? { confirm_to_read: confirm } : {}),
     // When its note's words last changed, and who changed them (5.35).
     notes_updated_at: doc.notes_updated_at ?? null,
     notes_updated_by_name: doc.notes_updated_by

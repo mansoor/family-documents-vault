@@ -682,6 +682,7 @@ export function CollectionScreen() {
           busy={shareBusy}
           returnFocus={shareButton}
           onClose={() => setSharing(false)}
+          className="share-sheet"
         >
           <ShareCollectionPanel
             collection={collection}

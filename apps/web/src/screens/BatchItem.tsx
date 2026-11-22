@@ -15,7 +15,7 @@ import {
 } from '@fdv/shared';
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from 'react-router';
-import { api, ApiRequestError } from '../api.js';
+import { api, ApiRequestError, quiet } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
 import { askPage, forgetPages, heldPage, pageKey } from '../batch-pages.js';
 import {
@@ -174,7 +174,8 @@ export function BatchItemScreen() {
 
   /** The batch as it is now, after a decision: drawn here, and what onward goes by. */
   const fresh = async (): Promise<BatchDetail | null> => {
-    const now = await withToken((t) => api.batch(t, id as string));
+    // On a timer: never somebody using the vault.
+    const now = await withToken((t) => quiet.batch(t, id as string));
     if (now && data) setData({ ...data, batch: now });
     return now;
   };

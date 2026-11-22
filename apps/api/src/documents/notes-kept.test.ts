@@ -262,7 +262,10 @@ describe.skipIf(!testAdminUrl())('notes kept on their own (0.9.0, N1)', () => {
       family.id,
     ]);
     expect((await notesOf(owner, '?q=room%20101')).items.map((n) => n.id)).toEqual([family.id]);
-    expect((await notesOf(owner, '?q=locker%20number')).items.map((n) => n.id)).toEqual([mine.id]);
+    // An Only me note's words are never matched in a list (0.9.0-dev.87):
+    // only its title.
+    expect((await notesOf(owner, '?q=locker%20number')).items).toEqual([]);
+    expect((await notesOf(owner, '?q=locker')).items.map((n) => n.id)).toEqual([mine.id]);
     // And by the search, word by word.
     for (const words of ['stairs', 'under the stairs', 'Room 101', 'cupboard under']) {
       expect(
@@ -344,22 +347,29 @@ describe.skipIf(!testAdminUrl())('notes kept on their own (0.9.0, N1)', () => {
     expect(row?.whole).not.toMatch(/ostrich/i);
     expect(row?.tsv).not.toMatch(/ostrich/i);
 
-    // Its owner: listed with its words, found within, read whole, and
-    // found by the search's private pass.
-    expect((await notesOf(owner)).items.find((n) => n.id === safe.id)?.preview).toBe(
-      'Left 4, right 71, ostrich',
-    );
-    expect((await notesOf(owner, '?q=ostrich')).items.map((n) => n.id)).toEqual([safe.id]);
+    // Its owner (0.9.0-dev.87): listed by its title and date alone, never
+    // found by its words — the search's private pass does not open them —
+    // and read whole once it is confirmed to be them (a fresh sign-in is).
+    expect((await notesOf(owner)).items.find((n) => n.id === safe.id)).toMatchObject({
+      preview: '',
+      confirm_to_read: 'open_private_document',
+    });
+    expect((await notesOf(owner, '?q=ostrich')).items).toEqual([]);
+    expect((await notesOf(owner, '?q=safe')).items.map((n) => n.id)).toEqual([safe.id]);
     expect(json<DocumentView>(await get(owner, `/api/v1/documents/${safe.id}`)).notes).toBe(
       'Left 4, right 71, **ostrich**',
     );
     const first = await search(owner, 'ostrich');
     expect(first.items.map((i) => i.document_id)).not.toContain(safe.id);
-    const second = await get(
-      owner,
-      `/api/v1/search/sealed?token=${encodeURIComponent(first.sealed_pending.token as string)}`,
-    );
-    expect(json<{ items: SearchHit[] }>(second).items.map((i) => i.document_id)).toContain(safe.id);
+    if (first.sealed_pending.token) {
+      const second = await get(
+        owner,
+        `/api/v1/search/sealed?token=${encodeURIComponent(first.sealed_pending.token)}`,
+      );
+      expect(json<{ items: SearchHit[] }>(second).items.map((i) => i.document_id)).not.toContain(
+        safe.id,
+      );
+    }
 
     // Anybody else: not there at all.
     for (const who of [sarah, tariq, vera]) {

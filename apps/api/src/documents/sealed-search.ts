@@ -2,6 +2,7 @@ import { openPrivate, type PrivateValues, type ScopeKeys } from '@fdv/crypto';
 import { openSealedText } from './sealed-text.js';
 import { householdToday, withPrincipal, type Db } from '@fdv/db';
 import {
+  NOTE_KIND,
   sensitiveOf,
   matchText,
   notesPlainText,
@@ -104,6 +105,9 @@ export class SealedSearchService {
          where d.deleted_at is null
            and d.visibility = 'private'
            and d.owner_member_id = ${p.memberId}::uuid
+           -- Never a note's words before it is confirmed to be them
+           -- (0.9.0-dev.87): its title the first pass has searched.
+           and d.type_key is distinct from ${NOTE_KIND}
            and (${sql.raw(HAS_PRIVATE_WORDS)})
            ${claims.member_id ? sql`and d.owner_member_id = ${claims.member_id}::uuid` : sql``}
            ${claims.category ? sql`and d.category = ${claims.category}` : sql``}

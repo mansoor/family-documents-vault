@@ -107,6 +107,12 @@ export interface Schema {
      */
     neutral_wording: Generated<'off' | 'health' | 'sensitive' | 'all'>;
     /**
+     * After how many minutes with nobody using it a browser's session locks
+     * by itself (0128): 5, 10, 15, 30 or 60, or null for Off; 15 unless an
+     * owner chose otherwise. An owner's alone (household_auto_lock_rule).
+     */
+    auto_lock_minutes: ColumnType<number | null, number | null | undefined, number | null>;
+    /**
      * How long a link outside the family and a request to send documents
      * are kept once they have ended for good (0106, RQ): 30, 90 or 365
      * days, or null for never. 90 unless an owner chose otherwise.
@@ -330,6 +336,12 @@ export interface Schema {
       Date | string | null | undefined,
       Date | string | null
     >;
+    /**
+     * Their own time for the vault to lock itself in a browser (0128),
+     * shorter than the household's; null, as the household says. Theirs
+     * alone to change (account_household_auto_lock_rule).
+     */
+    auto_lock_minutes: ColumnType<number | null, number | null | undefined, number | null>;
   };
 
   credential: {
@@ -408,6 +420,14 @@ export interface Schema {
      * but on the few routes that unlock it, until a credential is given.
      */
     locked_at: Timestamp | null;
+    /**
+     * A browser's session (0128): signed in by the vault's own page, its
+     * refresh token in a cookie, with no app installation. Only such a
+     * session locks by itself after a while away.
+     */
+    in_browser: Generated<boolean>;
+    /** When it was last used (0128): not counting what a browser asked by itself. */
+    last_active_at: GeneratedTimestamp;
     /** The app installation that signed in (X-FDV-Installation); null for a browser. */
     installation_id: string | null;
     /** When the refresh token was last replaced. */

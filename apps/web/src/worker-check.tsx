@@ -1,6 +1,6 @@
 import { SETTINGS_CHECK_LATE_MS, type SettingsCheckView } from '@fdv/shared';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { api } from './api.js';
+import { quiet } from './api.js';
 import { describeError, useApp } from './app-context.js';
 
 /** How often the page asks for the worker's answer. */
@@ -37,7 +37,7 @@ export function useWorkerCheck() {
           if (Date.now() - started > SETTINGS_CHECK_LATE_MS + 5_000) break;
           await new Promise((r) => setTimeout(r, CHECK_POLL_MS));
           const id: string = v.id;
-          v = await guarded((t) => api.settingsCheck(t, id));
+          v = await guarded((t) => quiet.settingsCheck(t, id));
         }
         if (!live.current) return null;
         setView(v);

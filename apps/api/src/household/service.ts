@@ -8,6 +8,11 @@ import {
   type Db,
 } from '@fdv/db';
 import {
+  AUTO_LOCK_LONGER,
+  autoLockAllowed,
+  autoLockInEffect,
+  type AutoLock,
+  type AutoLockMinutes,
   can,
   canChangeDetails,
   canonicalZone,
@@ -30,7 +35,13 @@ import {
   type Role,
 } from '@fdv/shared';
 import { z } from 'zod';
-import { clientOf, describeDevice, type Principal, type RequestMeta } from '../auth/service.js';
+import {
+  autoLockOf,
+  clientOf,
+  describeDevice,
+  type Principal,
+  type RequestMeta,
+} from '../auth/service.js';
 import type { StepUpService } from '../auth/step-up.js';
 import { ApiError } from '../errors.js';
 import { allows, requireCapability } from '../authz.js';
@@ -378,6 +389,130 @@ export class HouseholdService {
       });
     });
     return this.endedSharing(p);
+  }
+
+  /**
+   * GET /household/auto-lock (0.9.0-dev.87): after how many minutes with
+   * nobody using it the vault locks itself in a browser — the household's
+   * time, the reader's own, and what is in effect for them — for every role;
+   * and whether the reader may change the household's (an owner).
+   */
+  async autoLock(p: Principal): Promise<AutoLock> {
+    return withPrincipal(this.db, p, async (trx) => {
+      const { household, mine } = await autoLockRows(trx, p);
+      return {
+        household,
+        mine,
+        in_effect: autoLockInEffect(household, mine),
+        can_change: can(p.role, 'household.auto_lock'),
+      };
+    });
+  }
+
+  /**
+   * PUT /household/auto-lock (0.9.0-dev.87): an owner chooses 5, 10, 15, 30
+   * or 60 minutes, or Off (null). The database holds it to owners too
+   * (household_auto_lock_rule, 0128). Longer than it was, or Off, asks them
+   * to confirm it's them first (`change_auto_lock`), decided with the
+   * household's row held: a session picked up from an unlocked browser could
+   * otherwise keep every browser unlocked. Shorter asks nothing. Each change
+   * is in the activity log, for everybody who reads it; the same again
+   * changes nothing. A person's own time longer than the new one is kept,
+   * and the shorter of the two is what is in effect.
+   */
+  async setAutoLock(
+    p: Principal,
+    to: AutoLockMinutes | null,
+    meta: RequestMeta,
+    stepUp: (trx: Db) => Promise<void>,
+  ): Promise<AutoLock> {
+    requireCapability(p, 'household.auto_lock');
+    await withPrincipal(this.db, p, async (trx) => {
+      const before = await trx
+        .selectFrom('household')
+        .select('auto_lock_minutes')
+        .where('id', '=', p.householdId)
+        .forUpdate()
+        .executeTakeFirstOrThrow();
+      const was = autoLockOf(before.auto_lock_minutes);
+      if (was === to) return;
+      if (autoLockLonger(was, to)) await stepUp(trx);
+      await trx
+        .updateTable('household')
+        .set({ auto_lock_minutes: to })
+        .where('id', '=', p.householdId)
+        .execute();
+      await appendAudit(trx, {
+        householdId: p.householdId,
+        actorAccountId: p.accountId,
+        action: 'household.auto_lock_changed',
+        objectType: 'household',
+        objectId: p.householdId,
+        detail: { minutes: to, was },
+        ip: meta.ip,
+      });
+    });
+    return this.autoLock(p);
+  }
+
+  /**
+   * PUT /me/auto-lock (0.9.0-dev.87): somebody's own time, for themselves
+   * alone — anybody signed in — shorter than the household's or as the
+   * household says (null): never longer (`422 validation_failed`, `detail:
+   * 'minutes'`), and never Off while the household has a time, which null
+   * cannot be. What is in effect for them getting longer asks them to
+   * confirm it's them (`change_auto_lock`), decided with their row held.
+   * Each change is in the activity log, as a sign-in's lines are; the same
+   * again changes nothing.
+   */
+  async setMyAutoLock(
+    p: Principal,
+    to: AutoLockMinutes | null,
+    meta: RequestMeta,
+    stepUp: (trx: Db) => Promise<void>,
+  ): Promise<AutoLock> {
+    await withPrincipal(this.db, p, async (trx) => {
+      const row = await trx
+        .selectFrom('account_household')
+        .select('auto_lock_minutes')
+        .where('account_id', '=', p.accountId)
+        .where('household_id', '=', p.householdId)
+        .forUpdate()
+        .executeTakeFirstOrThrow();
+      const household = autoLockOf(
+        (
+          await trx
+            .selectFrom('household')
+            .select('auto_lock_minutes')
+            .where('id', '=', p.householdId)
+            .executeTakeFirstOrThrow()
+        ).auto_lock_minutes,
+      );
+      if (!autoLockAllowed(household, to)) {
+        throw new ApiError(422, 'validation_failed', AUTO_LOCK_LONGER, { detail: 'minutes' });
+      }
+      const was = autoLockOf(row.auto_lock_minutes);
+      if (was === to) return;
+      if (autoLockLonger(autoLockInEffect(household, was), autoLockInEffect(household, to))) {
+        await stepUp(trx);
+      }
+      await trx
+        .updateTable('account_household')
+        .set({ auto_lock_minutes: to })
+        .where('account_id', '=', p.accountId)
+        .where('household_id', '=', p.householdId)
+        .execute();
+      await appendAudit(trx, {
+        householdId: p.householdId,
+        actorAccountId: p.accountId,
+        action: 'session.auto_lock_changed',
+        objectType: 'member',
+        objectId: p.memberId,
+        detail: { minutes: to, was },
+        ip: meta.ip,
+      });
+    });
+    return this.autoLock(p);
   }
 
   /**
@@ -955,6 +1090,31 @@ export class HouseholdService {
       };
     });
   }
+}
+
+/** The household's time and the reader's own, as stored (0.9.0-dev.87). */
+async function autoLockRows(
+  trx: Db,
+  p: Principal,
+): Promise<{ household: AutoLockMinutes | null; mine: AutoLockMinutes | null }> {
+  const hh = await trx
+    .selectFrom('household')
+    .select('auto_lock_minutes')
+    .where('id', '=', p.householdId)
+    .executeTakeFirstOrThrow();
+  const own = await trx
+    .selectFrom('account_household')
+    .select('auto_lock_minutes')
+    .where('account_id', '=', p.accountId)
+    .where('household_id', '=', p.householdId)
+    .executeTakeFirst();
+  return { household: autoLockOf(hh.auto_lock_minutes), mine: autoLockOf(own?.auto_lock_minutes) };
+}
+
+/** Whether a change keeps the vault unlocked longer than before: a longer time, or Off. */
+export function autoLockLonger(was: AutoLockMinutes | null, to: AutoLockMinutes | null): boolean {
+  if (was === null) return false;
+  return to === null || to > was;
 }
 
 /** A stored choice, as the API says it: one of the offered (the database holds it to them), or never. */
