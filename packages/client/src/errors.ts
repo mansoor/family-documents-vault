@@ -1,4 +1,4 @@
-import { APP_UPDATE_REQUIRED_CODE } from '@fdv/shared';
+import { APP_UPDATE_REQUIRED_CODE, SESSION_LOCKED_CODE } from '@fdv/shared';
 
 /**
  * The two ways a request can fail, kept apart because a client has to
@@ -146,6 +146,16 @@ export function isSessionOver(err: unknown): boolean {
     err.status === 401 &&
     (err.code === 'session_ended' || err.code === 'unauthenticated')
   );
+}
+
+/**
+ * A locked session (0.9.0-dev.86, `features.session_lock`): `423
+ * session_locked`. Never a session that is over — the client shows its lock
+ * screen, and the sign-in stays. Only a client that locked its own session
+ * (`lock`) is ever answered so.
+ */
+export function isSessionLocked(err: unknown): boolean {
+  return err instanceof ApiRequestError && err.status === 423 && err.code === SESSION_LOCKED_CODE;
 }
 
 /** Statuses worth trying again later, whatever the envelope says. */

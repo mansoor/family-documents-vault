@@ -806,6 +806,27 @@ describe.skipIf(!testAdminUrl())('codes by text (SMS3)', () => {
       expect(s.rows[0]?.factor_verified_at).toBeNull();
     });
 
+    it('a locked session is unlocked with one, the code texted while it is locked (0.9.0-dev.86)', async () => {
+      expect((await textCodes(teen, { sign_in: true })).statusCode).toBe(200);
+      expect((await call(teen, 'POST', '/api/v1/auth/lock')).statusCode).toBe(204);
+      expect(errorOf(await call(teen, 'GET', '/api/v1/documents')).code).toBe('session_locked');
+      // What the lock screen asks: where a code would go, and one texted.
+      const state = (await call(teen, 'GET', '/api/v1/auth/step-up')).json<StepUpState>();
+      expect(state.text_to).toBe('•••• •••303');
+      expect((await call(teen, 'POST', '/api/v1/auth/step-up/text')).statusCode).toBe(200);
+      const code = codeTo(TEEN_PHONE);
+      expect(
+        errorOf(await call(teen, 'POST', '/api/v1/auth/unlock', { text_code: another(code) })).code,
+      ).toBe('sms_code_wrong');
+      const ok = await call(teen, 'POST', '/api/v1/auth/unlock', { text_code: code });
+      expect(ok.statusCode, ok.body).toBe(200);
+      expect((await call(teen, 'GET', '/api/v1/documents')).statusCode).toBe(200);
+      const line = await admin.query<{ detail: { method: string } }>(
+        "select detail from audit_event where action = 'session.unlocked' order by id desc limit 1",
+      );
+      expect(line.rows[0]?.detail.method).toBe('text');
+    });
+
     it('an owner never may', async () => {
       await h.decider(owner);
       expect((await textCodes(owner, { sign_in: true })).statusCode).toBe(200);

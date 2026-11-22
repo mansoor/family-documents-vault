@@ -1,7 +1,7 @@
-import { FACTOR_STEP_UPS } from '@fdv/shared';
+import { CODE_USED_REASON, FACTOR_STEP_UPS } from '@fdv/shared';
 import { useEffect, useRef, useState, type FormEvent } from 'react';
-import { api } from './api.js';
-import { useApp } from './app-context.js';
+import { api, ApiRequestError } from './api.js';
+import { tooManyWords, useApp } from './app-context.js';
 import * as passkeys from './passkeys.js';
 import { Button, ErrorNote, Field, OnTop, useSheetFocus } from './ui.js';
 
@@ -26,24 +26,112 @@ export function StepUpPrompt(props: {
   factor?: boolean;
   onSettled: (confirmed: boolean) => void;
 }) {
+  const [busy, setBusy] = useState(false);
+  // A passkey or a code, never the password: the owner's powers, and
+  // since 0.9.0 whatever the vault says so of (changing how somebody who
+  // has either signs in).
+  const factorOnly = props.factor === true || FACTOR_STEP_UPS.includes(props.action ?? '');
+  const box = useRef<HTMLElement>(null);
+  useSheetFocus(box, { onEscape: () => props.onSettled(false), busy });
+
+  return (
+    <OnTop>
+      <div className="scrim" role="presentation">
+        <section
+          ref={box}
+          className="card stack sheet"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="stepup-h"
+        >
+          <h2 id="stepup-h" style={{ fontSize: 20 }}>
+            Just checking it is you
+          </h2>
+          <p className="muted">{props.message}</p>
+          <ConfirmItsYou
+            idPrefix="stepup"
+            factorOnly={factorOnly}
+            send={(token, body) => api.stepUp(token, body)}
+            onBusy={setBusy}
+            onConfirmed={() => props.onSettled(true)}
+            onLost={() => props.onSettled(false)}
+            onCancel={() => props.onSettled(false)}
+          />
+        </section>
+      </div>
+    </OnTop>
+  );
+}
+
+/** A credential given again: one of these. */
+export interface Credential {
+  password?: string;
+  code?: string;
+  passkey?: unknown;
+  text_code?: string;
+}
+
+/**
+ * What a refused password or code says: the vault's own words where they say
+ * more than "that didn't match" — a code taken already (`code_used`), too
+ * many tries just now — and `ours` otherwise.
+ */
+const refusedSaying = (ours: string) => (err: unknown) =>
+  err instanceof ApiRequestError && err.status === 429
+    ? // In words of confirming it's you, never of signing in.
+      tooManyWords(err.retryAfterSeconds ?? null)
+    : err instanceof ApiRequestError && err.reason === CODE_USED_REASON
+      ? err.message
+      : ours;
+
+/** Which of the forms the last answer was to: its words are said there. */
+type Where = 'passkey' | 'password' | 'code' | 'text';
+
+/**
+ * The ways to confirm it's you, and one sent: a passkey, the password (never
+ * for what takes a passkey or a code), a code from an authenticator app
+ * (asked for alone when only that or a passkey will do; beside the password
+ * with `codeToo`), and, where the vault offers it, a code by text. Drawn in
+ * the step-up's dialog, and on the lock screen (0.9.0-dev.86), whose `send`
+ * unlocks.
+ */
+export function ConfirmItsYou(props: {
+  /** The fields' ids start with it: one of these on a page at a time. */
+  idPrefix: string;
+  factorOnly: boolean;
+  /** A code from an authenticator app offered beside the password (the account has one). */
+  codeToo?: boolean;
+  /** The password field's name; "Or your password" unless said. */
+  passwordLabel?: string;
+  /** What its buttons say: "Confirm" unless said. Beside the password, the code's says "… with the code". */
+  confirmWord?: string;
+  /** Sends what was given: confirming it's you, or unlocking. */
+  send: (token: string, body: Credential) => Promise<unknown>;
+  onBusy?: (busy: boolean) => void;
+  onConfirmed: () => void;
+  /** No session to send it with. */
+  onLost: () => void;
+  /** Absent: no Cancel (the lock screen's way out is signing out). */
+  onCancel?: () => void;
+}) {
   // A wrong password here answers 401 with `invalid_credentials`, which
   // `withToken` now leaves alone — only `session_ended` and
   // `unauthenticated` end a session. Going through the session directly
   // anyway, because this prompt must never be the thing that signs
   // somebody out, whatever the shared helper does later.
   const { session, caps } = useApp();
+  const { idPrefix: id, factorOnly } = props;
+  const word = props.confirmWord ?? 'Confirm';
   const [password, setPassword] = useState('');
   const [code, setCode] = useState('');
-  const [busy, setBusy] = useState(false);
-  // A passkey or a code, never the password: the owner's powers (A54), and
-  // since 0.9.0 whatever the vault says so of (changing how somebody who
-  // has either signs in).
-  const factorOnly = props.factor === true || FACTOR_STEP_UPS.includes(props.action ?? '');
-  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusyNow] = useState(false);
+  const setBusy = (on: boolean) => {
+    setBusyNow(on);
+    props.onBusy?.(on);
+  };
+  const [error, setError] = useState<{ at: Where; text: string } | null>(null);
   const canUsePasskey = passkeys.supported() && passkeys.secureEnough();
-  const box = useRef<HTMLElement>(null);
-  useSheetFocus(box, { onEscape: () => props.onSettled(false), busy });
-  // A code by text (0.9.0, SMS3): offered to an adult or a teen who asked
+  // A code by text (0.9.0): offered to an adult or a teen who asked
   // for codes by text — never for what takes a passkey or an
   // authenticator's code (FACTOR_STEP_UPS).
   const [textTo, setTextTo] = useState<string | null>(null);
@@ -64,190 +152,178 @@ export function StepUpPrompt(props: {
     };
   }, [asksText, session]);
 
+  /** Sends what `given` gives; refused, says what `words` makes of it, at `at`. */
+  const confirm = async (
+    at: Where,
+    given: () => Promise<Credential>,
+    words: (err: unknown) => string,
+  ) => {
+    setBusy(true);
+    setError(null);
+    try {
+      const body = await given();
+      const got = await session.token();
+      if (got.kind !== 'ok') return props.onLost();
+      await props.send(got.token, body);
+      props.onConfirmed();
+    } catch (err) {
+      setError({ at, text: words(err) });
+    } finally {
+      setBusy(false);
+    }
+  };
+  const errorAt = (at: Where) => <ErrorNote message={error?.at === at ? error.text : null} />;
+
   const textMe = async () => {
     setBusy(true);
     setError(null);
     try {
       const got = await session.token();
-      if (got.kind !== 'ok') return props.onSettled(false);
+      if (got.kind !== 'ok') return props.onLost();
       const sent = await api.stepUpTextCode(got.token);
       setTexted(`We texted a code to ${sent.sent_to}.`);
       setTextCode('');
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'The code couldn’t be texted.');
+      setError({
+        at: 'text',
+        text: err instanceof Error ? err.message : 'The code couldn’t be texted.',
+      });
     } finally {
       setBusy(false);
     }
   };
 
-  const withText = async (e: FormEvent) => {
+  const submit = (e: FormEvent, at: Where, body: Credential, words: (err: unknown) => string) => {
     e.preventDefault();
-    setBusy(true);
-    setError(null);
-    try {
-      const got = await session.token();
-      if (got.kind !== 'ok') return props.onSettled(false);
-      await api.stepUp(got.token, { text_code: textCode.replace(/\s+/g, '') });
-      props.onSettled(true);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "That code didn't match.");
-    } finally {
-      setBusy(false);
-    }
+    void confirm(at, async () => body, words);
   };
 
-  const withPassword = async (e: FormEvent) => {
-    e.preventDefault();
-    setBusy(true);
-    setError(null);
-    try {
-      const got = await session.token();
-      if (got.kind !== 'ok') return props.onSettled(false);
-      await api.stepUp(got.token, { password });
-      props.onSettled(true);
-    } catch {
-      setError("That didn't match. Try again.");
-    } finally {
-      setBusy(false);
-    }
-  };
+  const withPasskey = () =>
+    void confirm(
+      'passkey',
+      async () => ({ passkey: await passkeys.assert(await api.passkeyChallenge()) }),
+      (err) => passkeys.describe(err),
+    );
 
-  const withCode = async (e: FormEvent) => {
-    e.preventDefault();
-    setBusy(true);
-    setError(null);
-    try {
-      const got = await session.token();
-      if (got.kind !== 'ok') return props.onSettled(false);
-      await api.stepUp(got.token, { code: code.replace(/\s+/g, '') });
-      props.onSettled(true);
-    } catch {
-      setError("That code didn't match. Try the one your app shows now.");
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const withPasskey = async () => {
-    setBusy(true);
-    setError(null);
-    try {
-      const options = await api.passkeyChallenge();
-      const response = await passkeys.assert(options);
-      const got = await session.token();
-      if (got.kind !== 'ok') return props.onSettled(false);
-      await api.stepUp(got.token, { passkey: response });
-      props.onSettled(true);
-    } catch (err) {
-      setError(passkeys.describe(err));
-    } finally {
-      setBusy(false);
-    }
-  };
+  const cancel = props.onCancel && (
+    <Button kind="quiet" onClick={props.onCancel}>
+      Cancel
+    </Button>
+  );
+  const codeForm = (label: string) => (
+    <form
+      onSubmit={(e) =>
+        submit(
+          e,
+          'code',
+          { code: code.replace(/\s+/g, '') },
+          refusedSaying("That code didn't match. Try the one your app shows now."),
+        )
+      }
+      className="stack"
+    >
+      <Field
+        id={`${id}-code`}
+        label={label}
+        value={code}
+        onChange={setCode}
+        autoComplete="one-time-code"
+        inputMode="numeric"
+      />
+      {errorAt('code')}
+      <div className="row">
+        <Button type="submit" disabled={busy || code.replace(/\s+/g, '').length < 6}>
+          {busy ? 'Checking…' : props.codeToo ? `${word} with the code` : word}
+        </Button>
+        {factorOnly && cancel}
+      </div>
+    </form>
+  );
 
   return (
-    <OnTop>
-      <div className="scrim" role="presentation">
-        <section
-          ref={box}
-          className="card stack sheet"
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="stepup-h"
+    <>
+      {factorOnly && (
+        <p className="muted">
+          Use your passkey, or a code from your authenticator app. Your password isn’t enough for
+          this.
+        </p>
+      )}
+      {canUsePasskey && (
+        <Button disabled={busy} onClick={withPasskey}>
+          {busy ? 'Waiting for your device…' : 'Use your passkey'}
+        </Button>
+      )}
+      {errorAt('passkey')}
+      {texted ? (
+        <form
+          onSubmit={(e) =>
+            submit(e, 'text', { text_code: textCode.replace(/\s+/g, '') }, (err) =>
+              err instanceof Error ? err.message : "That code didn't match.",
+            )
+          }
+          className="stack"
         >
-          <h2 id="stepup-h" style={{ fontSize: 20 }}>
-            Just checking it is you
-          </h2>
-          <p className="muted">{props.message}</p>
-          {factorOnly && (
-            <p className="muted">
-              Use your passkey, or a code from your authenticator app. Your password isn’t enough
-              for this.
-            </p>
-          )}
-          {canUsePasskey && (
-            <Button disabled={busy} onClick={() => void withPasskey()}>
-              {busy ? 'Waiting for your device…' : 'Use your passkey'}
+          <Field
+            id={`${id}-text-code`}
+            label="Code from the text"
+            value={textCode}
+            onChange={setTextCode}
+            autoComplete="one-time-code"
+            inputMode="numeric"
+          />
+          <p className="status-line" role="status">
+            {texted}
+          </p>
+          {errorAt('text')}
+          <div className="row">
+            <Button type="submit" disabled={busy || textCode.replace(/\s+/g, '').length < 6}>
+              {busy ? 'Checking…' : word}
             </Button>
-          )}
-          {texted ? (
-            <form onSubmit={(e) => void withText(e)} className="stack">
-              <Field
-                id="stepup-text-code"
-                label="Code from the text"
-                value={textCode}
-                onChange={setTextCode}
-                autoComplete="one-time-code"
-                inputMode="numeric"
-              />
-              <p className="status-line" role="status">
-                {texted}
-              </p>
-              <ErrorNote message={error} />
-              <div className="row">
-                <Button type="submit" disabled={busy || textCode.replace(/\s+/g, '').length < 6}>
-                  {busy ? 'Checking…' : 'Confirm'}
-                </Button>
-                <Button kind="quiet" disabled={busy} onClick={() => void textMe()}>
-                  Send another code
-                </Button>
-                <Button kind="quiet" onClick={() => props.onSettled(false)}>
-                  Cancel
-                </Button>
-              </div>
-            </form>
-          ) : factorOnly ? (
-            <form onSubmit={(e) => void withCode(e)} className="stack">
-              <Field
-                id="stepup-code"
-                label={
-                  canUsePasskey
-                    ? 'Or a code from your authenticator app'
-                    : 'Code from your authenticator app'
-                }
-                value={code}
-                onChange={setCode}
-                autoComplete="one-time-code"
-                inputMode="numeric"
-              />
-              <ErrorNote message={error} />
-              <div className="row">
-                <Button type="submit" disabled={busy || code.replace(/\s+/g, '').length < 6}>
-                  {busy ? 'Checking…' : 'Confirm'}
-                </Button>
-                <Button kind="quiet" onClick={() => props.onSettled(false)}>
-                  Cancel
-                </Button>
-              </div>
-            </form>
-          ) : (
-            <form onSubmit={(e) => void withPassword(e)} className="stack">
-              <Field
-                id="stepup-password"
-                label="Or your password"
-                type="password"
-                value={password}
-                onChange={setPassword}
-                autoComplete="current-password"
-              />
-              {textTo && (
-                <Button kind="link" disabled={busy} onClick={() => void textMe()}>
-                  {`Or text me a code at ${textTo}`}
-                </Button>
-              )}
-              <ErrorNote message={error} />
-              <div className="row">
-                <Button type="submit" disabled={busy || !password}>
-                  {busy ? 'Checking…' : 'Confirm'}
-                </Button>
-                <Button kind="quiet" onClick={() => props.onSettled(false)}>
-                  Cancel
-                </Button>
-              </div>
-            </form>
-          )}
-        </section>
-      </div>
-    </OnTop>
+            <Button kind="quiet" disabled={busy} onClick={() => void textMe()}>
+              Send another code
+            </Button>
+            {cancel}
+          </div>
+        </form>
+      ) : factorOnly ? (
+        codeForm(
+          canUsePasskey
+            ? 'Or a code from your authenticator app'
+            : 'Code from your authenticator app',
+        )
+      ) : (
+        <>
+          <form
+            onSubmit={(e) =>
+              submit(e, 'password', { password }, refusedSaying("That didn't match. Try again."))
+            }
+            className="stack"
+          >
+            <Field
+              id={`${id}-password`}
+              label={props.passwordLabel ?? 'Or your password'}
+              type="password"
+              value={password}
+              onChange={setPassword}
+              autoComplete="current-password"
+            />
+            {textTo && (
+              <Button kind="link" disabled={busy} onClick={() => void textMe()}>
+                {`Or text me a code at ${textTo}`}
+              </Button>
+            )}
+            {errorAt('password')}
+            {errorAt('text')}
+            <div className="row">
+              <Button type="submit" disabled={busy || !password}>
+                {busy ? 'Checking…' : word}
+              </Button>
+              {cancel}
+            </div>
+          </form>
+          {props.codeToo && codeForm('Or a code from your authenticator app')}
+        </>
+      )}
+    </>
   );
 }

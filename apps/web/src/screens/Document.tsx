@@ -1318,18 +1318,24 @@ function PhonePages(props: {
   const asIs = latest?.stored_as_is === true || isRecordFormat(latest?.mime);
   useEffect(() => {
     let url: string | null = null;
+    // Gone before it came (moved on, or the vault locked, 0.9.0-dev.86): no
+    // object URL is made for a view that is not there to let it go.
+    let live = true;
     // Nothing to draw a thumbnail from: its file was removed for good (5.24),
     // or it is a health record kept as it is (H5).
     if (!latest || latest.file_removed || asIs) return;
     void withToken((t) => api.thumbnail(t, latest.id))
       .then((blob) => {
-        if (blob) {
+        if (blob && live) {
           url = URL.createObjectURL(blob);
           setThumb(url);
         }
       })
-      .catch(() => setThumb(null));
+      .catch(() => {
+        if (live) setThumb(null);
+      });
     return () => {
+      live = false;
       if (url) URL.revokeObjectURL(url);
     };
   }, [latest, withToken, asIs]);

@@ -169,9 +169,11 @@ export function activityKind(action: string): ActivityKind {
     case 'invitation':
     case 'owner_change':
       return 'people';
+    // 0.9.0-dev.86: a session locked and unlocked (`session`).
     case 'auth':
     case 'credential':
     case 'computer':
+    case 'session':
       return 'sign_in';
     // A connected app (APP1): what it sends is added; managing it is
     // people and access.
@@ -1332,6 +1334,12 @@ export function eventWords(e: ActivityEvent): (ActivityLine & { named: boolean }
     // 0.9.0: every other device of theirs signed out at once.
     case 'auth.signed_out_others':
       return line(`${who} signed out their other devices`, true);
+    // 0.9.0-dev.86: the vault locked in one browser, and unlocked with a
+    // credential given again — never which.
+    case 'session.locked':
+      return line(`${who} locked the vault in one browser`);
+    case 'session.unlocked':
+      return line(`${who} unlocked the vault in one browser`);
     // 0.9.0: a failed try at signing in to somebody's account, or at
     // confirming it's them: which step, and whether signing in now waits —
     // never what was typed, nor the address. Whoever tried is not named:

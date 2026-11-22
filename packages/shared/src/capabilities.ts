@@ -804,6 +804,15 @@ export interface CapabilityFeatures {
    * reads the log. Absent from older vaults.
    */
   activity_export?: boolean;
+  /**
+   * Lock (0.9.0-dev.86): `POST /auth/lock` locks the caller's own session,
+   * and every route then answers it `423 session_locked` (SESSION_LOCKED_CODE)
+   * but the few that draw a lock screen, unlock it or sign out, until `POST
+   * /auth/unlock` is given a passkey, the password or a code, as confirming
+   * it's you takes. The vault keeps the lock, so a reload keeps it too. Per
+   * session: another device is never locked by it. Absent from older vaults.
+   */
+  session_lock?: boolean;
 }
 
 export interface CapabilityLimits {
@@ -861,6 +870,17 @@ export const APP_UPDATE_REQUIRED_MESSAGE =
  * code; a client tells it apart by this, never by the message.
  */
 export const CODE_USED_REASON = 'code_used';
+
+/**
+ * A locked session (0.9.0-dev.86, `features.session_lock`): `423`, with
+ * `error.code` this, on every route but those that draw the lock screen,
+ * unlock it (`POST /auth/unlock`) or sign out. The session is not over: a
+ * client shows its lock screen and keeps the sign-in. Only a session locked
+ * by `POST /auth/lock` is ever answered so, and a client that never locks
+ * never sees it.
+ */
+export const SESSION_LOCKED_CODE = 'session_locked';
+export const SESSION_LOCKED_MESSAGE = 'The vault is locked. Confirm it’s you to unlock it.';
 
 export interface Capabilities {
   product: typeof PRODUCT_ID;

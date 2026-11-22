@@ -304,6 +304,7 @@ describe('the tray', () => {
     expect(sessionStorage.getItem(flyoutsKey('me'))).toBeNull();
   });
 
+  // About 10 s alone, and past the 15 s default while the whole gate runs at once.
   it('from the 8th a warning, the count amber; the 11th asks which to close, minimised longest first', async () => {
     at(11);
     for (let n = 1; n <= 7; n++) await open(n);
@@ -327,7 +328,7 @@ describe('the tray', () => {
     await screen.findByRole('dialog', { name: 'Paper 11' });
     expect(within(tray()).getAllByRole('listitem')).toHaveLength(10);
     expect(within(tray()).queryByRole('button', { name: /^Paper 01/ })).toBeNull();
-  });
+  }, 30_000);
 });
 
 describe('freeing', () => {
@@ -683,6 +684,7 @@ describe('side by side', () => {
     expect(greenLine()).toEqual(['doc-2']);
   });
 
+  // About 10 s alone, and past the 15 s default while the whole gate runs at once.
   it('Add a third from the list; a document clicked in the list then replaces the pane with the green line', async () => {
     at(5, ROOMY);
     await pair(1, 2);
@@ -743,7 +745,7 @@ describe('side by side', () => {
       if (notes) expect(notes).toHaveAccessibleName(`Notes ${nameOf(id)}`);
     }
     await expectAccessible();
-  });
+  }, 30_000);
 
   it('Esc minimises the pane it is in, the others stay; One at a time keeps the one used last', async () => {
     at(3, ROOMY);

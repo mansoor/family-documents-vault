@@ -6,6 +6,21 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.9.0-dev.86] - 2026-11-21 — Lock
+
+### Added
+
+- **Lock.** Stepping away from the vault in a browser? Press Lock, at the top of the page, beside your name. Every document open beside the list is let go of at once — those side by side too — and the page is replaced by "The vault is locked": nothing of the list, the tray or anything else can be read or reached behind it.
+- **Back with one confirmation.** Your passkey, your password, or a code from your authenticator app unlocks it, as confirming it's you does. The page comes back where you were: the document in front opens again, and the others wait in the tray. A wrong password or a code used already says so; after five wrong tries it waits, as confirming it's you does — a minute, then five, then fifteen.
+- **The vault keeps it.** Reloading the page, or opening the vault in another tab of the same browser, shows the lock screen until it is unlocked; another tab locks as soon as it asks the vault for anything. Lock pressed while the vault can't be reached is sent as soon as it can be. Your other devices, your phone among them, are not locked: Lock is for this browser's sign-in only.
+- **Nothing shows while it is locked.** Notifications are not sent to a locked browser until it is unlocked. Notes you haven't saved are not kept: if you have any, Lock asks first. An upload of many documents stops, and Send the rest sends the others once it is unlocked.
+- **Sign out** is on the lock screen too.
+- **Activity** says when you locked and unlocked the vault in one browser, for whoever sees sign-ins there.
+
+### Changed
+
+- Confirming it's you says when a code from your authenticator app was used already, or when there have been too many tries just now and how long to wait, rather than only that it didn't match.
+
 ## [0.9.0-dev.85] - 2026-11-21 — documents side by side
 
 ### Added

@@ -446,6 +446,25 @@ export function keepFlyouts(memberId: string | null, set: FlyoutSet): void {
   }
 }
 
+/**
+ * The vault locked (0.9.0-dev.86): every document beside the list is freed
+ * as the page it was drawn on goes. What is kept to put the tray back once
+ * it is unlocked: the one in front, which opens again, and the rest as tray
+ * icons — never those side by side, which would all open again with it.
+ */
+export function lockedFlyouts(memberId: string | null): void {
+  if (!memberId) return;
+  try {
+    const s = storage();
+    const raw = s?.getItem(flyoutsKey(memberId));
+    if (!s || !raw) return;
+    const kept = JSON.parse(raw) as { items?: unknown; front?: unknown };
+    s.setItem(flyoutsKey(memberId), JSON.stringify({ items: kept.items, front: kept.front }));
+  } catch {
+    // Nothing kept, or nothing to keep it in.
+  }
+}
+
 /** Every person's kept open documents in this tab: at a sign-out, a session's end and a new sign-in. */
 export function forgetFlyouts(): void {
   try {

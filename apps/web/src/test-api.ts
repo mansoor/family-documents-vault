@@ -336,6 +336,16 @@ export interface FakeState {
    * app's routes answers `403 two_step_setup_required`, until a code is confirmed.
    */
   twoStepSetupPending?: boolean;
+  /**
+   * Lock (0.9.0-dev.86): `features.session_lock`, said when a test gives it;
+   * POST /auth/lock sets `locked`, and while it is set every call but the
+   * lock screen's answers `423 session_locked`; POST /auth/unlock takes the
+   * password `correct horse battery` or the code `123456` (`654320`: a code
+   * used already). Each unlock asked for, as sent, in `unlocks`.
+   */
+  sessionLock?: boolean;
+  locked?: boolean;
+  unlocks?: unknown[];
   /** Why (0.9.0): `confirm` when a passkey or a code is set up and this sign-in has not given it. */
   twoStepReason?: 'enrol' | 'confirm';
   /** A password sign-in answers that the second step is the owner's passkey (0.9.0). */
@@ -1548,6 +1558,43 @@ export function installFakeApi(state: FakeState) {
       }
       return refuse(refused.status, refused.code, refused.message);
     }
+    // Lock (0.9.0-dev.86): as the vault keeps it, every call but the lock
+    // screen's answers 423 while it is locked.
+    if (path === '/api/v1/auth/lock' && method === 'POST') {
+      state.locked = true;
+      return Promise.resolve(new Response(null, { status: 204 }));
+    }
+    if (path === '/api/v1/auth/unlock' && method === 'POST') {
+      const b = (body ?? {}) as { password?: string; code?: string };
+      (state.unlocks ??= []).push(b);
+      if (b.code === '654320') {
+        return refuse(
+          401,
+          'invalid_credentials',
+          'That code was used already. Wait for the next one from your authenticator app, and type that.',
+          { reason: 'code_used' },
+        );
+      }
+      if (b.password !== 'correct horse battery' && b.code !== '123456') {
+        return refuse(401, 'invalid_credentials', "That didn't match. Try again.");
+      }
+      state.locked = false;
+      return json({ verified_at: new Date().toISOString(), expires_in: 300 });
+    }
+    if (
+      state.locked &&
+      ![
+        '/api/v1/capabilities',
+        '/api/v1/auth/refresh',
+        '/api/v1/me',
+        '/api/v1/auth/logout',
+        '/api/v1/auth/step-up/text',
+        '/api/v1/auth/passkey/challenge',
+      ].includes(path) &&
+      !(path === '/api/v1/auth/step-up' && method === 'GET')
+    ) {
+      return refuse(423, 'session_locked', 'The vault is locked. Confirm it’s you to unlock it.');
+    }
     if (path === '/api/v1/capabilities') {
       return json({
         product: 'family-document-vault',
@@ -1640,6 +1687,8 @@ export function installFakeApi(state: FakeState) {
           ...(state.documentActivity ? { document_activity: true } : {}),
           // The activity log as CSV (0.9.0-dev.82): said when a test gives it.
           ...(state.activityCsv !== undefined ? { activity_export: true } : {}),
+          // Lock (0.9.0-dev.86): said when a test gives it.
+          ...(state.sessionLock ? { session_lock: true } : {}),
           // Who opened a link; health records kept as they are (0.9.0, H5).
           ...(state.linkOpenings ? { share_opens: true, record_formats: true } : {}),
           // Caregivers and turning 18 (0.9.0, H1b): said when a test asks.
@@ -1848,6 +1897,7 @@ export function installFakeApi(state: FakeState) {
         restriction: state.myRestriction ?? null,
         kind: state.myKind ?? 'family',
         access_expires_at: state.myAccessEnd ?? null,
+        locked: state.locked === true,
       });
     if (path === '/api/v1/me/reset-notice' && method === 'DELETE') {
       state.resetNotice = null;

@@ -110,6 +110,21 @@ export function forgetDraft(documentId: string, who: DraftOwner): void {
   }
 }
 
+/** Whether this tab keeps any draft of theirs: what Lock asks about first (0.9.0-dev.86). */
+export function hasDrafts(who: DraftOwner): boolean {
+  try {
+    const s = storage();
+    if (!s) return false;
+    const theirs = ownPrefix(who);
+    for (let i = 0; i < s.length; i++) {
+      if (s.key(i)?.startsWith(theirs)) return true;
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Every draft this tab kept — at a sign-out, a session's end and a new
  * sign-in — or, given who is signed in, every one but theirs.

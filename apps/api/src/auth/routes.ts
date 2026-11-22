@@ -7,7 +7,7 @@ import type { AuthService, Principal, RequestMeta } from './service.js';
 import { DEVICE_PROOF_DAYS } from './sign-in-guard.js';
 import type { TotpService } from './totp.js';
 import type { PasskeyService } from './passkeys.js';
-import type { StepUpService } from './step-up.js';
+import type { CredentialInput, StepUpService } from './step-up.js';
 import type { RestrictionService } from '../household/restrictions.js';
 import type { TextCodeService } from '../sms/codes.js';
 import {
@@ -186,12 +186,50 @@ export const TWO_STEP_SETUP_ROUTES: ReadonlySet<string> = new Set([
   'POST /api/v1/auth/logout',
   'GET /api/v1/auth/step-up',
   'POST /api/v1/auth/step-up',
+  // A locked session's way back (0.9.0-dev.86) confirms it's them as step-up does.
+  'POST /api/v1/auth/unlock',
   'POST /api/v1/auth/totp/enrol',
   'POST /api/v1/auth/totp/confirm',
   'GET /api/v1/auth/passkeys',
   'POST /api/v1/auth/passkeys/challenge',
   'POST /api/v1/auth/passkeys',
 ]);
+
+/**
+ * What a locked session may do (0.9.0-dev.86): say who it is (for the lock
+ * screen's ways to confirm it's you), have a code texted for that, unlock,
+ * lock again, and sign out. Every other route that takes a session answers
+ * it `423 session_locked` — whichever it is, by default (`authenticate`), so
+ * a route added later is locked too. The public routes (the capability
+ * document, the health checks, a renewal, a passkey's challenge), a
+ * connected app's and a link's take no session, and are not asked.
+ */
+export const SESSION_LOCK_ROUTES: ReadonlySet<string> = new Set([
+  'GET /api/v1/me',
+  'POST /api/v1/auth/logout',
+  'POST /api/v1/auth/lock',
+  'POST /api/v1/auth/unlock',
+  'GET /api/v1/auth/step-up',
+  'POST /api/v1/auth/step-up/text',
+]);
+
+/** A credential given again, to confirm it's you or to unlock. */
+const credentialBody = z.object({
+  password: z.string().min(1).optional(),
+  code: z.string().min(6).max(10).optional(),
+  passkey: z.record(z.string(), z.unknown()).optional(),
+  // 0.9.0: a code texted to their own number, an adult's or a teen's.
+  text_code: z.string().min(6).max(16).optional(),
+});
+
+function credentialOf(body: z.infer<typeof credentialBody>): CredentialInput {
+  return {
+    ...(body.password ? { password: body.password } : {}),
+    ...(body.code ? { code: body.code } : {}),
+    ...(body.passkey ? { passkey: body.passkey as never } : {}),
+    ...(body.text_code ? { text_code: body.text_code } : {}),
+  };
+}
 
 export function metaOf(req: FastifyRequest): RequestMeta {
   // The app's installation id (0.4.11): kept only if it is a UUID.
@@ -240,6 +278,8 @@ export function registerAuth(
     const route = `${req.method} ${req.routeOptions.url ?? ''}`;
     req.principal = await auth.authenticate(token, {
       enrolling: TWO_STEP_SETUP_ROUTES.has(route),
+      // A locked session (0.9.0-dev.86) is let through to these alone.
+      whileLocked: SESSION_LOCK_ROUTES.has(route),
     });
   });
 
@@ -380,6 +420,9 @@ export function registerAuth(
     const p = req.principal as Principal;
     const enabled = totp ? await totp.isEnabled(p.accountId) : false;
     const passkey = passkeys ? await passkeys.has(p.accountId) : false;
+    // Locked (0.9.0-dev.86): who it is and how they can confirm it's them,
+    // for the lock screen, and nothing more.
+    const locked = p.locked === true;
     return {
       account_id: p.accountId,
       household_id: p.householdId,
@@ -400,18 +443,27 @@ export function registerAuth(
       two_step_reason: p.twoStepPending ?? null,
       // 5.29: an owner made a link to hand over for this sign-in, not yet
       // seen: told at every sign-in until it is.
-      reset_notice: passwords ? await passwords.notice(p) : null,
+      reset_notice: passwords && !locked ? await passwords.notice(p) : null,
       // And when such a link was last spent: every password change takes
       // away what was added to the sign-in since.
-      handover_since: passwords ? await passwords.handoverSince(p) : null,
+      handover_since: passwords && !locked ? await passwords.handoverSince(p) : null,
       // 5.33: what an owner has limited this viewer to, in their own words;
       // null for anybody not restricted.
-      restriction: restrictions ? await restrictions.mine(p) : null,
+      restriction: restrictions && !locked ? await restrictions.mine(p) : null,
       // 5.34: a guest from outside the family — a viewer, always limited —
       // and when their sign-in ends (A28).
       kind: p.guest ? 'guest' : 'family',
       access_expires_at: p.accessExpiresAt?.toISOString() ?? null,
+      // 0.9.0-dev.86: this session is locked; POST /auth/unlock unlocks it.
+      locked,
     };
+  });
+
+  // Lock (0.9.0-dev.86): this session locked, as the vault keeps it, until a
+  // credential is given again. Locked already, it stays so.
+  app.post('/api/v1/auth/lock', { preHandler: app.requireAuth }, async (req, reply) => {
+    await auth.lockSession(req.principal as Principal, metaOf(req));
+    return reply.status(204).send();
   });
 
   // They have seen it (5.29). Nothing to see answers the same.
@@ -428,26 +480,15 @@ export function registerAuth(
     );
 
     app.post('/api/v1/auth/step-up', { preHandler: app.requireAuth }, async (req) => {
-      const body = parse(
-        z.object({
-          password: z.string().min(1).optional(),
-          code: z.string().min(6).max(10).optional(),
-          passkey: z.record(z.string(), z.unknown()).optional(),
-          // 0.9.0 (SMS3): a code texted to their own number, an adult's or a teen's.
-          text_code: z.string().min(6).max(16).optional(),
-        }),
-        req.body,
-      );
-      return stepUp.verify(
-        req.principal as Principal,
-        {
-          ...(body.password ? { password: body.password } : {}),
-          ...(body.code ? { code: body.code } : {}),
-          ...(body.passkey ? { passkey: body.passkey as never } : {}),
-          ...(body.text_code ? { text_code: body.text_code } : {}),
-        },
-        metaOf(req),
-      );
+      const body = parse(credentialBody, req.body);
+      return stepUp.verify(req.principal as Principal, credentialOf(body), metaOf(req));
+    });
+
+    // Unlocking a locked session (0.9.0-dev.86): a credential given again,
+    // as confirming it's you takes, counted and refused as that is.
+    app.post('/api/v1/auth/unlock', { preHandler: app.requireAuth }, async (req) => {
+      const body = parse(credentialBody, req.body);
+      return stepUp.unlock(req.principal as Principal, credentialOf(body), metaOf(req));
     });
 
     // A code texted to confirm it's them (SMS3): a few a minute, on top of

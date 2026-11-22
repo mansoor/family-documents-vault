@@ -1,5 +1,6 @@
 import { createApi, createHttp, type ResponseLike, type UploadBody } from '@fdv/client';
 import { heardFamilyZone } from './family-zone-store.js';
+import { heardLocked } from './session-lock.js';
 import {
   activityCsvCapped,
   REFRESH_COOKIE_HEADER,
@@ -20,7 +21,7 @@ import type {
  * arguments are what they always were, so no screen had to change.
  */
 
-export { ApiRequestError, NetworkError, isSessionOver } from '@fdv/client';
+export { ApiRequestError, NetworkError, isSessionLocked, isSessionOver } from '@fdv/client';
 export type { Params } from '@fdv/client';
 export type {
   CaptureResult,
@@ -69,7 +70,14 @@ const client = createApi(
     // Same origin: nginx serves the app and proxies /api. The global fetch
     // is looked up on every call, so a test can stand in for it.
     baseUrl: '',
-    fetch: (url, init) => globalThis.fetch(url, init as RequestInit),
+    // Any answer `423 session_locked` (0.9.0-dev.86), whichever screen
+    // asked, shows the lock screen (session-lock.ts): only a locked session
+    // is ever answered 423.
+    fetch: async (url, init) => {
+      const res = await globalThis.fetch(url, init as RequestInit);
+      if (res.status === 423) heardLocked();
+      return res;
+    },
     // The refresh token in an HttpOnly cookie, never where script on the
     // page can read it (0.9.0): asked for on every request, so every
     // sign-in, refresh and invitation accepted gives it so.

@@ -1023,6 +1023,7 @@ describe('Settings in three groups, with a menu beside the page (0.9.0, the owne
     expect(await subMenu()).toBeVisible();
   });
 
+  // About 10 s alone, and past the 15 s default while the whole gate runs at once.
   it('every setting there was is in a section, for an owner', async () => {
     // A restore paused a link: After a restore is Home's, not here.
     const state = at('/settings/account', {
@@ -1114,7 +1115,7 @@ describe('Settings in three groups, with a menu beside the page (0.9.0, the owne
     );
     expect(screen.queryByRole('link', { name: /After a restore/ })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Sign out' })).toBeNull();
-  });
+  }, 30_000);
 
   it('an adult reads the Only me rule under Privacy and keeps the kinds of document, a section of their own; their data is theirs', async () => {
     at('/settings/privacy', EVERYTHING, 'adult');

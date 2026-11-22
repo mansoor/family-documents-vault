@@ -5,6 +5,7 @@ import { createHash } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { App } from './App.js';
 import { batchPolling } from './screens/Batches.js';
+import { LOCKED_UPLOAD_WORDS } from './batch-store.js';
 import {
   AISHA,
   fresh,
@@ -823,6 +824,38 @@ describe('many documents at once, the review (I1)', () => {
     );
     expect(posts(state, /\/items$/)).toHaveLength(5);
     // One batch, and nothing in it twice.
+    expect(state.batches?.[0]?.items).toHaveLength(4);
+  });
+
+  it('the vault locked (423): a pause, never a refusal — the rest wait, and are sent once it is unlocked (0.9.0-dev.86)', async () => {
+    let n = 0;
+    const state = at('/add/many', {
+      refuseWith: (method, path) =>
+        method === 'POST' && /\/items$/.test(path) && ++n === 2
+          ? {
+              status: 423,
+              code: 'session_locked',
+              message: 'The vault is locked. Confirm it’s you to unlock it.',
+            }
+          : undefined,
+    });
+    await screen.findByRole('heading', { name: 'Add many documents' });
+    await screen.findByRole('option', { name: 'Aisha' });
+    choose([pdf('a.pdf'), pdf('b.pdf'), pdf('c.pdf'), pdf('d.pdf')]);
+    fireEvent.click(screen.getByRole('button', { name: 'Start: upload 4 files' }));
+    // The lock screen comes, and goes: the vault says it is not locked (here,
+    // a 423 from before another tab unlocked it).
+    await screen.findByRole('button', { name: 'Send the rest' });
+    expect(posts(state, /\/items$/)).toHaveLength(2);
+    expect(screen.getByText(LOCKED_UPLOAD_WORDS)).toBeVisible();
+    expect(
+      screen.getByText(/Not sent while the vault was locked: it can be sent again/),
+    ).toBeVisible();
+    expect(screen.queryByText(/Not sent: the batch takes no more/)).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Send the rest' }));
+    await waitFor(() =>
+      expect(screen.getAllByText('Arrived · waiting to be read')).toHaveLength(4),
+    );
     expect(state.batches?.[0]?.items).toHaveLength(4);
   });
 

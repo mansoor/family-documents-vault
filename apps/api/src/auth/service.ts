@@ -3,6 +3,8 @@ import {
   guestAccessEndedWords,
   restrictionMayWiden,
   seesAdults,
+  SESSION_LOCKED_CODE,
+  SESSION_LOCKED_MESSAGE,
   shareEndWords,
   suspensionInEffect,
   type AlertTextKind,
@@ -142,6 +144,12 @@ export interface Principal {
    * moment a code or a passkey is set up, or given.
    */
   twoStepPending?: TwoStepPending;
+  /**
+   * This session is locked (0.9.0-dev.86, 0126): only the routes of
+   * SESSION_LOCK_ROUTES are let through to it; every other answers `423
+   * session_locked` (`authenticate`). Absent while it is not.
+   */
+  locked?: true;
 }
 
 /** Why a session must deal with two-step sign-in before anything else (0.9.0). */
@@ -158,6 +166,9 @@ export interface SetupInput {
 
 const invalidCredentials = () =>
   new ApiError(401, 'invalid_credentials', "That email and password don't match.");
+
+/** A locked session's answer (0.9.0-dev.86): not over, only locked. */
+export const sessionLocked = () => new ApiError(423, SESSION_LOCKED_CODE, SESSION_LOCKED_MESSAGE);
 
 const sessionEnded = (why: string, reason: SessionEndReason) =>
   new ApiError(401, 'session_ended', 'Please sign in again.', { detail: why, reason });
@@ -1285,7 +1296,10 @@ export class AuthService {
    * refused, `403 two_step_setup_required`, unless the caller is one of the
    * routes that sets it up (`enrolling`).
    */
-  async authenticate(bearer: string, opts: { enrolling?: boolean } = {}): Promise<Principal> {
+  async authenticate(
+    bearer: string,
+    opts: { enrolling?: boolean; whileLocked?: boolean } = {},
+  ): Promise<Principal> {
     let claims: AccessClaims;
     try {
       claims = await verifyAccessToken(this.signingKey, bearer);
@@ -1317,6 +1331,7 @@ export class AuthService {
           'account_household.suspended_until',
           'account_household.access_expires_at',
           'session.factor_verified_at',
+          'session.locked_at',
         ])
         .where('session.id', '=', claims.sid)
         .where('session.revoked_at', 'is', null)
@@ -1351,6 +1366,12 @@ export class AuthService {
     if (guestAccessEnded(open.access_expires_at)) {
       throw sessionEnded('guest access ended', 'access_ended');
     }
+    // A locked session (0.9.0-dev.86): refused everywhere but the few routes
+    // that draw the lock screen, unlock it or sign out — whichever route
+    // asks, by default; a renewed access token names the same session, so
+    // it is as locked. Asked before two-step sign-in: nothing else is said
+    // to a locked session.
+    if (open.locked_at !== null && !opts.whileLocked) throw sessionLocked();
     if (pending && !opts.enrolling) throw twoStepSetupRequired(open.role, pending);
     const who = {
       accountId: open.account_id,
@@ -1370,7 +1391,34 @@ export class AuthService {
       // where files are kept nor of the mail server (the 5.34 review).
       ...(sight.restricted || open.access_expires_at ? { restricted: true } : {}),
       ...(pending ? { twoStepPending: pending } : {}),
+      ...(open.locked_at !== null ? { locked: true as const } : {}),
     };
+  }
+
+  /**
+   * POST /auth/lock (0.9.0-dev.86): this session locked, now, until it is
+   * unlocked with a credential (`StepUpService.unlock`). Locked already, it
+   * stays as it was, and nothing more is written.
+   */
+  async lockSession(p: Principal, meta: RequestMeta): Promise<void> {
+    await withPrincipal(this.db, p, async (trx) => {
+      const locked = await trx
+        .updateTable('session')
+        .set({ locked_at: new Date() })
+        .where('id', '=', p.sessionId)
+        .where('revoked_at', 'is', null)
+        .where('locked_at', 'is', null)
+        .executeTakeFirst();
+      if (Number(locked.numUpdatedRows) !== 1) return;
+      await appendAudit(trx, {
+        householdId: p.householdId,
+        actorAccountId: p.accountId,
+        action: 'session.locked',
+        objectType: 'session',
+        objectId: p.sessionId,
+        ip: meta.ip,
+      });
+    });
   }
 
   /**

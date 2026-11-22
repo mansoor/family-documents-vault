@@ -673,6 +673,9 @@ const RULES: ReadonlyMap<string, Audience | typeof BY_TYPE> = new Map<
   ['auth.session_revoked', BY_TYPE],
   // 0.9.0: every other device of one's own signed out, as one is.
   ['auth.signed_out_others', BY_TYPE],
+  // 0.9.0-dev.86: a session locked, and unlocked, as a sign-in's lines are.
+  ['session.locked', BY_TYPE],
+  ['session.unlocked', BY_TYPE],
   // 0.9.0: a failed try at signing in to somebody's account, or at
   // confirming it's them: for the person and the owners, nobody else.
   ['auth.sign_in_failed', ownersThePersonAndTheActor],

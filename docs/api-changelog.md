@@ -242,6 +242,18 @@ needs a vault of 0.4.10 or later.
 
 ## Unreleased
 
+- **Lock** (0.9.0-dev.86). Migration 0126 (`session.locked_at`). **Additive**: a session that never locks is answered as before, and no route changes for it.
+  - **New `features.session_lock`** (`true`; absent from older vaults).
+  - **New route** `POST /api/v1/auth/lock` → `204`: the caller's own session locked, now, as the vault keeps it. Locked already: the same `204`, nothing more written. Per session: the person's other sessions — their phone's among them — are not locked by it.
+  - **New `423 session_locked`** while a session is locked, on every route that takes a session but these: `GET /api/v1/me` (now with `locked: true`, and `reset_notice`, `handover_since` and `restriction` null while locked), `GET /api/v1/auth/step-up`, `POST /api/v1/auth/step-up/text`, `POST /api/v1/auth/unlock`, `POST /api/v1/auth/lock` and `POST /api/v1/auth/logout`. Refused by default, whichever route — a route added later too. The routes that take no session are not asked: the capability document, `/healthz`, `/readyz`, `POST /api/v1/auth/refresh`, a passkey's challenge, a connected app's routes (its key or token) and a link's. The envelope: `{ "error": { "code": "session_locked", "message": "The vault is locked. Confirm it’s you to unlock it.", "retriable": false, "request_id": "…" } }`. It never ends the session: show a lock screen, keep the sign-in.
+  - **A renewal keeps it locked**: `POST /auth/refresh` renews the same session, and the access token it gives is as locked as the last.
+  - **New route** `POST /api/v1/auth/unlock` with one credential, as `POST /auth/step-up` takes it — `{ "password" }`, `{ "code" }`, `{ "passkey" }` (a passkey's challenge from `POST /auth/passkey/challenge`), or `{ "text_code" }` where one is offered — → `{ verified_at, expires_in }`: unlocked, and confirmed to be them for the next five minutes. Refused as a step-up is, and counted with its tries on the session: `401 invalid_credentials` (reason `code_used` for a code taken already), `429 sign_in_throttled` after five wrong, `422 validation_failed` with none. Not locked, it is only a step-up.
+  - **`GET /api/v1/me`**: **new** `locked` (boolean; absent from older vaults).
+  - **Activity:** **new** `session.locked` and `session.unlocked` (`detail.method`: `password`, `totp`, `passkey` or `text`), `object_type: "session"`, for whoever reads a sign-in's lines: "… locked the vault in one browser", "… unlocked the vault in one browser". Kind `sign_in`.
+  - **Notifications:** a browser or phone whose session is locked is pushed nothing — digests, alerts, notices — until it is unlocked. `POST /api/v1/devices/{id}/test` to one: **new** `409 device_locked`.
+  - **Phone apps** never lock, and so never see a `423`: a session is locked only by `POST /auth/lock` with its own token.
+  - **Client:** **new** `lock(token)`, `unlock(token, body)` and `isSessionLocked(err)`; `Me.locked`. `@fdv/shared`: `SESSION_LOCKED_CODE`, `SESSION_LOCKED_MESSAGE`. The fake vault (`@fdv/client/testing`) locks and unlocks with the password.
+
 - **The activity log as CSV** (0.9.0-dev.82). No migration. Everything is **additive**.
   - **New `features.activity_export`** (`true`; absent from older vaults).
   - **New route** `GET /api/v1/audit/export?who=&kind=&from=&to=&document=` → `text/csv; charset=utf-8`, `Content-Disposition: attachment; filename*=UTF-8''activity-vault-<yyyy-mm-dd>.csv` (the household's today), `Cache-Control: private, no-store`. Whoever reads the log (`audit.read`: owners, adults, teens); `403 forbidden` to a viewer or a guest. At most 10 a minute from one address (`429 rate_limited`). No `HEAD` (`404`): each download is a line in the log.

@@ -855,9 +855,11 @@ export class IdentityService {
           .where('kind', 'in', ['web_push', 'unified_push'])
           .where('failed_at', 'is', null)
           .where(
+            // Nor a browser whose session is locked (0.9.0-dev.86).
             sql<boolean>`(device.session_id is null or exists (
               select 1 from session s
-               where s.id = device.session_id and s.revoked_at is null and s.expires_at > now()))`,
+               where s.id = device.session_id and s.revoked_at is null and s.expires_at > now()
+                 and s.locked_at is null))`,
           )
           .orderBy('id')
           .execute();

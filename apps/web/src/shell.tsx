@@ -1,4 +1,5 @@
-import { leaveThen } from './leave-guard.js';
+import { leaveThen, release } from './leave-guard.js';
+import { hasDrafts } from './note-drafts.js';
 import { can, roleLabel, type Capabilities, type Role } from '@fdv/shared';
 import {
   startTransition,
@@ -25,7 +26,7 @@ import { storedRole } from './session.js';
 import { shortcutsOn, useShortcutsOn } from './shortcuts.js';
 import { CollapseButton, ResizeHandle, useSidebar } from './sidebar.js';
 import { setThemeChoice, THEME_CHOICES, useThemeChoice } from './theme.js';
-import { useSheetFocus } from './ui.js';
+import { ConfirmDialog, useSheetFocus } from './ui.js';
 import { useFamilyZone } from './family-time.js';
 import { FlyoutProvider, useFlyouts } from './flyout-context.js';
 import { frontOf } from './flyout-store.js';
@@ -101,6 +102,7 @@ type IconName =
   | 'close'
   | 'chevron'
   | 'signOut'
+  | 'lock'
   | 'file'
   | 'files';
 
@@ -184,6 +186,12 @@ const DRAWN: Record<IconName, ReactNode> = {
     <>
       <path d="M10 4.5H5.5v15H10" />
       <path d="m14 8 4 4-4 4M18 12H9" />
+    </>
+  ),
+  lock: (
+    <>
+      <rect x="5" y="10.5" width="14" height="10" rx="2" />
+      <path d="M8 10.5V7.5a4 4 0 0 1 8 0v3" />
     </>
   ),
   file: (
@@ -384,7 +392,7 @@ export function AppShell(props: { desk?: ReactNode }) {
 }
 
 function Shell(props: { desk?: ReactNode }) {
-  const { caps, session, authVersion, markAuthChanged } = useApp();
+  const { caps, session, authVersion, markAuthChanged, lock } = useApp();
   // The family's clock, asked once a sign-in for every screen (0.9.0, TZ).
   useFamilyZone();
   const mode = useShellMode();
@@ -551,6 +559,20 @@ function Shell(props: { desk?: ReactNode }) {
 
   const household = caps?.branding.display_name ?? 'Family Document Vault';
 
+  // Lock (0.9.0-dev.86), where the vault offers it: something unsaved is
+  // asked about first, as for signing out — notes not yet saved among them,
+  // whose drafts are let go of as it locks.
+  const [discardNotes, setDiscardNotes] = useState(false);
+  const lockButtonRef = useRef<HTMLButtonElement>(null);
+  const pressLock = () => {
+    const who = session.info;
+    if (who && hasDrafts(who)) setDiscardNotes(true);
+    else leaveThen(() => void lock());
+  };
+  const lockButton = caps?.features.session_lock === true && (
+    <LockButton compact={mode !== 'wide'} onLock={pressLock} ref={lockButtonRef} />
+  );
+
   const account = (
     <AccountMenu me={me ?? null} role={role} compact={mode !== 'wide'} onSignOut={signOut} />
   );
@@ -637,6 +659,7 @@ function Shell(props: { desk?: ReactNode }) {
             <span className="muted">Household</span>
             <strong>{household}</strong>
           </Link>
+          {lockButton}
           {account}
         </header>
       ) : (
@@ -645,6 +668,7 @@ function Shell(props: { desk?: ReactNode }) {
           <SearchBox field={search} keysOn={keysOn} />
           <span className="app-bar-gap" />
           {canAdd && <AddControl link={add} keysOn={keysOn} many={many} />}
+          {lockButton}
           {account}
         </header>
       )}
@@ -690,6 +714,23 @@ function Shell(props: { desk?: ReactNode }) {
       </div>
       {props.desk}
       {phone && <BottomBar canAdd={canAdd} sections={sections} path={pathname} inert={covered} />}
+      {discardNotes && (
+        <ConfirmDialog
+          title="Lock, and let go of notes not saved?"
+          confirmLabel="Lock"
+          cancelLabel="Keep writing"
+          returnFocus={lockButtonRef}
+          onCancel={() => setDiscardNotes(false)}
+          onConfirm={() => {
+            setDiscardNotes(false);
+            // Asked here, for every note: the page's own question is not asked again.
+            void release().then(() => lock());
+          }}
+        >
+          Notes you haven’t saved aren’t kept while the vault is locked. Save them first to keep
+          them.
+        </ConfirmDialog>
+      )}
       {phone && drawer && (
         <Drawer
           household={household}
@@ -1041,6 +1082,34 @@ function ThemeItems() {
 /** "Owner", "Adult"; a guest is a viewer the family calls a guest (5.34). */
 function roleWords(me: Member | null, role: Role): string {
   return me?.kind === 'guest' ? 'Guest' : roleLabel(role);
+}
+
+/**
+ * Lock (0.9.0-dev.86): the vault locked at once, in place of the page, until
+ * it is confirmed to be them. Its word beside its icon on a wide screen; its
+ * icon alone, named, on a narrower one.
+ */
+function LockButton({
+  ref,
+  ...props
+}: {
+  compact: boolean;
+  onLock: () => void;
+  ref: RefObject<HTMLButtonElement | null>;
+}) {
+  return (
+    <button
+      ref={ref}
+      type="button"
+      className={props.compact ? 'icon-btn lock-btn' : 'btn btn-quiet lock-btn'}
+      aria-label={props.compact ? 'Lock' : undefined}
+      title="Lock the vault until you confirm it’s you"
+      onClick={props.onLock}
+    >
+      <Icon name="lock" size={props.compact ? 22 : 18} />
+      {!props.compact && 'Lock'}
+    </button>
+  );
 }
 
 /** Your name, then Settings and Sign out (the account menu). */
