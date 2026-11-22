@@ -823,6 +823,15 @@ export interface CapabilityFeatures {
    * from older vaults.
    */
   auto_lock?: boolean;
+  /**
+   * Notes that ask (0.9.0-dev.87, said from 0.9.0-dev.88): an Only me or an
+   * Essential note answers `403 step_up_required` before its words are read
+   * or saved, is listed by its title and date alone (`confirm_to_read`), and
+   * a note's Essential and sensitive switches exist (`is_essential`,
+   * `sensitive` on a note). Absent from older vaults: a vault of
+   * 0.9.0-dev.87 behaves so without saying it, as its `auto_lock` says.
+   */
+  notes_confirm?: boolean;
 }
 
 export interface CapabilityLimits {

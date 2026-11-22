@@ -9,8 +9,9 @@ import { finishSignIn, setupCode } from './vault.js';
  * its icon kept; and a reload puts the tray back, the one in front opened
  * again and the rest freed. Then two side by side (from 1,100 px; the
  * window is 1280): one chosen from the list, replaced by a list click, and
- * back to one at a time. Last, Lock (0.9.0-dev.86): locked, reloaded and
- * still locked, unlocked.
+ * back to one at a time. Then the one alone made narrower by its edge
+ * (0.9.0-dev.88), kept, and forgotten side by side. Last, Lock
+ * (0.9.0-dev.86): locked, reloaded and still locked, unlocked.
  *
  * Signed in once, as desktop.spec.ts is, and loaded afresh twice (the
  * reloads): each load renews the sign-in, ten a minute for the address the
@@ -281,6 +282,82 @@ test('two side by side: the second from the list, the one used last replaced by 
   await expect(panes).toHaveCount(0);
   await expect(tray().getByRole('button', { name: `${A}, minimised` })).toBeVisible();
   await expect(flyout(C).getByRole('button', { name: 'Side by side' })).toBeVisible();
+
+  await tray().getByRole('button', { name: 'Close all' }).click();
+  await expect(tray()).toHaveCount(0);
+});
+
+/**
+ * The one alone beside the list, by its edge facing the list (0.9.0-dev.88):
+ * at 1,280 px, with the sidebar at 216, it starts 794 px wide (62vw) and
+ * goes no wider; dragged narrower, then with the keys; kept in this
+ * browser as the number alone; side by side forgets it.
+ */
+test('the one beside the list made narrower by its edge, kept, and forgotten side by side', async () => {
+  await visit(page, `/documents?tag=fly${run}`);
+  const grid = page.getByRole('grid', { name: /^Documents, sorted by/ });
+  await expect(grid.locator('tbody .cell-title')).toHaveCount(3);
+  await grid.getByRole('link', { name: A }).click();
+  await expect(flyout(A)).toBeVisible();
+  const edge = flyout(A).getByRole('separator', { name: 'Width of the document beside the list' });
+  await expect(edge).toHaveAttribute('aria-valuenow', '794');
+  await expect(edge).toHaveAttribute('aria-valuemin', '360');
+  await expect(edge).toHaveAttribute('aria-valuemax', '794');
+  const widthOf = async (l: Locator) => (await l.boundingBox())?.width ?? 0;
+  expect(Math.abs((await widthOf(flyout(A))) - 794)).toBeLessThanOrEqual(1);
+  const kept = `localStorage.getItem('fdv.flyout-width.' + JSON.parse(localStorage.getItem('fdv.session')).member_id)`;
+
+  // Dragged 200 px towards the document: that much narrower, and no words chosen on the way.
+  const box = await edge.boundingBox();
+  const [x, y] = [(box?.x ?? 0) + (box?.width ?? 0) / 2, (box?.y ?? 0) + (box?.height ?? 0) / 2];
+  await page.mouse.move(x, y);
+  await page.mouse.down();
+  await page.mouse.move(x + 100, y, { steps: 5 });
+  await page.mouse.move(x + 200, y, { steps: 5 });
+  await page.mouse.up();
+  await expect(edge).toHaveAttribute('aria-valuenow', '594');
+  await expect.poll(() => widthOf(flyout(A))).toBeCloseTo(594, 0);
+  expect(await page.evaluate<string>('String(getSelection())')).toBe('');
+  expect(await page.evaluate<string | null>(kept)).toBe('594');
+  await expect(edge).toBeFocused();
+
+  // The keys: Home the narrowest, Enter the usual width again, ← a step wider.
+  await page.keyboard.press('Home');
+  await expect(edge).toHaveAttribute('aria-valuenow', '360');
+  await expect.poll(() => widthOf(flyout(A))).toBeCloseTo(360, 0);
+  await page.keyboard.press('Enter');
+  await expect(edge).toHaveAttribute('aria-valuenow', '794');
+  await expect.poll(() => page.evaluate<string | null>(kept)).toBeNull();
+  await page.keyboard.press('ArrowRight');
+  await expect(edge).toHaveAttribute('aria-valuenow', '778');
+  await expect.poll(() => page.evaluate<string | null>(kept)).toBe('778');
+
+  // Side by side: each its share, the width chosen forgotten.
+  await flyout(A).getByRole('button', { name: 'Side by side' }).click();
+  await page
+    .getByRole('dialog', { name: 'Side by side' })
+    .getByRole('button', { name: 'Choose from the list' })
+    .click();
+  await expect(flyout(A).locator('.flyout-pick')).toContainText(
+    'Choose a document in the list to show beside this one.',
+  );
+  await atItsStart(grid.getByRole('link', { name: B }));
+  await expect(page.locator('.flyout-side')).toHaveCount(2);
+  await expect(
+    page.getByRole('separator', { name: 'Width of the document beside the list' }),
+  ).toHaveCount(0);
+  expect(Math.abs((await widthOf(flyout(A))) - (await widthOf(flyout(B))))).toBeLessThanOrEqual(1);
+  await expect.poll(() => page.evaluate<string | null>(kept)).toBeNull();
+
+  // One at a time again: the usual width.
+  await page
+    .getByRole('region', { name: 'Side by side' })
+    .getByRole('button', { name: 'One at a time' })
+    .click();
+  await expect(page.locator('.flyout-side')).toHaveCount(0);
+  const again = flyout(B).getByRole('separator', { name: 'Width of the document beside the list' });
+  await expect(again).toHaveAttribute('aria-valuenow', '794');
+  expect(Math.abs((await widthOf(flyout(B))) - 794)).toBeLessThanOrEqual(1);
 
   await tray().getByRole('button', { name: 'Close all' }).click();
   await expect(tray()).toHaveCount(0);

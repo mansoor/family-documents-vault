@@ -5,16 +5,22 @@ import {
   useLayoutEffect,
   useRef,
   useState,
+  useSyncExternalStore,
+  type CSSProperties,
+  type KeyboardEvent as ReactKeyboardEvent,
   type ReactNode,
   type RefObject,
 } from 'react';
 import { Link, useNavigate } from 'react-router';
 import { plainClick, useFlyouts, type Flyouts } from './flyout-context.js';
 import {
+  clampPane,
   frontOf,
   isSideBySide,
   MAX_OPEN,
   MAX_SIDE,
+  PANE_STEP,
+  paneBounds,
   suggestions,
   WARN_FROM,
   type FlyoutItem,
@@ -23,6 +29,7 @@ import {
 } from './flyout-store.js';
 import { DocumentView } from './screens/Document.js';
 import { shortcutsOn, useShortcutsOn } from './shortcuts.js';
+import { RAIL, SIDE_DEFAULT } from './sidebar.js';
 import { Button, Dialog } from './ui.js';
 
 /**
@@ -38,6 +45,9 @@ import { Button, Dialog } from './ui.js';
  * widths, under a bar with Add a third, Scroll together and One at a time;
  * the pane used last, marked by a green line, is the one a document opened
  * from the list replaces.
+ *
+ * The one in front alone, from 700 px, is as wide as its edge facing the
+ * list is dragged (PaneEdge), kept in this browser; side by side forgets it.
  *
  * Keys: Esc minimises (× closes); ] and [ (or Alt+↓ and Alt+↑) go to the
  * next and the previous; Delete on a tray icon closes it; ? lists them.
@@ -417,9 +427,17 @@ function Pane({
     : side
       ? `flyout flyout-side flyout-of-${f.set.side.length} flyout-at-${at}${last ? ' flyout-last' : ''}`
       : 'flyout';
+  // Alone beside the list: as wide as its edge was dragged, if it was.
+  const alone = !f.narrow && !side;
+  const style =
+    alone && f.paneWidth !== null
+      ? ({ '--flyout-w': `${f.paneWidth}px` } as CSSProperties)
+      : undefined;
   return (
     <section
+      id={`${ids}-pane`}
       className={className}
+      style={style}
       role="dialog"
       aria-modal="false"
       aria-labelledby={headingId}
@@ -435,6 +453,7 @@ function Pane({
           Used last: a document opened from the list takes its place.
         </p>
       )}
+      {alone && !min && <PaneEdge f={f} pane={`${ids}-pane`} />}
       <DocumentView
         id={item.id}
         host="flyout"
@@ -521,6 +540,256 @@ function Pane({
         }
       />
     </section>
+  );
+}
+
+/**
+ * Where the page starts, from the window's left: the sidebar as wide as
+ * the shell says (--side-w, from 1,024 px), its rail at 768–1,023 px, and
+ * nothing on a phone's layout — as styles.css's --page-start has it.
+ */
+function readPageStart(): number {
+  const shell = document.querySelector<HTMLElement>('.shell');
+  if (!shell) return 0;
+  if (shell.classList.contains('shell-wide')) {
+    return Number.parseFloat(shell.style.getPropertyValue('--side-w')) || SIDE_DEFAULT;
+  }
+  return shell.classList.contains('shell-mid') ? RAIL : 0;
+}
+
+const readViewport = () => window.innerWidth;
+
+/** The window resized, or the sidebar dragged, folded or opened (the shell's style and classes). */
+function watchPage(changed: () => void): () => void {
+  window.addEventListener('resize', changed);
+  const shell = document.querySelector('.shell');
+  const watching = shell ? new MutationObserver(() => changed()) : null;
+  if (shell) watching?.observe(shell, { attributes: true, attributeFilter: ['style', 'class'] });
+  return () => {
+    window.removeEventListener('resize', changed);
+    watching?.disconnect();
+  };
+}
+
+/** While dragged, on the page's root: no words chosen on the way, the cursor kept (styles.css). */
+const RESIZING = 'flyout-resizing';
+
+/**
+ * Once a frame. What it gives back cancels that frame alone: an animation
+ * frame's id and a timer's are counted apart, so the one is never cleared
+ * as the other (the page's own lock runs on a timer).
+ */
+function schedule(paint: () => void): () => void {
+  if (typeof window.requestAnimationFrame === 'function') {
+    const id = window.requestAnimationFrame(paint);
+    return () => window.cancelAnimationFrame(id);
+  }
+  const id = window.setTimeout(paint, 16);
+  return () => window.clearTimeout(id);
+}
+
+interface Drag {
+  id: number;
+  x: number;
+  /** Its width as it was taken hold of, and where the pointer has taken it. */
+  from: number;
+  to: number;
+  moved: boolean;
+  /** The frame waiting to draw it, if one is. */
+  cancel: (() => void) | null;
+  /** The pane it sizes, and the width chosen for it then (null: the usual one). */
+  box: HTMLElement;
+  held: number | null;
+  /** The window losing the focus mid-drag. */
+  onBlur: () => void;
+}
+
+/** A drag over: nothing left waiting, listening or marked. */
+function letGo(d: Drag): void {
+  d.cancel?.();
+  d.cancel = null;
+  window.removeEventListener('blur', d.onBlur);
+  document.documentElement.classList.remove(RESIZING);
+}
+
+/** A drag given up: the pane as wide as it was before it, drawn by the stylesheet again. */
+function putBack(d: Drag): void {
+  if (d.held === null) d.box.style.removeProperty('--flyout-w');
+  else d.box.style.setProperty('--flyout-w', `${d.held}px`);
+}
+
+/**
+ * The edge facing the list of the one beside it, alone (0.9.0-dev.88): a
+ * window splitter, as WAI-ARIA has one. Dragged with a mouse, a pen or a
+ * finger; ← widens it and → narrows it, as the edge moves (Shift: four
+ * times as far); Home is the narrowest, End the widest; Enter or a
+ * double-click, the width it starts with (WCAG 2.5.7: dragging is not the
+ * only way). Its value is the document's width, in pixels.
+ *
+ * A drag draws neither the list nor the document again: the width goes
+ * straight onto the pane's --flyout-w, once a frame, and is kept as the
+ * pointer lets go. Given up — Esc, the pointer cancelled or its capture
+ * lost, the window left, the edge gone — the pane is as wide as before it.
+ * A mouse found with no button down (its release missed) lets go there.
+ * A window narrower than the width chosen, the stylesheet keeps it within
+ * the room as the window changes; wider again, the width chosen is back.
+ */
+function PaneEdge({ f, pane }: { f: Flyouts; pane: string }) {
+  const viewport = useSyncExternalStore(watchPage, readViewport, () => 1280);
+  const pageStart = useSyncExternalStore(watchPage, readPageStart, () => SIDE_DEFAULT);
+  const bounds = paneBounds(viewport, pageStart);
+  const width = clampPane(f.paneWidth ?? bounds.start, bounds);
+  const drag = useRef<Drag | null>(null);
+  const edge = useRef<HTMLDivElement>(null);
+
+  /** Its value, as drawn. */
+  const say = (px: number) => {
+    edge.current?.setAttribute('aria-valuenow', String(px));
+    edge.current?.setAttribute('aria-valuetext', `${px} pixels wide`);
+  };
+  const paint = (d: Drag, px: number) => {
+    d.box.style.setProperty('--flyout-w', `${px}px`);
+    say(px);
+  };
+  /** The drag, over; its capture let go of. */
+  const release = (): Drag | null => {
+    const d = drag.current;
+    if (!d) return null;
+    drag.current = null;
+    letGo(d);
+    if (edge.current?.hasPointerCapture?.(d.id)) edge.current.releasePointerCapture(d.id);
+    return d;
+  };
+  /** Let go of where it was taken: kept. */
+  const done = () => {
+    const d = release();
+    if (!d?.moved) return;
+    paint(d, d.to);
+    f.setPaneWidth(d.to);
+  };
+  /** Given up: as wide as before it. */
+  const undo = () => {
+    const d = release();
+    if (!d) return;
+    putBack(d);
+    say(d.from);
+  };
+  // Gone mid-drag (minimised, side by side, locked): nothing held, and the
+  // pane as wide as before it.
+  useEffect(
+    () => () => {
+      const d = drag.current;
+      if (!d) return;
+      drag.current = null;
+      letGo(d);
+      putBack(d);
+    },
+    [],
+  );
+  const keyTo = (e: ReactKeyboardEvent<HTMLDivElement>): number | 'reset' | null => {
+    if (e.altKey || e.ctrlKey || e.metaKey) return null;
+    const by = e.shiftKey ? PANE_STEP * 4 : PANE_STEP;
+    switch (e.key) {
+      case 'ArrowLeft':
+        return width + by;
+      case 'ArrowRight':
+        return width - by;
+      case 'Home':
+        return bounds.min;
+      case 'End':
+        return bounds.max;
+      case 'Enter':
+        return 'reset';
+      default:
+        return null;
+    }
+  };
+  return (
+    <div
+      ref={edge}
+      className="flyout-edge"
+      role="separator"
+      aria-orientation="vertical"
+      aria-label="Width of the document beside the list"
+      aria-controls={pane}
+      aria-valuenow={width}
+      aria-valuemin={bounds.min}
+      aria-valuemax={bounds.max}
+      aria-valuetext={`${width} pixels wide`}
+      title="Drag to change the width; double-click for the usual width"
+      tabIndex={0}
+      onPointerDown={(e) => {
+        if (e.pointerType === 'mouse' && e.button !== 0) return;
+        const box = e.currentTarget.closest<HTMLElement>('.flyout');
+        if (!box || drag.current) return;
+        // Not default-prevented: a menu open elsewhere still hears the
+        // press and closes. No words are chosen on the way (RESIZING), and
+        // the focus comes here, not to what is under it.
+        e.currentTarget.focus();
+        e.currentTarget.setPointerCapture?.(e.pointerId);
+        const d: Drag = {
+          id: e.pointerId,
+          x: e.clientX,
+          from: width,
+          to: width,
+          moved: false,
+          cancel: null,
+          box,
+          held: f.paneWidth,
+          onBlur: () => {
+            if (drag.current === d) undo();
+          },
+        };
+        drag.current = d;
+        window.addEventListener('blur', d.onBlur);
+        document.documentElement.classList.add(RESIZING);
+      }}
+      onPointerMove={(e) => {
+        const d = drag.current;
+        if (d?.id !== e.pointerId) return;
+        // A mouse with no button down: its release was missed (let go
+        // outside the window, say). Let go here.
+        if (e.pointerType === 'mouse' && e.buttons === 0) {
+          done();
+          return;
+        }
+        // The edge is the pane's left: leftwards is wider.
+        const to = clampPane(d.from - (e.clientX - d.x), bounds);
+        if (!d.moved && to === d.from) return;
+        d.moved = true;
+        d.to = to;
+        if (d.cancel !== null) return;
+        d.cancel = schedule(() => {
+          d.cancel = null;
+          if (drag.current === d) paint(d, d.to);
+        });
+      }}
+      onPointerUp={(e) => {
+        if (drag.current?.id === e.pointerId) done();
+      }}
+      onPointerCancel={(e) => {
+        if (drag.current?.id === e.pointerId) undo();
+      }}
+      onLostPointerCapture={(e) => {
+        if (drag.current?.id === e.pointerId) undo();
+      }}
+      onDoubleClick={() => f.setPaneWidth(null)}
+      onKeyDown={(e) => {
+        if (drag.current) {
+          // Esc mid-drag gives the drag up, and only that: the document
+          // stays where it is, not minimised.
+          if (e.key !== 'Escape') return;
+          e.preventDefault();
+          e.stopPropagation();
+          undo();
+          return;
+        }
+        const to = keyTo(e);
+        if (to === null) return;
+        e.preventDefault();
+        f.setPaneWidth(to === 'reset' ? null : clampPane(to, bounds));
+      }}
+    />
   );
 }
 

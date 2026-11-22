@@ -3996,6 +3996,8 @@ export function createFakeVault(): {
           // Lock (0.9.0-dev.86).
           session_lock: true,
           auto_lock: true,
+          // Notes that ask, and their switches (0.9.0-dev.88).
+          notes_confirm: true,
           // Connected apps (0.9.0, APP1).
           connected_apps: true,
           connected_app_reads: true,

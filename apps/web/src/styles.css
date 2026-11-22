@@ -3290,6 +3290,10 @@ fieldset.identity-section {
 .shell {
   --shell-top: 0px;
   --shell-chrome: 0px;
+  /* Where the page starts: the sidebar's width, its rail's, or nothing on
+     a phone's layout (a document beside the list keeps clear of the list's
+     start by it, flyouts.tsx). */
+  --page-start: 0px;
   min-height: 100dvh;
 }
 
@@ -3302,10 +3306,12 @@ fieldset.identity-section {
      the shell says which (sidebar.tsx). */
   grid-template-columns: var(--side-w, 216px) minmax(0, 1fr);
   grid-template-rows: auto 1fr;
+  --page-start: var(--side-w, 216px);
 }
 
 .shell-mid {
   grid-template-columns: 72px minmax(0, 1fr);
+  --page-start: 72px;
 }
 
 /* The bar on top, the window's whole width (the owner's ask): the sidebar
@@ -6262,13 +6268,26 @@ html:has(.shell-phone):has(.has-toast) {
   padding-right: var(--tray-now);
 }
 
+/* Alone, as wide as its edge was dragged (--flyout-w, flyouts.tsx's
+   PaneEdge), else as wide as ever (--pane-default): never narrower than
+   --pane-min, and never wider than the room that keeps --list-peek of the
+   list in sight — or, in a window too narrow for that, than it starts.
+   The same numbers as flyout-store.ts's PANE_MIN and paneBounds. */
 .flyout {
+  --pane-min: 360px;
+  --pane-default: min(calc(100vw - var(--tray-now, 0px)), clamp(720px, 62vw, 1100px));
+  --pane-room: calc(100vw - var(--page-start, 0px) - var(--tray-now, 0px) - var(--list-peek));
+  --pane-w: clamp(
+    var(--pane-min),
+    var(--flyout-w, var(--pane-default)),
+    max(var(--pane-min), var(--pane-room), var(--pane-default))
+  );
   position: fixed;
   top: var(--shell-top, 0px);
   right: var(--tray-now, 0px);
   bottom: 0;
   z-index: 36;
-  width: min(calc(100vw - var(--tray-now, 0px)), clamp(720px, 62vw, 1100px));
+  width: var(--pane-w);
   overflow-y: auto;
   overscroll-behavior: contain;
   padding: 0 20px 32px;
@@ -6279,6 +6298,98 @@ html:has(.shell-phone):has(.has-toast) {
 
 .flyout[hidden] {
   display: none;
+}
+
+/* Its edge facing the list, alone (0.9.0-dev.88): 12 px to take hold of,
+   from the pane's left border inwards, in its left padding (20 px), from
+   under the bar on top to the window's foot however far the pane is
+   scrolled. None of it over the list, whose rows stay the list's to click
+   right up to the border; none over the pane's heading or its buttons,
+   which start after the padding, nor its scrollbar, at its right. Its
+   left is the pane's: the window less the tray and --pane-w, so its right
+   is that less its width (FlyoutEdgeCss.test.ts holds it to that). A line
+   of --accent on the border on hover, with the focus and while dragged:
+   7.2:1 against --bg in light, 6.5:1 in dark (3:1 is asked of a control's
+   edge). */
+.flyout-edge {
+  position: fixed;
+  top: var(--shell-top, 0px);
+  bottom: 0;
+  right: calc(var(--tray-now, 0px) + var(--pane-w) - 12px);
+  width: 12px;
+  /* Over the pane's own heading, which sticks at its top (3). */
+  z-index: 5;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.flyout-edge::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 2px;
+  background: transparent;
+}
+
+/* A grip at its middle, to show it can be taken hold of. */
+.flyout-edge::after {
+  content: '';
+  position: absolute;
+  top: calc(50% - 20px);
+  left: 0;
+  width: 6px;
+  height: 40px;
+  border-radius: 3px;
+  background: transparent;
+}
+
+.flyout-edge:hover::before,
+.flyout-edge:focus-visible::before,
+.flyout-resizing .flyout-edge::before,
+.flyout-edge:hover::after,
+.flyout-edge:focus-visible::after,
+.flyout-resizing .flyout-edge::after {
+  background: var(--accent);
+}
+
+.flyout-edge:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+/* A finger takes hold of 24 px (WCAG 2.5.8), still from the border
+   inwards, the line and the grip where they were; the pane alone keeps
+   24 px of padding there, so the edge covers none of what is in it. */
+@media (pointer: coarse) {
+  .flyout:not(.flyout-side):not(.flyout-full) {
+    padding-left: 24px;
+  }
+
+  .flyout-edge {
+    right: calc(var(--tray-now, 0px) + var(--pane-w) - 24px);
+    width: 24px;
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .flyout-edge::before,
+  .flyout-edge::after {
+    transition: background-color 120ms ease-out;
+  }
+}
+
+/* While dragged: no words chosen on the way, the cursor kept, and a page
+   view in a frame never takes the pointer from it. */
+.flyout-resizing,
+.flyout-resizing * {
+  cursor: col-resize;
+  user-select: none;
+}
+
+.flyout-resizing iframe {
+  pointer-events: none;
 }
 
 .flyout-full {
@@ -6298,7 +6409,7 @@ html:has(.shell-phone):has(.has-toast) {
    a time. The pane used last has a green line on top, between the bar
    (--surface) and the pane (--bg): --ok is 7.7:1 and 7.3:1 against them
    in light, 5.6:1 and 6.5:1 in dark; 3:1 is asked of a mark. */
-.flyout-side,
+.flyout,
 .flyout-side-bar {
   --list-peek: 240px;
   --side-room: calc(100vw - var(--side-w, 216px) - var(--tray-now, 0px) - var(--list-peek));
@@ -8801,7 +8912,8 @@ html:has(.shell-phone):has(.has-toast) {
       .icon-btn,
       .col-pick,
       .col-more,
-      .col-resize
+      .col-resize,
+      .flyout-edge
     ) {
     display: none !important;
   }

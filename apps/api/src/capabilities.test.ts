@@ -194,6 +194,8 @@ describe('buildCapabilities', () => {
       session_lock: true,
       // 0.9.0-dev.87: and by itself after a while away.
       auto_lock: true,
+      // Notes that ask, and their switches (said from 0.9.0-dev.88).
+      notes_confirm: true,
     });
     // Never on the hosted edition, whose operator keeps the backups.
     expect(buildCapabilities({ ...config, edition: 'hosted' }).features).not.toHaveProperty(
