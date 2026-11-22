@@ -2,6 +2,7 @@ import { createHmac, timingSafeEqual } from 'node:crypto';
 import { deriveKey } from '@fdv/crypto';
 import { householdToday, type Db } from '@fdv/db';
 import {
+  DIVIDER_YEARS,
   DOCUMENT_PAGE_MAX,
   HOUSEHOLD_MEMBER_FILTER,
   LOCATION_SORT_REFUSAL,
@@ -660,21 +661,59 @@ function cabinetClauses(c: CabinetConditions): RawBuilder<unknown>[] {
 }
 
 /**
- * The years the documents `q` gives this reader are about (0.9.0, C2: a
- * folder's year dividers), newest first; none for a question the table
- * would refuse them. A year whose papers a status leaves out is still
- * here: it is counted, by `documentCounts`, as none.
+ * How many documents `q` gives this reader behind each of a folder's
+ * dividers, in one grouped count (a cabinet folder's dividers): by the year each
+ * is about (`year:2025`, or `other` outside 1000 to 9999), by which of a
+ * folder's own ranges holds its date (`range:N`, N its place among
+ * `spans`; `other` for none), or all together (`all`). Only keys with
+ * something behind them are there. Each count is what the table would
+ * count for `q` within that divider — the same conditions (`whereOf`) and,
+ * for a question that asks a status, the same worked-out status — so they
+ * add up to its total. Nothing for a question the table would refuse.
  */
-export async function documentYears(trx: Db, p: Principal, q: ListQuery): Promise<number[]> {
-  if (tableRefuses(p, q)) return [];
+export async function documentDividerCounts(
+  trx: Db,
+  p: Principal,
+  q: ListQuery,
+  by: 'years' | 'all' | { spans: readonly DaySpan[] },
+): Promise<Map<string, number>> {
+  const out = new Map<string, number>();
+  if (tableRefuses(p, q)) return out;
+  const year = sql`extract(year from ${datedSql('d')})::int`;
+  const group =
+    by === 'all'
+      ? sql<string>`'all'`
+      : by === 'years'
+        ? sql<string>`case when ${year} between ${DIVIDER_YEARS.first} and ${DIVIDER_YEARS.last}
+                           then 'year:' || ${year}::text else 'other' end`
+        : by.spans.length === 0
+          ? sql<string>`'other'`
+          : sql<string>`case ${sql.join(
+              by.spans.map((s, i) => sql`when ${spanSql(s)} then ${`range:${i}`}`),
+              sql` `,
+            )} else 'other' end`;
+  if (asksStatus(q, q.status)) {
+    const rows = (
+      await sql<StatusRow & { g: string }>`
+        select ${STATUS_COLUMNS}, ${group} as g
+          from document d
+         where ${whereOf(p, q)}`.execute(trx)
+    ).rows;
+    const allowed = statusAllowed(q, q.status);
+    for (const r of await withStatus(trx, rows, seesLocation(p.role))) {
+      if (allowed(r.status)) out.set(r.row.g, (out.get(r.row.g) ?? 0) + 1);
+    }
+    return out;
+  }
   const rows = (
-    await sql<{ y: number }>`
-      select distinct extract(year from ${datedSql('d')})::int as y
+    await sql<{ g: string; n: number }>`
+      select ${group} as g, count(*)::int as n
         from document d
        where ${whereOf(p, q)}
-       order by 1 desc`.execute(trx)
+       group by 1`.execute(trx)
   ).rows;
-  return rows.map((r) => r.y);
+  for (const r of rows) out.set(r.g, r.n);
+  return out;
 }
 
 /** Whether the table would refuse `q` for this reader (C1's rule, for the cabinet). */

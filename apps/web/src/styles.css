@@ -8071,6 +8071,27 @@ html:has(.shell-phone):has(.has-toast) {
   font-weight: 700;
 }
 
+/* A drawer with one folder, as one row: "2024 › Me". */
+.cab-folder-alone {
+  font-weight: 700;
+}
+
+.cab-via {
+  font-weight: 400;
+  color: var(--ink-soft);
+}
+
+.cab-folder-alone[aria-current='true'] .cab-via {
+  color: inherit;
+}
+
+/* A cabinet's only drawer, passed over: which drawer its folders are in. */
+.cab-skipped {
+  margin: 0 0 4px;
+  padding: 0 10px;
+  font-size: 14px;
+}
+
 .cab-folders .cab-folder {
   padding-left: 28px;
   color: var(--ink-soft);

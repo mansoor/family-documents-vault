@@ -297,6 +297,268 @@ describe.skipIf(!testAdminUrl())('dividers and pins in my cabinet (C2)', () => {
     });
   });
 
+  describe('a level with one group, passed over', () => {
+    const teen = () => member('teen');
+    const year = (y: number) => ({ dated_from: `${y}-01-01`, dated_to: `${y}-12-31` });
+    const keyed = (c: FolderContents) => c.dividers.map((d) => [d.key, d.count]);
+
+    it('by year with only one year to show, a folder arranged by hand is one plain list', async () => {
+      // Sam's tax return, of 2024, is the only tax paper Olive sees.
+      await saved('owner', oneDrawer([{ id: 'tax', name: 'Tax', filter: { category: 'tax' } }]));
+      const c = await opened('owner', 'tax');
+      expect(c.dividers).toEqual([
+        { key: 'all', kind: 'all', name: '', from: null, to: null, count: 1 },
+      ]);
+      expect(c.total).toBe(1);
+      expect((await counts('owner')).tax).toBe(1);
+      expect(await behind('owner', 'tax', 'all')).toEqual({
+        total: 1,
+        titles: ['Sam’s tax return'],
+      });
+      // Its year asked by its key still answers, as before: the same papers.
+      expect((await behind('owner', 'tax', 'year:2024')).total).toBe(1);
+      // A folder of its own ranges has no plain list.
+      await saved(
+        'owner',
+        oneDrawer([
+          {
+            id: 'tax',
+            name: 'Tax',
+            filter: { category: 'tax' },
+            dividers: { years: true, ranges: [{ name: 'Lately', from: '2020', to: null }] },
+          },
+        ]),
+      );
+      expect(
+        (await call('owner', 'GET', '/api/v1/cabinet/folders/tax/documents?divider=all'))
+          .statusCode,
+      ).toBe(404);
+    });
+
+    it('never shows a year folder in a year drawer its own year as a divider, arranged by hand or drawn', async () => {
+      // By hand: a 2023 drawer, Tia's folder of 2023, and one of 2027 with nothing yet.
+      await saved('owner', {
+        arranged_by: null,
+        cabinets: [
+          {
+            id: 'med',
+            name: 'Medical',
+            hidden: false,
+            drawers: [
+              {
+                id: 'y2023',
+                name: '2023',
+                hidden: false,
+                folders: [
+                  {
+                    id: 'tia23',
+                    name: 'Tia',
+                    hidden: false,
+                    filter: { member_id: teen(), ...year(2023) },
+                  },
+                  {
+                    id: 'tia27',
+                    name: 'Tia later',
+                    hidden: false,
+                    filter: { member_id: teen(), ...year(2027) },
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      });
+      const c = await opened('owner', 'tia23');
+      expect(keyed(c)).toEqual([['all', 1]]);
+      expect(await behind('owner', 'tia23', 'all')).toEqual({ total: 1, titles: [SECRETS.clinic] });
+      expect(keyed(await opened('owner', 'tia27'))).toEqual([['all', 0]]);
+      // Drawn by topic, then year, then person: every folder is a year's already.
+      const drawn = await ok<{ layout: CabinetLayout }>(
+        call('owner', 'POST', '/api/v1/cabinet/preview', { arrange_by: 'category_year_person' }),
+      );
+      await saved('owner', drawn.layout);
+      const folders = drawn.layout.cabinets.flatMap((cab) => cab.drawers.flatMap((d) => d.folders));
+      expect(folders.length).toBeGreaterThan(3);
+      const every = await counts('owner');
+      for (const f of folders) {
+        const got = await opened('owner', f.id);
+        expect(
+          got.dividers.map((d) => d.kind),
+          f.name,
+        ).toEqual(['all']);
+        expect(got.total, f.name).toBe(every[f.id]);
+      }
+      // The stored layout is kept whole: no drawer or folder taken out to pass it over.
+      expect((await mine('owner')).layout).toEqual(drawn.layout);
+    });
+
+    it('counts what each person sees: two years for Olive, one for Tia, and nothing of the adults’ paper', async () => {
+      const both = () =>
+        oneDrawer([
+          {
+            id: 'two',
+            name: 'Two years',
+            filter: { member_id: teen(), dated_from: '2022-01-01', dated_to: '2023-12-31' },
+          },
+        ]);
+      await saved('owner', both());
+      expect(keyed(await opened('owner', 'two'))).toEqual([
+        ['year:2023', 1],
+        ['year:2022', 1],
+      ]);
+      await saved('teen', both());
+      expect(keyed(await opened('teen', 'two'))).toEqual([['all', 1]]);
+      expect(await everything('teen', 'two')).not.toContain(SECRETS.adultsMedical);
+    });
+
+    it('never passes over a folder’s own ranges, one of them holding everything', async () => {
+      await saved(
+        'owner',
+        oneDrawer([
+          {
+            id: 'teens',
+            name: 'Teens',
+            filter: { member_id: teen(), dated_from: '2021-01-01', dated_to: '2024-12-31' },
+            dividers: { years: true, ranges: [{ name: 'Teen years', from: '2020', to: null }] },
+          },
+        ]),
+      );
+      const c = await opened('owner', 'teens');
+      expect(c.dividers.map((d) => [d.key, d.name, d.count])).toEqual([
+        ['range:0', 'Teen years', 4],
+      ]);
+      expect(c.total).toBe((await counts('owner')).teens);
+    });
+
+    it('counts a folder that asks a status in one reading, adding up to its count', async () => {
+      const statuses = 'expired,expiring_soon,needs_info,active,valid';
+      await saved(
+        'owner',
+        oneDrawer([
+          { id: 'st', name: 'Status', filter: { member_id: teen(), status: statuses } },
+          { id: 'plain', name: 'Plain', filter: { member_id: teen() } },
+        ]),
+      );
+      const c = await opened('owner', 'st');
+      const every = await counts('owner');
+      expect(c.total).toBe(every.st);
+      expect(c.dividers.reduce((n, d) => n + d.count, 0)).toBe(every.st);
+      expect(every.st).toBeGreaterThan(0);
+      expect(every.st).toBeLessThanOrEqual(every.plain ?? 0);
+      for (const d of c.dividers) {
+        expect((await behind('owner', 'st', d.key)).total, d.key).toBe(d.count);
+      }
+    });
+
+    it('pages one plain list as its years’ pages one after another, newest first', async () => {
+      await saved('owner', oneDrawer([{ id: 'tia', name: 'Tia', filter: { member_id: teen() } }]));
+      const c = await opened('owner', 'tia');
+      expect(c.dividers.length).toBeGreaterThan(2);
+      const byYears: Array<string | null> = [];
+      for (const d of c.dividers) byYears.push(...(await behind('owner', 'tia', d.key)).titles);
+      const paged: Array<string | null> = [];
+      let cursor: string | null = null;
+      do {
+        const page: DocumentPage = await ok<DocumentPage>(
+          call(
+            'owner',
+            'GET',
+            `/api/v1/cabinet/folders/tia/documents?divider=all&limit=1${
+              cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''
+            }`,
+          ),
+        );
+        expect(page.items.length).toBeLessThanOrEqual(1);
+        expect(page.total).toBe(c.total);
+        paged.push(...page.items.map((d) => d.title));
+        cursor = page.next_cursor;
+      } while (cursor);
+      expect(paged).toEqual(byYears);
+      expect(paged).toHaveLength(c.total ?? -1);
+    });
+
+    it('passes the level over for a reader who cannot see the paper that makes a second year', async () => {
+      // Sam's: his tax return of 2024 for the household, and his Only me medical paper of 2023.
+      const sams = () =>
+        oneDrawer([{ id: 'sam', name: 'Sam', filter: { member_id: member('adult') } }]);
+      await saved('adult', sams());
+      expect(keyed(await opened('adult', 'sam'))).toEqual([
+        ['year:2024', 1],
+        ['year:2023', 1],
+      ]);
+      await saved('owner', sams());
+      const c = await opened('owner', 'sam');
+      expect(keyed(c)).toEqual([['all', 1]]);
+      expect(c.total).toBe((await counts('owner')).sam);
+      expect(await behind('owner', 'sam', 'all')).toEqual({
+        total: 1,
+        titles: ['Sam’s tax return'],
+      });
+      expect(await behind('owner', 'sam', 'year:2023')).toEqual({ total: 0, titles: [] });
+      expect(await everything('owner', 'sam')).not.toContain(SECRETS.samMedical);
+    });
+
+    it('puts a paper added just after midnight on 1 January in the family’s own year, not the server’s', async () => {
+      const household = people.owner.household_id;
+      const zone = (await asAdmin('select timezone from household where id = $1', [household]))
+        .rows[0]?.timezone as string | null;
+      // Auckland, 00:30 on 1 January 2026: still 31 December 2025 in UTC.
+      await asAdmin("update household set timezone = 'Pacific/Auckland' where id = $1", [
+        household,
+      ]);
+      const add = async (title: string, at: string) =>
+        (
+          await asAdmin(
+            `insert into document (household_id, title, type_key, visibility, owner_member_id,
+                                   issued_by, created_at)
+             values ($1, $2, 'other', 'household', $3, 'Auckland Council', $4)
+             returning id`,
+            [household, title, member('owner'), at],
+          )
+        ).rows[0]?.id as string;
+      const added = [
+        await add('Rates notice, New Year', '2025-12-31T11:30:00Z'),
+        await add('Rates notice, June', '2025-06-01T00:00:00Z'),
+      ];
+      try {
+        await saved(
+          'owner',
+          oneDrawer([
+            { id: 'council', name: 'Council', filter: { issued_by: 'Auckland Council' } },
+            {
+              id: 'c2026',
+              name: '2026',
+              filter: { issued_by: 'Auckland Council', ...year(2026) },
+            },
+            {
+              id: 'c2025',
+              name: '2025',
+              filter: { issued_by: 'Auckland Council', ...year(2025) },
+            },
+          ]),
+        );
+        const every = await counts('owner');
+        const byYear = await opened('owner', 'council');
+        expect(keyed(byYear)).toEqual([
+          ['year:2026', 1],
+          ['year:2025', 1],
+        ]);
+        expect(byYear.total).toBe(every.council);
+        expect((await behind('owner', 'council', 'year:2026')).titles).toEqual([
+          'Rates notice, New Year',
+        ]);
+        expect(keyed(await opened('owner', 'c2026'))).toEqual([['all', 1]]);
+        expect(every.c2026).toBe(1);
+        expect((await behind('owner', 'c2026', 'all')).titles).toEqual(['Rates notice, New Year']);
+        expect(keyed(await opened('owner', 'c2025'))).toEqual([['all', 1]]);
+        expect(every.c2025).toBe(1);
+      } finally {
+        await asAdmin('delete from document where id = any($1::uuid[])', [added]);
+        await asAdmin('update household set timezone = $2 where id = $1', [household, zone]);
+      }
+    });
+  });
+
   describe('date-range dividers', () => {
     // Tia, five by 1 September 2014: the owner's own example.
     const stages = schoolStages('2009-04-20') as NonNullable<ReturnType<typeof schoolStages>>;
@@ -527,7 +789,8 @@ describe.skipIf(!testAdminUrl())('dividers and pins in my cabinet (C2)', () => {
       expect((await unpin('adult', 'tax', ids.samTax as string)).statusCode).toBe(204);
       const after = await opened('adult', 'tax');
       expect(after.pinned.map((d) => d.title)).toEqual([SECRETS.letter]);
-      expect(after.dividers.map((d) => [d.key, d.count])).toEqual([['year:2024', 1]]);
+      // Only 2024 is left behind the dividers: one plain list, no lone "2024".
+      expect(after.dividers.map((d) => [d.key, d.count])).toEqual([['all', 1]]);
       expect(after.total).toBe(2);
     });
 

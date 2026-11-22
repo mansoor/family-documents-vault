@@ -4,6 +4,7 @@ import {
   SENSITIVE_SHARE_CONFIRM,
   shareEndWords,
   type FolderDividers,
+  type FolderFilter,
   type Role,
   type Tokens,
 } from '@fdv/shared';
@@ -2490,6 +2491,78 @@ describe('the fake vault, my cabinet (0.9.0, C1)', () => {
         version: v2 + 2,
       }),
     ).rejects.toMatchObject({ status: 422, code: 'cabinet_divider_dates' });
+  });
+
+  it('passes over a divider level with one group, and never divides a year folder by year, as the vault does', async () => {
+    const vault = createFakeVault();
+    const api = createApi(createHttp({ baseUrl: 'https://fake.example', fetch: vault.fetch }));
+    const { access_token: token } = await api.setup({
+      household_name: 'The Fake family',
+      display_name: 'Fake Owner',
+      email: 'owner@example.test',
+      password: 'a long enough password',
+    });
+    const make = (title: string, date: string) =>
+      api.createDocument(token, {
+        title,
+        type_key: 'school_report',
+        owner_member_id: 'fake-member',
+        issued: { date, precision: 'day' },
+      });
+    const report = await make('Report', '2026-03-01');
+    await make('Older report', '2015-03-01');
+    const folder = (id: string, filter: FolderFilter, dividers?: FolderDividers) => ({
+      id,
+      name: id,
+      hidden: false,
+      filter,
+      ...(dividers ? { dividers } : {}),
+    });
+    await api.saveCabinet(token, {
+      version: 0,
+      layout: {
+        arranged_by: null,
+        cabinets: [
+          {
+            id: 'c',
+            name: 'School',
+            hidden: false,
+            drawers: [
+              {
+                id: 'd',
+                name: '2026',
+                hidden: false,
+                folders: [
+                  folder('year', { dated_from: '2026-01-01', dated_to: '2026-12-31' }),
+                  folder('one', { category: 'education', dated_from: '2020-01-01' }),
+                  folder('two', { category: 'education' }),
+                  folder(
+                    'own',
+                    { dated_from: '2026-01-01', dated_to: '2026-12-31' },
+                    { years: true, ranges: [{ name: 'This year', from: '2026', to: null }] },
+                  ),
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    });
+    const keys = async (id: string) =>
+      (await api.cabinetFolder(token, id)).dividers.map((d) => [d.key, d.count]);
+    expect(await keys('year')).toEqual([['all', 1]]);
+    expect(await keys('one')).toEqual([['all', 1]]);
+    expect(await keys('two')).toEqual([
+      ['year:2026', 1],
+      ['year:2015', 1],
+    ]);
+    expect(await keys('own')).toEqual([['range:0', 1]]);
+    expect(
+      (await api.cabinetFolderDocuments(token, 'one', { divider: 'all' })).items.map((d) => d.id),
+    ).toEqual([report.id]);
+    await expect(
+      api.cabinetFolderDocuments(token, 'own', { divider: 'all' }),
+    ).rejects.toMatchObject({ status: 404 });
   });
 });
 

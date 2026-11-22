@@ -1,6 +1,7 @@
 import {
   ARRANGE_BY,
   ARRANGE_BY_WORDS,
+  asksOneYear,
   CABINET_CHANGED,
   folderQuestionWords,
   folderTreeWords,
@@ -475,6 +476,14 @@ function UnfiledPane(props: {
 /** Never shown: what Browse falls back to were it given no cabinet to show. */
 const NO_CABINET: Cabinet = { id: '', name: '', hidden: false, drawers: [] };
 
+/**
+ * Browsing: the cabinets as cards, the chosen one's drawers and folders
+ * down the side, a folder's papers beside them. A level with only one
+ * shown group is passed over, never stored so: a cabinet with one drawer
+ * shows its folders straight away, and a drawer with one folder is one row,
+ * "2024 › Me", that opens it. The folder's path still names every level,
+ * and the address (so Back) is only ever the cabinet and folder chosen.
+ */
 function Browse(props: {
   layout: CabinetLayout;
   counts: Record<string, number | null>;
@@ -499,9 +508,22 @@ function Browse(props: {
   const found = drawers
     .flatMap((d) => shownOf(d.folders).map((f) => ({ d, f })))
     .find(({ f }) => f.id === props.folderId);
-  const [open, setOpen] = useState<ReadonlySet<string>>(
-    () => new Set([found?.d.id ?? drawers[0]?.id ?? '']),
-  );
+  // The chosen folder's drawer open; else the first with folders to show
+  // (one of a single folder is a row of its own, with nothing to open).
+  const openFirst = (): ReadonlySet<string> =>
+    new Set([
+      found?.d.id ?? drawers.find((d) => shownOf(d.folders).length > 1)?.id ?? drawers[0]?.id ?? '',
+    ]);
+  const [open, setOpen] = useState<ReadonlySet<string>>(openFirst);
+  // Worked out again for another cabinet, and for one whose only drawer
+  // (passed over) has become a list of drawers: never drawers of the one
+  // before left open, nor a new list with none open.
+  const shape = `${cabinet.id}|${drawers.length > 1 ? 'drawers' : 'one'}`;
+  const [lastShape, setLastShape] = useState(shape);
+  if (shape !== lastShape) {
+    setLastShape(shape);
+    setOpen(openFirst());
+  }
   const [lastFound, setLastFound] = useState(found?.d.id);
   // A folder chosen from elsewhere (Also in): its drawer opened.
   if (found && found.d.id !== lastFound) {
@@ -520,7 +542,10 @@ function Browse(props: {
     <>
       <ul className="cab-cards" aria-label="Your cabinets">
         {cabinets.map((c) => {
-          const n = shownOf(c.drawers).length;
+          const shown = shownOf(c.drawers);
+          const n = shown.length;
+          // One drawer is passed over: the card says how many folders it opens on.
+          const folders = n === 1 ? shownOf(shown[0]?.folders ?? []).length : 0;
           return (
             <li key={c.id}>
               <button
@@ -531,7 +556,9 @@ function Browse(props: {
               >
                 <CabinetIcon />
                 <span className="cab-card-name">{c.name}</span>
-                <span className="muted">{n === 1 ? '1 drawer' : `${n} drawers`}</span>
+                <span className="muted">
+                  {n === 1 ? (folders === 1 ? '1 folder' : `${folders} folders`) : `${n} drawers`}
+                </span>
               </button>
             </li>
           );
@@ -541,11 +568,45 @@ function Browse(props: {
         <nav className="cab-tree" aria-label={`Drawers and folders in ${cabinet.name}`}>
           {drawers.length === 0 ? (
             <p className="muted">Every drawer in this cabinet is hidden.</p>
+          ) : drawers.length === 1 && drawers[0] ? (
+            // One drawer: passed over, its folders shown straight away. Its
+            // name stays said here and in the folder's path.
+            <OnlyDrawer
+              drawer={drawers[0]}
+              counts={counts}
+              current={found?.f.id}
+              onChoose={(f) => props.onChoose(cabinet.id, f)}
+            />
           ) : (
             <ul>
               {drawers.map((d) => {
                 const isOpen = open.has(d.id);
                 const folders = shownOf(d.folders);
+                const only = folders.length === 1 ? folders[0] : undefined;
+                if (only) {
+                  // One folder: the drawer is one row, "2024 › Me", that opens it.
+                  return (
+                    <li key={d.id}>
+                      <button
+                        type="button"
+                        className="cab-folder cab-folder-alone"
+                        aria-current={only.id === found?.f.id ? 'true' : undefined}
+                        onClick={() => props.onChoose(cabinet.id, only.id)}
+                      >
+                        <FolderIcon />
+                        <span className="cab-folder-name">
+                          <span className="visually-hidden">
+                            {only.name}, in the {d.name} drawer
+                          </span>
+                          <span aria-hidden="true">
+                            {d.name} <span className="cab-via">› {only.name}</span>
+                          </span>
+                        </span>
+                        <Count n={counts[only.id]} />
+                      </button>
+                    </li>
+                  );
+                }
                 return (
                   <li key={d.id}>
                     <button
@@ -610,6 +671,46 @@ function Browse(props: {
           </section>
         )}
       </div>
+    </>
+  );
+}
+
+/**
+ * A cabinet's only shown drawer, passed over while browsing: its folders,
+ * straight away, under a line saying which drawer they are in. The drawer
+ * is still kept, so a paper that brings a second drawer simply adds it.
+ */
+function OnlyDrawer(props: {
+  drawer: CabinetDrawer;
+  counts: Record<string, number | null>;
+  current: string | undefined;
+  onChoose: (folder: string) => void;
+}) {
+  const { drawer, counts } = props;
+  const folders = shownOf(drawer.folders);
+  return (
+    <>
+      <p className="muted cab-skipped">In the {drawer.name} drawer.</p>
+      {folders.length === 0 ? (
+        <p className="muted">Every folder in this drawer is hidden.</p>
+      ) : (
+        <ul>
+          {folders.map((f) => (
+            <li key={f.id}>
+              <button
+                type="button"
+                className="cab-folder"
+                aria-current={f.id === props.current ? 'true' : undefined}
+                onClick={() => props.onChoose(f.id)}
+              >
+                <FolderIcon />
+                <span className="cab-folder-name">{f.name}</span>
+                <Count n={counts[f.id]} />
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
     </>
   );
 }
@@ -1720,6 +1821,11 @@ function DividerEditor(props: {
               : 'My own date ranges'}
         </label>
       ))}
+      {mode === 'years' && asksOneYear(folder.filter) && (
+        <p className="muted">
+          This folder holds one year already, so its papers are one list, with no year divider.
+        </p>
+      )}
       {mode === 'ranges' && (
         <>
           <p className="muted">

@@ -14,12 +14,11 @@ import {
   dividerKeyOf,
   dividerMode,
   layoutProblemOf,
-  OTHER_YEARS,
   PIN_IN_TRASH,
   PIN_LIMITS,
   rangesNewestFirst,
+  shownDividers,
   TOO_MANY_PINS,
-  type FolderDivider,
   type PinsMoved,
   type CabinetGroup,
   type CabinetLayout,
@@ -5081,15 +5080,19 @@ export function createFakeVault(): {
           const q = { get: (name: string) => param(url, name) ?? null };
           const divider = q.get('divider') ?? '';
           const mode = dividerMode(f.dividers);
+          // One plain list (`all`) wherever the folder has no ranges of its own:
+          // by year with one year or fewer to show, or a year folder.
           const known =
-            (mode === 'none' && divider === 'all') ||
+            (mode !== 'ranges' && divider === 'all') ||
             (mode === 'years' && (divider === 'other' || /^year:[1-9]\d{3}$/.test(divider))) ||
             (mode === 'ranges' &&
               (divider === 'other' ||
                 rangesNewestFirst(f.dividers).some((r) => r.key === divider)));
           if ('status' in got || !known)
             return fail(404, 'not_found', 'That divider does not exist.');
-          const items = [...(byKey.get(divider) ?? [])].sort(newestFirst);
+          const items = [...(divider === 'all' ? rest : (byKey.get(divider) ?? []))].sort(
+            newestFirst,
+          );
           const limit = Number(q.get('limit') ?? 50);
           const start = Number(q.get('cursor') ?? 0);
           const page = items.slice(start, start + limit);
@@ -5105,61 +5108,11 @@ export function createFakeVault(): {
           const everything = await tabled({});
           const pinned =
             'status' in everything ? [] : everything.items.filter((d) => pinnedIds.includes(d.id));
-          const count = (key: string) => byKey.get(key)?.length ?? 0;
-          const other: FolderDivider[] =
-            count('other') > 0
-              ? [
-                  {
-                    key: 'other',
-                    kind: 'other',
-                    name: OTHER_YEARS,
-                    from: null,
-                    to: null,
-                    count: count('other'),
-                  },
-                ]
-              : [];
-          let dividers: FolderDivider[];
-          switch (dividerMode(f.dividers)) {
-            case 'none':
-              dividers = [
-                { key: 'all', kind: 'all', name: '', from: null, to: null, count: count('all') },
-              ];
-              break;
-            case 'years':
-              dividers = [
-                ...[...byKey.keys()]
-                  .filter((key) => key !== 'other')
-                  .sort()
-                  .reverse()
-                  .map((key): FolderDivider => {
-                    const y = key.slice(5);
-                    return {
-                      key,
-                      kind: 'year',
-                      name: y,
-                      from: `${y}-01-01`,
-                      to: `${y}-12-31`,
-                      count: count(key),
-                    };
-                  }),
-                ...other,
-              ];
-              break;
-            case 'ranges':
-              dividers = [
-                ...rangesNewestFirst(f.dividers).map(({ key, range }) => ({
-                  key,
-                  kind: 'range' as const,
-                  name: range.name,
-                  from: range.from,
-                  to: range.to,
-                  count: count(key),
-                })),
-                ...other,
-              ];
-              break;
-          }
+          // Passed over where a level has one group, as the vault does (one grouped count).
+          const dividers = shownDividers(
+            f,
+            new Map([...byKey].map(([key, docs]) => [key, docs.length] as const)),
+          );
           return ok({
             folder_id: folderId,
             version: held.version,

@@ -19,10 +19,7 @@ import {
   type CabinetPreview,
   type CabinetView,
   dividerKeyOf,
-  dividerMode,
-  OTHER_YEARS,
-  rangesNewestFirst,
-  type FolderDivider,
+  shownDividers,
   type PinsMoved,
   sensitiveOf,
   SENSITIVE_FOLLOW_CONFIRM,
@@ -6653,66 +6650,20 @@ export function installFakeApi(state: FakeState) {
         const newest = (a: (typeof rest)[number], b: (typeof rest)[number]) =>
           datedOf(b).localeCompare(datedOf(a));
         if (folderAt[2] === '/documents') {
-          const items = [...(byKey.get(query.get('divider') ?? '') ?? [])].sort(newest);
+          // One plain list (`all`) wherever a level is passed over, as the vault does.
+          const asked = query.get('divider') ?? '';
+          // Never for a folder with ranges of its own: they are never passed over.
+          if (asked === 'all' && (f.dividers?.ranges.length ?? 0) > 0) {
+            return refuse(404, 'not_found', 'That divider does not exist.');
+          }
+          const items = [...(asked === 'all' ? rest : (byKey.get(asked) ?? []))].sort(newest);
           return json({ items, total: items.length, has_more: false, next_cursor: null });
         }
-        const count = (key: string) => byKey.get(key)?.length ?? 0;
-        let dividers: FolderDivider[];
-        switch (dividerMode(f.dividers)) {
-          case 'none':
-            dividers = [
-              { key: 'all', kind: 'all', name: '', from: null, to: null, count: count('all') },
-            ];
-            break;
-          case 'years':
-            dividers = [...byKey.keys()]
-              .filter((key) => key !== 'other')
-              .sort()
-              .reverse()
-              .map((key) => ({
-                key,
-                kind: 'year' as const,
-                name: key.slice(5),
-                from: `${key.slice(5)}-01-01`,
-                to: `${key.slice(5)}-12-31`,
-                count: count(key),
-              }));
-            if (count('other') > 0) {
-              dividers.push({
-                key: 'other',
-                kind: 'other',
-                name: OTHER_YEARS,
-                from: null,
-                to: null,
-                count: count('other'),
-              });
-            }
-            break;
-          case 'ranges':
-            dividers = [
-              ...rangesNewestFirst(f.dividers).map(({ key, range }) => ({
-                key,
-                kind: 'range' as const,
-                name: range.name,
-                from: range.from,
-                to: range.to,
-                count: count(key),
-              })),
-              ...(count('other') > 0
-                ? [
-                    {
-                      key: 'other',
-                      kind: 'other' as const,
-                      name: OTHER_YEARS,
-                      from: null,
-                      to: null,
-                      count: count('other'),
-                    },
-                  ]
-                : []),
-            ];
-            break;
-        }
+        // One grouped count, a level of one passed over, as the vault does.
+        const dividers = shownDividers(
+          f,
+          new Map([...byKey].map(([key, docs]) => [key, docs.length] as const)),
+        );
         return json({
           folder_id: folderId,
           version: held.version,
