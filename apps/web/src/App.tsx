@@ -61,6 +61,7 @@ import { PageTitle } from './page-title.js';
 import { AppShell } from './shell.js';
 import { FlyoutDesk } from './flyouts.js';
 import { Logo } from './ui.js';
+import { LockScreen } from './lock-screen.js';
 
 /**
  * Routing rules:
@@ -68,9 +69,10 @@ import { Logo } from './ui.js';
  *  - setup required           → /setup only
  *  - signed out               → /welcome, /sign-in
  *  - signed in                → everything else, inside the shell
+ *  - signed in, locked        → the lock screen, wherever it was going
  */
 function Gate({ children, need }: { children: ReactNode; need: 'signed-in' | 'signed-out' }) {
-  const { caps, session, connectionError, twoStepSetup } = useApp();
+  const { caps, session, connectionError, twoStepSetup, locked } = useApp();
   // authVersion is read by useApp consumers; Gate re-renders through the provider.
   if (connectionError) {
     return (
@@ -95,6 +97,9 @@ function Gate({ children, need }: { children: ReactNode; need: 'signed-in' | 'si
   if (caps.setup_required) return <Navigate to="/setup" replace />;
   if (need === 'signed-in' && !session.signedIn) return <Navigate to="/welcome" replace />;
   if (need === 'signed-out' && session.signedIn) return <Navigate to="/" replace />;
+  // Locked (0.9.0-dev.86): the lock screen in place of everything signed in
+  // — the page, the documents beside it and the tray are not drawn at all.
+  if (need === 'signed-in' && locked) return <LockScreen />;
   // A sign-in that must set up two-step sign-in first (0.9.0): that, and
   // nothing else, until it is — wherever it was going.
   if (need === 'signed-in' && twoStepSetup) return <TwoStepSetupScreen />;

@@ -209,6 +209,13 @@ const live = sql<boolean>`(device.session_id is null or exists (
   select 1 from session s
    where s.id = device.session_id and s.revoked_at is null and s.expires_at > now()))`;
 
+/**
+ * Whether a device's session is locked (0.9.0-dev.86): it is sent nothing
+ * until it is unlocked, a test push neither.
+ */
+const locked = sql<boolean>`(device.session_id is not null and exists (
+  select 1 from session s where s.id = device.session_id and s.locked_at is not null))`;
+
 export class NotificationService {
   constructor(
     private readonly db: Db,
@@ -408,6 +415,7 @@ export class NotificationService {
         .selectFrom('device')
         .select(['id', 'kind', 'endpoint', 'p256dh', 'auth'])
         .select(live.as('live'))
+        .select(locked.as('locked'))
         .where('id', '=', id)
         .where('account_id', '=', p.accountId)
         .executeTakeFirst(),
@@ -426,6 +434,14 @@ export class NotificationService {
         409,
         'signed_out',
         'That device is signed out. Sign in on it again and it will hear from the vault.',
+      );
+    }
+    // Locked (0.9.0-dev.86): nothing is shown on it until it is unlocked.
+    if (device.locked) {
+      throw new ApiError(
+        409,
+        'device_locked',
+        'That browser is locked. Unlock it, and it will hear from the vault again.',
       );
     }
     await this.opts.push?.({

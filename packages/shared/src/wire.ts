@@ -137,6 +137,12 @@ export interface Me {
   kind?: MemberKind;
   /** When a guest's sign-in ends (A28); null for the family. Absent from older vaults. */
   access_expires_at?: string | null;
+  /**
+   * This session is locked (0.9.0-dev.86, `features.session_lock`): every
+   * route but a few answers `423 session_locked` until `POST /auth/unlock`.
+   * Absent from older vaults.
+   */
+  locked?: boolean;
 }
 
 /** That an owner made a hand-over link for this sign-in (5.29): who, and when. */

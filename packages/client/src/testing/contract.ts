@@ -11,6 +11,7 @@ import {
   onlyEveryone,
   reminderOf,
   reminderSentence,
+  SESSION_LOCKED_CODE,
   shareEndWords,
   type BatchReadFailure,
   type CreatedUploadRequest,
@@ -32,7 +33,7 @@ import {
   type AppClient,
 } from '../apps.js';
 import type { FetchLike, RequestInitLike, ResponseLike } from '../http.js';
-import { ApiRequestError, isSessionOver } from '../errors.js';
+import { ApiRequestError, isSessionLocked, isSessionOver } from '../errors.js';
 import { multipartBody } from '../multipart.js';
 import { negotiate } from '../negotiate.js';
 import { zipEntryNames } from './zip.js';
@@ -3813,6 +3814,34 @@ export const contractScenarios: Scenario[] = [
       expect([missing.status, missing.code]).toEqual([404, 'not_found']);
       const odd = await refusal(api.activityCsv(token, { kind: 'everything' }));
       expect([odd.status, odd.code]).toEqual([422, 'validation_failed']);
+    },
+  },
+  {
+    name: 'a locked session answers 423 session_locked, but for who it is, until the password unlocks it; another session goes on, and a renewal stays locked (0.9.0-dev.86)',
+    run: async (api, ctx) => {
+      expect((await api.capabilities()).features.session_lock).toBe(true);
+      const mine = await signIn(api, ctx);
+      const other = (ctx.tokens as Tokens).access_token;
+      await api.lock(mine.access_token);
+      // Locked already: the same.
+      await api.lock(mine.access_token);
+      const refused = await refusal(api.documents(mine.access_token));
+      expect([refused.status, refused.code]).toEqual([423, SESSION_LOCKED_CODE]);
+      expect(isSessionLocked(refused)).toBe(true);
+      expect(isSessionOver(refused)).toBe(false);
+      expect((await api.me(mine.access_token)).locked).toBe(true);
+      // Another session of the same person is not locked.
+      expect((await api.me(other)).locked).toBe(false);
+      expect(Array.isArray((await api.documents(other)).items)).toBe(true);
+      // A renewal names the same session: as locked.
+      const renewed = await api.refresh(mine.refresh_token);
+      expect((await refusal(api.documents(renewed.access_token))).status).toBe(423);
+      const wrong = await refusal(api.unlock(renewed.access_token, { password: 'not the one' }));
+      expect([wrong.status, wrong.code]).toEqual([401, 'invalid_credentials']);
+      await api.unlock(renewed.access_token, { password: ctx.password });
+      expect((await api.me(renewed.access_token)).locked).toBe(false);
+      expect(Array.isArray((await api.documents(renewed.access_token)).items)).toBe(true);
+      await api.logout(renewed.access_token);
     },
   },
   {

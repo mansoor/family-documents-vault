@@ -11,6 +11,7 @@ import { forgetFlyouts } from './flyout-store.js';
 import { forgetAllPages } from './batch-pages.js';
 import { clearPhotos } from './photos.js';
 import { disable as disablePush } from './push.js';
+import { setLockedHint, setLockPending } from './session-lock.js';
 
 /**
  * Holds the signed-in session for the web app: `@fdv/client`'s session
@@ -184,6 +185,9 @@ export class Session {
     // A new sign-in's cookie replaced the one a sign-out could not end: the
     // next load must not end this one in its place (0.9.0).
     setLogoutPending(false);
+    // A new sign-in's session is not locked (0.9.0-dev.86).
+    setLockedHint(null);
+    setLockPending(null);
     // A new sign-in starts with no notes half-written by the last one
     // (5.35, A32), and none of the last one's documents open beside the list.
     forgetDrafts();
@@ -203,6 +207,9 @@ export class Session {
     forgetDrafts();
     // Nor the documents they had open beside the list.
     forgetFlyouts();
+    // Nor that it was locked (0.9.0-dev.86): the next sign-in is not.
+    setLockedHint(null);
+    setLockPending(null);
     void this.core.clear();
   }
 

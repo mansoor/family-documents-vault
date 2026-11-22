@@ -1,4 +1,6 @@
 import {
+  SESSION_LOCKED_CODE,
+  SESSION_LOCKED_MESSAGE,
   addFolderTree,
   addToDrawing,
   askedFolders,
@@ -416,7 +418,19 @@ interface FakeSession {
    * in `signIns`, who signed in with their own password.
    */
   memberId?: string;
+  /** Locked (0.9.0-dev.86): `423 session_locked` but on FAKE_LOCK_ROUTES, until unlocked. */
+  locked?: boolean;
 }
+
+/** What a locked session may still ask (0.9.0-dev.86), as the real vault lets it. */
+const FAKE_LOCK_ROUTES: ReadonlySet<string> = new Set([
+  'GET /api/v1/me',
+  'POST /api/v1/auth/logout',
+  'POST /api/v1/auth/lock',
+  'POST /api/v1/auth/unlock',
+  'GET /api/v1/auth/step-up',
+  'POST /api/v1/auth/step-up/text',
+]);
 
 /** Somebody's mobile number in the fake (SMS1), and the code out for it. */
 export interface FakePhone {
@@ -3619,6 +3633,10 @@ export function createFakeVault(): {
       if (suspensionOf(whoOf(s).memberId)) return ended('suspended');
       // A guest's sign-in past its end (5.34): as the real vault, `access_ended`.
       if (guestEndOf(whoOf(s).memberId)) return ended('access_ended');
+      // Locked (0.9.0-dev.86): every route but the lock screen's, whichever.
+      if (s.locked && !FAKE_LOCK_ROUTES.has(`${init.method ?? 'GET'} ${path}`)) {
+        return fail(423, SESSION_LOCKED_CODE, SESSION_LOCKED_MESSAGE);
+      }
       return s;
     };
     // A computer that sends scans (0.8.0, D1), as the real vault answers: a
@@ -3921,6 +3939,8 @@ export function createFakeVault(): {
           document_activity: true,
           // The activity log as CSV (0.9.0-dev.82).
           activity_export: true,
+          // Lock (0.9.0-dev.86).
+          session_lock: true,
           // Connected apps (0.9.0, APP1).
           connected_apps: true,
           connected_app_reads: true,
@@ -4096,6 +4116,30 @@ export function createFakeVault(): {
       s.revoked = true;
       return empty();
     }
+    // Lock (0.9.0-dev.86): this session's, kept until a credential is given
+    // again. The fake takes the password; a code or a passkey it refuses.
+    if (path === '/api/v1/auth/lock' && init.method === 'POST') {
+      const s = session();
+      if (!('id' in s)) return s;
+      s.locked = true;
+      return empty();
+    }
+    if (path === '/api/v1/auth/unlock' && init.method === 'POST') {
+      const s = session();
+      if (!('id' in s)) return s;
+      if (!body.password && !body.code && !body.passkey && !body.text_code) {
+        return fail(422, 'validation_failed', 'Send a passkey, a code or your password.');
+      }
+      const theirs =
+        s.memberId === undefined
+          ? state.password
+          : state.signIns.find((x) => x.member_id === s.memberId)?.password;
+      if (typeof body.password !== 'string' || body.password !== theirs) {
+        return fail(401, 'invalid_credentials', "That didn't match. Try again.");
+      }
+      s.locked = false;
+      return ok({ verified_at: new Date().toISOString(), expires_in: 300 });
+    }
     if (path === '/api/v1/me') {
       const s = session();
       if (!('id' in s)) return s;
@@ -4116,6 +4160,8 @@ export function createFakeVault(): {
         kind: state.members.find((m) => m.id === who.memberId)?.kind ?? 'family',
         access_expires_at:
           state.members.find((m) => m.id === who.memberId)?.access_expires_at ?? null,
+        // 0.9.0-dev.86: this session is locked.
+        locked: s.locked === true,
       });
     }
     if (path === '/api/v1/me/reset-notice' && init.method === 'DELETE') {

@@ -403,6 +403,11 @@ export interface Schema {
      * password (A54).
      */
     factor_verified_at: Timestamp | null;
+    /**
+     * When the session was locked (0126): it answers `423 session_locked`
+     * but on the few routes that unlock it, until a credential is given.
+     */
+    locked_at: Timestamp | null;
     /** The app installation that signed in (X-FDV-Installation); null for a browser. */
     installation_id: string | null;
     /** When the refresh token was last replaced. */

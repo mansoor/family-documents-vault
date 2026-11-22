@@ -1,4 +1,5 @@
 import { ApiRequestError, NetworkError, parseRetryAfter } from '@fdv/client';
+import { heardLocked } from './session-lock.js';
 import {
   claimedRecordFormat,
   itemFolder,
@@ -53,6 +54,8 @@ export function sendBatchItem(
         }
         return;
       }
+      // Locked (0.9.0-dev.86), as any other call that hears it: the lock screen.
+      if (xhr.status === 423) heardLocked();
       reject(refusal(xhr));
     };
     xhr.onerror = () => reject(new NetworkError('offline'));

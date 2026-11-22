@@ -4,6 +4,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -17,6 +18,20 @@ import { onFamilyZoneHeard, setCurrentFamilyZone } from './family-zone-store.js'
 export const ZONE_ASK_AGAIN_MS = 60_000;
 import { flushPendingLogout, Session } from './session.js';
 import { StepUpPrompt } from './StepUpPrompt.js';
+import { forgetAllPages } from './batch-pages.js';
+import { clearPhotos } from './photos.js';
+import { forgetDrafts } from './note-drafts.js';
+import {
+  LOCK_HINT_KEY,
+  lockedHintFor,
+  lockPendingFor,
+  onLockHeard,
+  setLockedHint,
+  setLockPending,
+} from './session-lock.js';
+
+/** How often a lock not yet taken by the vault is sent again (0.9.0-dev.86). */
+export const LOCK_RESEND_MS = 10_000;
 
 /**
  * What every screen needs: the capability document, the session, and a
@@ -97,6 +112,19 @@ interface AppState {
   twoStepSetup: boolean;
   /** Two-step sign-in is set up: the app goes on. */
   twoStepDone: () => void;
+  /**
+   * The vault is locked in this session (0.9.0-dev.86): the app shows the
+   * lock screen and nothing else (App.tsx) until it is unlocked — as Lock
+   * was pressed, any call heard `423 session_locked`, or another tab of
+   * this browser locked it.
+   */
+  locked: boolean;
+  /** Lock: the page let go of at once, and the vault asked to keep it locked. */
+  lock: () => Promise<void>;
+  /** Unlocked by a credential given on the lock screen: the app comes back. */
+  unlocked: () => void;
+  /** The lock screen asked the vault whether it is locked (`Me.locked`). */
+  lockHeard: (vaultLocked: boolean) => void;
 }
 
 const Ctx = createContext<AppState | null>(null);
@@ -250,6 +278,133 @@ export function AppProvider({ children }: { children: ReactNode }) {
     [],
   );
 
+  // Lock (0.9.0-dev.86): whose session the lock screen is shown for. Known
+  // at once on a reload, and in every tab, from this browser's note of it
+  // (session-lock.ts); the vault decides, and says 423 to anything else.
+  const [lockedFor, setLockedFor] = useState<string | null>(() =>
+    lockedHintFor(session.info?.member_id) ? (session.info?.member_id ?? null) : null,
+  );
+  // Signed in or out since (another sign-in, the same person's too): as the
+  // note says now — a sign-out forgets it, and a new session is not locked.
+  const [lockAuth, setLockAuth] = useState(authVersion);
+  if (lockAuth !== authVersion) {
+    setLockAuth(authVersion);
+    const member = session.info?.member_id ?? null;
+    setLockedFor(lockedHintFor(member) ? member : null);
+  }
+  const locked =
+    session.signedIn && lockedFor !== null && lockedFor === (session.info?.member_id ?? null);
+  const lockedNowFor = useRef(lockedFor);
+  useLayoutEffect(() => {
+    lockedNowFor.current = lockedFor;
+  });
+  /**
+   * The lock screen, now. `kept`: this browser's note of it written too, so
+   * a reload and every other tab show it at once — when Lock was pressed
+   * here, or the vault has said it is locked; never for a 423 alone, which
+   * may be late (from before another tab unlocked): the lock screen asks.
+   */
+  const lockedNow = useCallback(
+    (kept: boolean) => {
+      const member = session.info?.member_id ?? null;
+      if (!session.signedIn || !member) return;
+      if (kept) setLockedHint(member);
+      // Nothing of the page stays: the documents beside the list go with the
+      // page they were drawn on (App.tsx draws the lock screen in its place);
+      // people's photos, a batch's first pages and notes not yet saved are
+      // let go of here.
+      clearPhotos();
+      forgetAllPages();
+      forgetDrafts();
+      lockedNowFor.current = member;
+      setLockedFor(member);
+    },
+    [session],
+  );
+  // And in memory, for a browser whose storage is blocked.
+  const pendingHere = useRef(false);
+  const pending = useCallback(
+    () => pendingHere.current || lockPendingFor(session.info?.member_id),
+    [session],
+  );
+  /** A lock asked for and not yet taken, sent again: forgotten once it is (204). */
+  const sendLock = useCallback(async () => {
+    if (!pending()) return;
+    try {
+      const got = await session.token({ wait: false });
+      if (got.kind !== 'ok') return;
+      await api.lock(got.token);
+      pendingHere.current = false;
+      setLockPending(null);
+    } catch {
+      // Not reached: sent again when the browser is back online, or soon.
+    }
+  }, [session, pending]);
+  const lock = useCallback(async () => {
+    pendingHere.current = true;
+    setLockPending(session.info?.member_id ?? null);
+    lockedNow(true);
+    await sendLock();
+  }, [session, lockedNow, sendLock]);
+  const unlocked = useCallback(() => {
+    setLockedHint(null);
+    pendingHere.current = false;
+    setLockPending(null);
+    lockedNowFor.current = null;
+    setLockedFor(null);
+  }, []);
+  /**
+   * What the vault says as the lock screen is drawn: locked, and it is kept
+   * so; not locked, the lock is sent again if one was asked for here and not
+   * yet taken — otherwise the 423 that showed it was late, and the page
+   * comes back.
+   */
+  const lockHeard = useCallback(
+    (vaultLocked: boolean) => {
+      const member = session.info?.member_id ?? null;
+      if (vaultLocked) {
+        if (member) setLockedHint(member);
+      } else if (pending()) {
+        void sendLock();
+      } else {
+        unlocked();
+      }
+    },
+    [session, pending, sendLock, unlocked],
+  );
+  // Any call answered 423, from whichever screen.
+  useEffect(() => onLockHeard(() => lockedNow(false)), [lockedNow]);
+  // A lock not yet taken: sent again as the browser comes back online, and
+  // every few seconds while the lock screen shows.
+  useEffect(() => {
+    if (!locked) return;
+    const again = () => void sendLock();
+    window.addEventListener('online', again);
+    const timer = window.setInterval(again, LOCK_RESEND_MS);
+    return () => {
+      window.removeEventListener('online', again);
+      window.clearInterval(timer);
+    };
+  }, [locked, sendLock]);
+  // Another tab of this browser locked or unlocked the same session.
+  useEffect(() => {
+    const heard = (e: StorageEvent) => {
+      if (e.key !== LOCK_HINT_KEY) return;
+      const member = session.info?.member_id ?? null;
+      if (member && e.newValue === member) lockedNow(false);
+      else if (e.newValue === null && lockedNowFor.current !== null) {
+        lockedNowFor.current = null;
+        setLockedFor(null);
+      }
+    };
+    window.addEventListener('storage', heard);
+    return () => window.removeEventListener('storage', heard);
+  }, [session, lockedNow]);
+  // A confirmation asked for by a screen the lock took away: answered no.
+  useEffect(() => {
+    if (locked && asking) asking.settle(false);
+  }, [locked, asking]);
+
   const guarded = useCallback(
     async <T,>(
       fn: (token: string) => Promise<T>,
@@ -327,6 +482,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
       setFamilyZone,
       twoStepSetup,
       twoStepDone,
+      locked,
+      lock,
+      unlocked,
+      lockHeard,
     }),
     [
       caps,
@@ -342,13 +501,17 @@ export function AppProvider({ children }: { children: ReactNode }) {
       setFamilyZone,
       twoStepSetup,
       twoStepDone,
+      locked,
+      lock,
+      unlocked,
+      lockHeard,
     ],
   );
   return (
     <Ctx.Provider value={value}>
       {children}
       <RenewalWait session={session} />
-      {asking && (
+      {asking && !locked && (
         <StepUpPrompt
           action={asking.action}
           message={asking.message}

@@ -555,6 +555,12 @@ const RULES: Record<string, Rule> = {
   // A code by text to confirm it's them (SMS3): an adult's or a teen's who
   // asked for codes by text; nobody else is offered one.
   'POST /api/v1/auth/step-up/text': { who: 'signedIn', body: () => ({}) },
+  // Lock (0.9.0-dev.86): one's own session alone, and late, as it refuses
+  // everything after it. Unlocking takes a credential as step-up does: a
+  // passkey that is none, and nothing (a wrong password or code is counted
+  // on the session, and is tried by the step-up's own rule above).
+  'POST /api/v1/auth/lock': { who: 'signedIn', body: () => ({}), last: true },
+  'POST /api/v1/auth/unlock': { who: 'signedIn', bodies: () => [{ passkey: {} }, {}] },
   // Whether a reset and a sign-in ask for a code by text (SMS3): one's own.
   'GET /api/v1/auth/text-codes': { who: 'signedIn' },
   'PUT /api/v1/auth/text-codes': { who: 'signedIn', body: () => ({ sign_in: false }) },
@@ -4447,9 +4453,16 @@ ${JSON.stringify(r.headers)}`;
     const results: Result[] = [];
     for (const a of attackers) {
       for (const t of [...attackers.map((x) => x.tokens), olivia]) if (t) await fresh(t);
-      // What ends or changes the caller last, and signing out last of all.
+      // What ends or changes the caller last, locking it (0.9.0-dev.86) after
+      // the rest of those, and signing out last of all.
       const lastly = (r: Route) =>
-        !RULES[`${r.method} ${r.url}`]?.last ? 0 : r.url === '/api/v1/auth/logout' ? 2 : 1;
+        !RULES[`${r.method} ${r.url}`]?.last
+          ? 0
+          : r.url === '/api/v1/auth/logout'
+            ? 3
+            : r.url === '/api/v1/auth/lock'
+              ? 2
+              : 1;
       const order = [...routes].sort((x, y) => lastly(x) - lastly(y));
       let checkedStill = false;
       for (const route of order) {

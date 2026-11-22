@@ -271,6 +271,26 @@ describe.skipIf(!testAdminUrl())('UnifiedPush in the API', () => {
     expect(pushesTo(kitPhone)).toEqual([{ v: 1, type: 'session_ended' }]);
   });
 
+  it('a device whose session is locked is sent no test push (0.9.0-dev.86)', async () => {
+    const phone = await phoneWith();
+    const [row] = await rows(phone.endpoint);
+    await admin
+      .updateTable('session')
+      .set({ locked_at: new Date() })
+      .where('id', '=', row?.session_id as string)
+      .execute();
+    // Asked from another of their sessions: not sent, and said why.
+    const other = await signIn(randomUUID());
+    const res = await h.app.inject({
+      method: 'POST',
+      url: `/api/v1/devices/${phone.id}/test`,
+      headers: h.as(other),
+    });
+    expect(res.statusCode).toBe(409);
+    expect(res.json<{ error: { code: string } }>().error.code).toBe('device_locked');
+    expect(pushesTo(phone.endpoint)).toEqual([]);
+  });
+
   it('a test push reaches only your own device', async () => {
     const phone = await phoneWith();
     const mine = await h.app.inject({

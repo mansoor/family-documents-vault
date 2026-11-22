@@ -9,10 +9,11 @@ import { finishSignIn, setupCode } from './vault.js';
  * its icon kept; and a reload puts the tray back, the one in front opened
  * again and the rest freed. Then two side by side (from 1,100 px; the
  * window is 1280): one chosen from the list, replaced by a list click, and
- * back to one at a time.
+ * back to one at a time. Last, Lock (0.9.0-dev.86): locked, reloaded and
+ * still locked, unlocked.
  *
- * Signed in once, as desktop.spec.ts is, and loaded afresh once (the
- * reload): each load renews the sign-in, ten a minute for the address the
+ * Signed in once, as desktop.spec.ts is, and loaded afresh twice (the
+ * reloads): each load renews the sign-in, ten a minute for the address the
  * whole run shares.
  */
 
@@ -265,6 +266,51 @@ test('two side by side: the second from the list, the one used last replaced by 
   await expect(panes).toHaveCount(0);
   await expect(tray().getByRole('button', { name: `${A}, minimised` })).toBeVisible();
   await expect(flyout(C).getByRole('button', { name: 'Side by side' })).toBeVisible();
+
+  await tray().getByRole('button', { name: 'Close all' }).click();
+  await expect(tray()).toHaveCount(0);
+});
+
+/**
+ * Lock (0.9.0-dev.86): the documents beside the list let go of, the lock
+ * screen in place of the page; a reload is still locked (the vault keeps
+ * it); the password unlocks it, and the one in front comes back.
+ */
+test('Lock: locked, still locked after a reload, and back once it is confirmed to be them', async () => {
+  test.setTimeout(240_000);
+  await visit(page, `/documents?tag=fly${run}`);
+  const grid = page.getByRole('grid', { name: /^Documents, sorted by/ });
+  await expect(grid.locator('tbody .cell-title')).toHaveCount(3);
+  await grid.getByRole('link', { name: A }).click();
+  await expect(flyout(A)).toBeVisible();
+  await grid.getByRole('link', { name: B }).click();
+  await expect(flyout(B)).toBeVisible();
+
+  await page.getByRole('button', { name: 'Lock', exact: true }).click();
+  const locked = page.getByRole('heading', { level: 1, name: 'The vault is locked' });
+  await expect(locked).toBeFocused();
+  await expect(grid).toHaveCount(0);
+  await expect(tray()).toHaveCount(0);
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  await expect(page.locator('img[src^="blob:"]')).toHaveCount(0);
+  await expect(page.locator('body')).not.toContainText(run);
+
+  // A reload: still locked, nothing of the vault asked for but who it is.
+  const asked: string[] = [];
+  page.on('request', (r) => {
+    if (r.url().includes('/api/v1/')) asked.push(new URL(r.url()).pathname);
+  });
+  await page.reload();
+  await expect(locked).toBeVisible({ timeout: 90_000 });
+  await expect(page.getByRole('grid')).toHaveCount(0);
+  expect(asked.filter((p) => p.startsWith('/api/v1/documents'))).toEqual([]);
+
+  // The password unlocks it: the list, and the one in front, back.
+  await page.getByLabel('Your password').fill(PASSWORD);
+  await page.getByRole('button', { name: 'Unlock', exact: true }).click();
+  await expect(grid).toBeVisible({ timeout: 90_000 });
+  await expect(flyout(B)).toBeVisible({ timeout: 90_000 });
+  await expect(tray().getByRole('listitem')).toHaveCount(2);
 
   await tray().getByRole('button', { name: 'Close all' }).click();
   await expect(tray()).toHaveCount(0);

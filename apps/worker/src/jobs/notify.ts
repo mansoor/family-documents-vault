@@ -175,16 +175,19 @@ export function recipientRefused(err: unknown): boolean {
  * Signing out, a revoked session, a password change and a removed sign-in
  * all end it, and with it every notification to that browser (0020).
  * Devices from before 0.4.2 name no session, and are sent to only while
- * the account has some live session in the household.
+ * the account has some live session in the household. A browser whose
+ * session is locked (0126) is sent nothing until it is unlocked: a
+ * notification would show what the lock screen keeps out of sight.
  */
 export const liveDevice = sql<boolean>`(
   (device.session_id is not null and exists (
      select 1 from session s
-      where s.id = device.session_id and s.revoked_at is null and s.expires_at > now()))
+      where s.id = device.session_id and s.revoked_at is null and s.expires_at > now()
+        and s.locked_at is null))
   or (device.session_id is null and exists (
      select 1 from session s
       where s.account_id = device.account_id and s.household_id = device.household_id
-        and s.revoked_at is null and s.expires_at > now())))`;
+        and s.revoked_at is null and s.expires_at > now() and s.locked_at is null)))`;
 
 /** Shared with the alert job, which uses the same household mail server. */
 export function openPassword(key: Buffer, sealed: Buffer, householdId: string): string {

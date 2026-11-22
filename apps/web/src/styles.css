@@ -8849,3 +8849,17 @@ html:has(.shell-phone):has(.has-toast) {
 .doc-activity-foot {
   align-items: center;
 }
+
+/* Lock (0.9.0-dev.86): the lock screen, in place of the app. */
+.lock-title {
+  font-size: 32px;
+}
+
+.lock-confirm-title {
+  font-size: 20px;
+}
+
+/* Lock in the bar on top: beside the account's button. */
+.lock-btn {
+  white-space: nowrap;
+}

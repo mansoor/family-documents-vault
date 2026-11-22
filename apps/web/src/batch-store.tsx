@@ -13,7 +13,7 @@ import {
   useSyncExternalStore,
   type ReactNode,
 } from 'react';
-import { api, ApiRequestError, NetworkError } from './api.js';
+import { api, ApiRequestError, isSessionLocked, NetworkError } from './api.js';
 import { useApp } from './app-context.js';
 import {
   folderOfChosen,
@@ -146,8 +146,21 @@ type Outcome =
   | { kind: 'batch'; why: string }
   | { kind: 'file'; why: string };
 
+/** Why the rest wait while the vault is locked (0.9.0-dev.86). */
+export const LOCKED_UPLOAD_WORDS =
+  'The vault was locked, so the upload stopped. Send the rest once it is unlocked.';
+
 function outcomeOf(err: unknown): Outcome {
   if (err instanceof DOMException && err.name === 'AbortError') return { kind: 'stopped' };
+  // Locked (0.9.0-dev.86), here or in another tab: a pause, never a refusal
+  // of the file. It and the rest are sent once it is unlocked.
+  if (isSessionLocked(err)) {
+    return {
+      kind: 'again',
+      file: 'Not sent while the vault was locked: it can be sent again.',
+      all: LOCKED_UPLOAD_WORDS,
+    };
+  }
   if (err instanceof NetworkError || !(err instanceof ApiRequestError)) {
     return {
       kind: 'again',
@@ -197,6 +210,8 @@ export class BatchUploads {
   private busy = false;
   private stopAsked = false;
   private aborted = false;
+  /** Stopped by Lock (0.9.0-dev.86): said so, and the rest offered once unlocked. */
+  private lockPaused = false;
 
   readonly subscribe = (listener: () => void): (() => void) => {
     this.listeners.add(listener);
@@ -392,6 +407,18 @@ export class BatchUploads {
     this.set({ stopping: true, said: 'Stopping after this file.' });
   }
 
+  /**
+   * Locked (0.9.0-dev.86): stopped now, the file going stopped too, and
+   * kept: what arrived is in the batch, and Send the rest sends the others
+   * once it is unlocked.
+   */
+  pauseForLock(): void {
+    if (!running(this.state)) return;
+    this.lockPaused = true;
+    this.stopAsked = true;
+    this.current?.stop();
+  }
+
   /** Signed out, or somebody else signed in: stopped now, the file going stopped too, and forgotten. */
   abort(): void {
     this.aborted = true;
@@ -503,11 +530,13 @@ export class BatchUploads {
       return;
     }
     const stopped = this.stopAsked || stoppedBy !== null || progressOf(this.state).waiting > 0;
+    const paused = this.lockPaused;
+    this.lockPaused = false;
     this.set((was) => ({
       phase: stopped ? 'stopped' : 'done',
-      problem: stoppedBy,
+      problem: stoppedBy ?? (paused ? LOCKED_UPLOAD_WORDS : null),
       stopping: false,
-      said: this.stopAsked ? 'Stopped. What arrived is in your Inbox.' : '',
+      said: paused ? '' : this.stopAsked ? 'Stopped. What arrived is in your Inbox.' : '',
       seen: this.watching > 0,
       changed: was.changed + 1,
     }));
@@ -531,13 +560,17 @@ const Ctx = createContext<BatchUploads | null>(null);
  */
 export function BatchUploadProvider({ children }: { children: ReactNode }) {
   const [store] = useState(() => new BatchUploads());
-  const { authVersion } = useApp();
+  const { authVersion, locked } = useApp();
   const signedInAs = useRef(authVersion);
   useEffect(() => {
     if (signedInAs.current === authVersion) return;
     signedInAs.current = authVersion;
     store.abort();
   }, [authVersion, store]);
+  // Locked (0.9.0-dev.86): the upload stops first, and waits for Send the rest.
+  useEffect(() => {
+    if (locked) store.pauseForLock();
+  }, [locked, store]);
   const sending = useSyncExternalStore(store.subscribe, () => running(store.get()));
   useEffect(() => {
     if (!sending) return;

@@ -126,6 +126,32 @@ describe.skipIf(!testAdminUrl())('push reaches only live sign-ins', () => {
     expect(endpoints.sort()).toEqual(['old-browser', 'phone']);
   });
 
+  it('a browser whose session is locked is pushed nothing until it is unlocked (0.9.0-dev.86)', async () => {
+    const locked = await session(true);
+    await admin.query('update session set locked_at = now() where id = $1', [locked]);
+    await device('locked-browser', locked);
+    try {
+      let endpoints = pushedTo();
+      await notifier().digest(digest());
+      expect(endpoints.sort()).toEqual(['old-browser', 'phone']);
+      vi.restoreAllMocks();
+      endpoints = pushedTo();
+      await sendAlert(
+        { app: db, vapid, smtpKey, linkKey, baseUrl: 'x', log: () => undefined },
+        { household_id: hh, account_ids: [account], subject: 'A new device', body: 'b' },
+      );
+      expect(endpoints.sort()).toEqual(['old-browser', 'phone']);
+      // Unlocked, it hears again.
+      await admin.query('update session set locked_at = null where id = $1', [locked]);
+      vi.restoreAllMocks();
+      endpoints = pushedTo();
+      await notifier().digest(digest());
+      expect(endpoints.sort()).toEqual(['locked-browser', 'old-browser', 'phone']);
+    } finally {
+      await admin.query('delete from device where session_id = $1', [locked]);
+    }
+  });
+
   it('a sign-in locked, or paused after a restore, is pushed nothing but of its own sign-in (5.28)', async () => {
     const alert = { household_id: hh, account_ids: [account], subject: 'A new device', body: 'b' };
     const deps = { app: db, vapid, smtpKey, linkKey, baseUrl: 'x', log: () => undefined };

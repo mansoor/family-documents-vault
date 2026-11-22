@@ -352,15 +352,29 @@ export class StepUpService {
    */
   async verify(
     p: Principal,
-    input: {
-      password?: string;
-      code?: string;
-      passkey?: AuthenticationResponseJSON;
-      /** A code texted to their own number (SMS3): an adult's or a teen's alone. */
-      text_code?: string;
-    },
+    input: CredentialInput,
     meta: RequestMeta,
   ): Promise<{ verified_at: string; expires_in: number }> {
+    return this.verified(p, await this.presented(p, input, meta), meta);
+  }
+
+  /**
+   * POST /auth/unlock (0.9.0-dev.86): a locked session unlocked by a
+   * credential given again — any the account has, as confirming it's you
+   * takes, counted and refused as that is (`invalid_credentials`, reason
+   * `code_used` for a code taken already). It also confirms it's them, for
+   * the next five minutes. Not locked, it is only that.
+   */
+  async unlock(
+    p: Principal,
+    input: CredentialInput,
+    meta: RequestMeta,
+  ): Promise<{ verified_at: string; expires_in: number }> {
+    return this.verified(p, await this.presented(p, input, meta), meta, { unlock: true });
+  }
+
+  /** A credential presented, counted per session: the method it was, or a refusal. */
+  private async presented(p: Principal, input: CredentialInput, meta: RequestMeta) {
     // Counted per session (0.9.0), each try reserved before it is checked:
     // only somebody signed in gets here, and whatever they get wrong never
     // makes the person's sign-in wait. A passkey is never counted.
@@ -374,18 +388,13 @@ export class StepUpService {
     } finally {
       if (guard && attempt) await guard.release(attempt);
     }
-    return this.verified(p, method, meta);
+    return method;
   }
 
   /** Whether what was presented is the account's: the method it was, or a refusal. */
   private async checkCredential(
     p: Principal,
-    input: {
-      password?: string;
-      code?: string;
-      passkey?: AuthenticationResponseJSON;
-      text_code?: string;
-    },
+    input: CredentialInput,
     meta: RequestMeta,
     attempt: Attempt | null,
   ): Promise<string> {
@@ -448,11 +457,15 @@ export class StepUpService {
     return method;
   }
 
-  /** The session confirmed just now, by `method`. */
+  /**
+   * The session confirmed just now, by `method`; and, `unlock`, unlocked
+   * (0.9.0-dev.86) — its line written only by the request that unlocked it.
+   */
   private async verified(
     p: Principal,
     method: string,
     meta: RequestMeta,
+    opts: { unlock?: boolean } = {},
   ): Promise<{ verified_at: string; expires_in: number }> {
     const now = new Date();
     // A passkey or a code is also what the owner's powers ask (A54); a
@@ -465,6 +478,26 @@ export class StepUpService {
         .where('id', '=', p.sessionId)
         .execute(),
     );
+    if (opts.unlock) {
+      await withPrincipal(this.db, p, async (trx) => {
+        const unlocked = await trx
+          .updateTable('session')
+          .set({ locked_at: null })
+          .where('id', '=', p.sessionId)
+          .where('locked_at', 'is not', null)
+          .executeTakeFirst();
+        if (Number(unlocked.numUpdatedRows) !== 1) return;
+        await appendAudit(trx, {
+          householdId: p.householdId,
+          actorAccountId: p.accountId,
+          action: 'session.unlocked',
+          objectType: 'session',
+          objectId: p.sessionId,
+          detail: { method },
+          ip: meta.ip,
+        });
+      });
+    }
     await withPrincipal(this.db, p, (trx) =>
       appendAudit(trx, {
         householdId: p.householdId,
@@ -482,3 +515,12 @@ export class StepUpService {
 }
 
 const refused = () => new ApiError(401, 'invalid_credentials', "That didn't match. Try again.");
+
+/** A credential given again: any one of these. */
+export interface CredentialInput {
+  password?: string;
+  code?: string;
+  passkey?: AuthenticationResponseJSON;
+  /** A code texted to their own number (0.9.0): an adult's or a teen's alone. */
+  text_code?: string;
+}

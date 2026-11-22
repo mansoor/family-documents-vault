@@ -1156,11 +1156,15 @@ describe.skipIf(!testAdminUrl())("the owner's view of a sign-in (5.25, A54)", ()
     // Each that changes anything, asked by an owner with every credential
     // fresh to put somebody else's address in place: by their person, and
     // by their account. Signing out is left out (it would end the asking),
-    // and so is DELETE, which changes no address.
+    // and so is locking (0.9.0-dev.86: it would refuse the rest), and so is
+    // DELETE, which changes no address.
     const NEW = 'taken-over@example.test';
     const payload = { email: NEW, new_email: NEW, email_address: NEW, sign_in_email: NEW };
     const writes = routes.filter(
-      (r) => ['POST', 'PUT', 'PATCH'].includes(r.method) && r.url !== '/api/v1/auth/logout',
+      (r) =>
+        ['POST', 'PUT', 'PATCH'].includes(r.method) &&
+        r.url !== '/api/v1/auth/logout' &&
+        r.url !== '/api/v1/auth/lock',
     );
     expect(writes.length).toBeGreaterThan(40);
     for (const id of [adult.member_id, sara.account_id]) {

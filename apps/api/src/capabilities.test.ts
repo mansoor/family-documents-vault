@@ -190,6 +190,8 @@ describe('buildCapabilities', () => {
       security_health: true,
       // 0.9.0-dev.82: the activity log as CSV.
       activity_export: true,
+      // 0.9.0-dev.86: Lock.
+      session_lock: true,
     });
     // Never on the hosted edition, whose operator keeps the backups.
     expect(buildCapabilities({ ...config, edition: 'hosted' }).features).not.toHaveProperty(

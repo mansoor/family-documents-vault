@@ -398,6 +398,30 @@ export function createApi(http: Http) {
         body,
         token,
       }),
+    /**
+     * Lock (0.9.0-dev.86, `features.session_lock`): this session locked, as
+     * the vault keeps it, until `unlock`. Every call but `me`, `stepUpState`,
+     * `stepUpTextCode`, `unlock`, `lock` and `logout` then answers `423
+     * session_locked` (`isSessionLocked`). Locked already: the same `204`.
+     */
+    lock: (token: string) =>
+      request<void>('/api/v1/auth/lock', { method: 'POST', body: {}, token }),
+    /**
+     * Unlocks this session (0.9.0-dev.86) with a credential given again, as
+     * `stepUp` takes one — and refuses one as it does (`401
+     * invalid_credentials`, reason `code_used` for a code taken already;
+     * `429 sign_in_throttled` after five wrong). It also confirms it's them
+     * for five minutes. Not locked, it is only that.
+     */
+    unlock: (
+      token: string,
+      body: { password?: string; code?: string; passkey?: unknown; text_code?: string },
+    ) =>
+      request<{ verified_at: string; expires_in: number }>('/api/v1/auth/unlock', {
+        method: 'POST',
+        body,
+        token,
+      }),
     /** A code texted to confirm it's them (0.9.0, `features.sms_codes`): `409 sms_code_not_offered` when none is. */
     stepUpTextCode: (token: string) =>
       request<TextCodeSent>('/api/v1/auth/step-up/text', { method: 'POST', token }),
