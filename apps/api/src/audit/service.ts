@@ -610,6 +610,10 @@ const RULES: ReadonlyMap<string, Audience | typeof BY_TYPE> = new Map<
   // 0.9.0: whether every adult must have two-step sign-in, chosen by an
   // owner: how the family signs in, so for whoever reads the log.
   ['household.two_step_changed', everyone],
+  // 0.9.0-dev.87: when the vault locks itself in a browser left unused,
+  // chosen by an owner: how the family's browsers stay safe, so for whoever
+  // reads the log.
+  ['household.auto_lock_changed', everyone],
   ['invitation.created', BY_TYPE],
   ['invitation.accepted', BY_TYPE],
   ['invitation.revoked', BY_TYPE],
@@ -676,6 +680,11 @@ const RULES: ReadonlyMap<string, Audience | typeof BY_TYPE> = new Map<
   // 0.9.0-dev.86: a session locked, and unlocked, as a sign-in's lines are.
   ['session.locked', BY_TYPE],
   ['session.unlocked', BY_TYPE],
+  // 0.9.0-dev.87: a browser locked by the vault after a while away, as Lock's
+  // line is; and somebody's own time for it: for the owners, the person and
+  // whoever did it.
+  ['session.locked_away', BY_TYPE],
+  ['session.auto_lock_changed', ownersThePersonAndTheActor],
   // 0.9.0: a failed try at signing in to somebody's account, or at
   // confirming it's them: for the person and the owners, nobody else.
   ['auth.sign_in_failed', ownersThePersonAndTheActor],

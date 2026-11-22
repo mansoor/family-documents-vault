@@ -303,8 +303,19 @@ export function DocActions(props: {
     // A search hit has no version or ETag: what may be done with it is
     // decided on the document itself, as it is now.
     setFetched({ doc: null, error: null });
-    void withToken((t) => api.document(t, props.documentId)).then(
-      (d) => setFetched({ doc: d, error: null }),
+    // An Only me or an Essential note asks to confirm it's you first (0.9.0-dev.87).
+    // Not confirmed: the menu closes, its button keeping the focus, rather
+    // than waiting for ever.
+    void guarded((t) => api.document(t, props.documentId)).then(
+      (d) => {
+        if (d) {
+          setFetched({ doc: d, error: null });
+          return;
+        }
+        setFetched({ doc: null, error: null });
+        setMenu(null);
+        more.current?.focus();
+      },
       (err: unknown) => setFetched({ doc: null, error: describeError(err) }),
     );
   };
@@ -536,6 +547,7 @@ export function DocActions(props: {
           busy={sheetBusy}
           returnFocus={more}
           onClose={closeSheet}
+          className="share-sheet"
         >
           <SharePanel
             documentId={props.documentId}

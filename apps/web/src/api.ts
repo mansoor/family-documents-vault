@@ -3,6 +3,7 @@ import { heardFamilyZone } from './family-zone-store.js';
 import { heardLocked } from './session-lock.js';
 import {
   activityCsvCapped,
+  BACKGROUND_HEADER,
   REFRESH_COOKIE_HEADER,
   REFRESH_COOKIE_MODE,
   type ActivityExportAsk,
@@ -65,25 +66,41 @@ export type {
   VaultRow,
 } from '@fdv/shared';
 
-const client = createApi(
-  createHttp({
-    // Same origin: nginx serves the app and proxies /api. The global fetch
-    // is looked up on every call, so a test can stand in for it.
-    baseUrl: '',
-    // Any answer `423 session_locked` (0.9.0-dev.86), whichever screen
-    // asked, shows the lock screen (session-lock.ts): only a locked session
-    // is ever answered 423.
-    fetch: async (url, init) => {
-      const res = await globalThis.fetch(url, init as RequestInit);
-      if (res.status === 423) heardLocked();
-      return res;
-    },
-    // The refresh token in an HttpOnly cookie, never where script on the
-    // page can read it (0.9.0): asked for on every request, so every
-    // sign-in, refresh and invitation accepted gives it so.
-    headers: () => ({ [REFRESH_COOKIE_HEADER]: REFRESH_COOKIE_MODE }),
-  }),
-);
+/** The web's client, and (`background`) one whose every request says the page made it by itself. */
+const clientFor = (background: boolean) =>
+  createApi(
+    createHttp({
+      // Same origin: nginx serves the app and proxies /api. The global fetch
+      // is looked up on every call, so a test can stand in for it.
+      baseUrl: '',
+      // Any answer `423 session_locked` (0.9.0-dev.86), whichever screen
+      // asked, shows the lock screen (session-lock.ts): only a locked session
+      // is ever answered 423.
+      fetch: async (url, init) => {
+        const res = await globalThis.fetch(url, init as RequestInit);
+        if (res.status === 423) heardLocked();
+        return res;
+      },
+      // The refresh token in an HttpOnly cookie, never where script on the
+      // page can read it (0.9.0): asked for on every request, so every
+      // sign-in, refresh and invitation accepted gives it so. And a request
+      // the page makes by itself — a count, a check on a timer — says so
+      // (0.9.0-dev.87): the vault does not count it as somebody using it.
+      headers: () => ({
+        [REFRESH_COOKIE_HEADER]: REFRESH_COOKIE_MODE,
+        ...(background ? { [BACKGROUND_HEADER]: '1' } : {}),
+      }),
+    }),
+  );
+
+const client = clientFor(false);
+
+/**
+ * The same calls, made by the page by itself (0.9.0-dev.87): counts it keeps
+ * up to date, checks on a timer, who is signed in. Never for anything
+ * somebody did — that is what keeps the vault unlocked while they use it.
+ */
+export const quiet = clientFor(true);
 
 function fileForm(file: File): UploadBody {
   const form = new FormData();

@@ -11,7 +11,7 @@ import {
 } from '@fdv/shared';
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { Link } from 'react-router';
-import { api } from './api.js';
+import { api, quiet } from './api.js';
 import { describeError, useApp, useLoad } from './app-context.js';
 import { Button, Check, ConfirmDialog, ErrorNote, Field, LoadFailed } from './ui.js';
 import { dayWordsOf, familyZoneNow, shortWhenWords } from './family-time.js';
@@ -73,7 +73,8 @@ function stateWords(c: ReadingCheckView): string {
 
 export function ReadingCheckPart() {
   const { authVersion, guarded } = useApp();
-  const { data, error, reload } = useLoad((t) => api.readingChecks(t), [authVersion]);
+  // Asked again on a timer while one runs: never somebody using the vault.
+  const { data, error, reload } = useLoad((t) => quiet.readingChecks(t), [authVersion]);
   const kinds = useLoad((t) => api.documentTypes(t, { all: true }), [authVersion]);
   const [n, setN] = useState(String(READING_CHECK_N.default));
   const [edited, setEdited] = useState(true);

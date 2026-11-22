@@ -192,7 +192,10 @@ function OneDocumentView(props: DocumentViewProps) {
   const justFiled = props.host === 'page' && props.justFiled === true;
   const { withToken, guarded, authVersion, session, caps } = useApp();
   const navigate = useNavigate();
-  const { data, error, reload, setData } = useLoad(
+  // A note that asks to confirm it's you (0.9.0-dev.87), opened from a
+  // search hit, is answered `step_up_required` here — no document's own read
+  // asks — and goes to Notes, which asks, with its title and date.
+  const { data, error, errorCode, reload, setData } = useLoad(
     async (t) => {
       const [doc, versions, members, types, profile] = await Promise.all([
         api.document(t, id),
@@ -212,6 +215,7 @@ function OneDocumentView(props: DocumentViewProps) {
     },
     [id, authVersion],
   );
+  const asksFirst = errorCode === 'step_up_required';
   const [actionError, setActionError] = useState<string | null>(null);
   // The action row's counts, as its sections say them; and which is busy.
   const [counts, setCounts] = useState<{ collections?: number; links?: number }>({});
@@ -396,7 +400,7 @@ function OneDocumentView(props: DocumentViewProps) {
 
   // A note kept on its own (0.9.0, N1) is read and written on Notes. Beside
   // the list (where a note's row never opens it) its host is told, once.
-  const noteId = data?.doc.type_key === NOTE_KIND ? data.doc.id : null;
+  const noteId = data?.doc.type_key === NOTE_KIND || asksFirst ? id : null;
   useEffect(() => {
     if (!onPage && noteId !== null) closed.current?.({ reason: 'note', noteId });
   }, [onPage, noteId]);
@@ -415,6 +419,7 @@ function OneDocumentView(props: DocumentViewProps) {
     });
   }, [loadedTitle, loadedInTrash, loadedStamp]);
 
+  if (asksFirst) return onPage ? <Navigate to={`/notes/${id}`} replace /> : null;
   if (error) {
     return onPage ? (
       <main className="page page-top has-nav">

@@ -41,6 +41,7 @@ import { Link, useLocation, useNavigate, useParams } from 'react-router';
 import {
   api,
   ApiRequestError,
+  quiet,
   type CreatedInvitation,
   type Invitation,
   type Member,
@@ -1671,7 +1672,10 @@ function PhotoControls(props: {
         return;
       }
       try {
-        const now = (await withToken((t) => api.members(t)))?.items.find((m) => m.id === member.id);
+        // On a timer: never somebody using the vault.
+        const now = (await withToken((t) => quiet.members(t)))?.items.find(
+          (m) => m.id === member.id,
+        );
         if (!live) return;
         if (now?.photo_status === 'failed') {
           setSaid('We couldn’t use that photo. Try another one.');

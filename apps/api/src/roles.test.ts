@@ -218,6 +218,18 @@ describe.skipIf(!testAdminUrl())('the role matrix, endpoint by endpoint', () => 
         }),
     },
     {
+      // When the vault locks itself for the family (0.9.0-dev.87): an owner's alone.
+      capability: 'household.auto_lock',
+      what: 'change when the vault locks itself for the family',
+      call: (t) =>
+        h.app.inject({
+          method: 'PUT',
+          url: '/api/v1/household/auto-lock',
+          headers: h.as(t),
+          payload: { minutes: 15 },
+        }),
+    },
+    {
       capability: 'member.add',
       what: 'add a person',
       call: (t) =>

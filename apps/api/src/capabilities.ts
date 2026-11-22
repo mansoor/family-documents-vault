@@ -297,6 +297,8 @@ export function buildCapabilities(config: CapabilityConfig): Capabilities {
       activity_export: true,
       // 0.9.0-dev.86: Lock — a session locked by POST /auth/lock, kept by the vault.
       session_lock: true,
+      // 0.9.0-dev.87: a browser's session locks by itself after a while away.
+      auto_lock: true,
       // 0.9.0 (AIR1): the AI reader set in Settings → Reading, unless the
       // operator keeps it out (FDV_AI_READER_SETTINGS=off); and the kinds
       // of reader this vault reads with — Ollama, Anthropic and an

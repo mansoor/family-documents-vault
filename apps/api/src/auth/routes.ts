@@ -1,5 +1,5 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
-import { REFRESH_COOKIE_HEADER, REFRESH_COOKIE_MODE } from '@fdv/shared';
+import { BACKGROUND_HEADER, REFRESH_COOKIE_HEADER, REFRESH_COOKIE_MODE } from '@fdv/shared';
 import { z } from 'zod';
 import { ApiError } from '../errors.js';
 import { clientAddressOf } from '../client-address.js';
@@ -247,7 +247,14 @@ export function metaOf(req: FastifyRequest): RequestMeta {
     userAgent: agent ? agent.slice(0, 512) : null,
     installationId,
     deviceProof: typeof proof === 'string' && proof.length <= 200 ? proof : null,
+    // The vault's own page (0.9.0-dev.87): what it signs in is a browser's session.
+    browser: wantsRefreshCookie(req) && installationId === null,
   };
+}
+
+/** Whether the page asked by itself, not because somebody did something (0.9.0-dev.87). */
+export function inBackground(req: FastifyRequest): boolean {
+  return req.headers[BACKGROUND_HEADER] === '1';
 }
 
 /**
@@ -280,6 +287,10 @@ export function registerAuth(
       enrolling: TWO_STEP_SETUP_ROUTES.has(route),
       // A locked session (0.9.0-dev.86) is let through to these alone.
       whileLocked: SESSION_LOCK_ROUTES.has(route),
+      // Asked by the page by itself (0.9.0-dev.87): not use. The lock
+      // screen's own look at who is signed in is not use either.
+      background: inBackground(req) || route === 'GET /api/v1/me',
+      ip: clientAddressOf(req),
     });
   });
 
@@ -456,15 +467,29 @@ export function registerAuth(
       access_expires_at: p.accessExpiresAt?.toISOString() ?? null,
       // 0.9.0-dev.86: this session is locked; POST /auth/unlock unlocks it.
       locked,
+      // 0.9.0-dev.87: after how many minutes with nobody using it this
+      // session locks by itself — a browser's; null for a phone's, and Off.
+      auto_lock_minutes: p.autoLockMinutes ?? null,
     };
   });
 
   // Lock (0.9.0-dev.86): this session locked, as the vault keeps it, until a
-  // credential is given again. Locked already, it stays so.
+  // credential is given again. Locked already, it stays so. `away: true`
+  // (0.9.0-dev.87): the page locked itself as its time ran out, and the line
+  // says so.
   app.post('/api/v1/auth/lock', { preHandler: app.requireAuth }, async (req, reply) => {
-    await auth.lockSession(req.principal as Principal, metaOf(req));
+    const body = parse(z.object({ away: z.boolean().optional() }).strict(), req.body ?? {});
+    await auth.lockSession(req.principal as Principal, metaOf(req), { away: body.away === true });
     return reply.status(204).send();
   });
+
+  // Somebody is still here (0.9.0-dev.87): a browser says so while its page
+  // is used — the mouse, the keys, scrolling — at most about once a minute,
+  // so reading a long document is use. Nothing else is done: being asked is
+  // use, as any request not marked as the page's own is (`authenticate`).
+  app.post('/api/v1/auth/still-here', { preHandler: app.requireAuth }, async (_req, reply) =>
+    reply.status(204).send(),
+  );
 
   // They have seen it (5.29). Nothing to see answers the same.
   app.delete('/api/v1/me/reset-notice', { preHandler: app.requireAuth }, async (req, reply) => {

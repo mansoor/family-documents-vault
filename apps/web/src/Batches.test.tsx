@@ -596,6 +596,16 @@ describe('a batch’s page (I1)', () => {
     await expectAccessible();
   });
 
+  it("a batch's page, asked again on a timer, says the page asked by itself: never use (0.9.0-dev.87)", async () => {
+    const state = at('/inbox/batches/batch-1', { batches: [OLD_PAPERS()] });
+    await screen.findByRole('link', { name: 'Accept scan-001.pdf' });
+    const asked = state.calls.filter(
+      (c) => c.method === 'GET' && c.url === '/api/v1/batches/batch-1',
+    );
+    expect(asked.length).toBeGreaterThan(0);
+    for (const c of asked) expect(c.headers?.['x-fdv-background']).toBe('1');
+  });
+
   it('Accept opens the card filled from what the batch chose, and only that; it files it, and the next file opens, saying what happened', async () => {
     const state = at('/inbox/batches/batch-1', { batches: [OLD_PAPERS()] });
     fireEvent.click(await screen.findByRole('link', { name: 'Accept scan-001.pdf' }));

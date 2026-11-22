@@ -85,6 +85,8 @@ import type {
   FamilyTimeZone,
   EndedSharing,
   EndedSharingDays,
+  AutoLock,
+  AutoLockMinutes,
   IncomingAccepted,
   IncomingAcceptInput,
   IncomingFileView,
@@ -403,9 +405,22 @@ export function createApi(http: Http) {
      * the vault keeps it, until `unlock`. Every call but `me`, `stepUpState`,
      * `stepUpTextCode`, `unlock`, `lock` and `logout` then answers `423
      * session_locked` (`isSessionLocked`). Locked already: the same `204`.
+     * `away` (0.9.0-dev.87, `features.auto_lock`): the page locked itself as
+     * its time with nobody using it ran out, and the activity log says so.
      */
-    lock: (token: string) =>
-      request<void>('/api/v1/auth/lock', { method: 'POST', body: {}, token }),
+    lock: (token: string, opts: { away?: boolean } = {}) =>
+      request<void>('/api/v1/auth/lock', {
+        method: 'POST',
+        body: opts.away ? { away: true } : {},
+        token,
+      }),
+    /**
+     * Somebody is still here (0.9.0-dev.87, `features.auto_lock`): a browser
+     * says so while its page is used, at most about once a minute, so its
+     * session does not lock by itself while somebody reads. `204`.
+     */
+    stillHere: (token: string) =>
+      request<void>('/api/v1/auth/still-here', { method: 'POST', body: {}, token }),
     /**
      * Unlocks this session (0.9.0-dev.86) with a credential given again, as
      * `stepUp` takes one — and refuses one as it does (`401
@@ -579,6 +594,33 @@ export function createApi(http: Http) {
         body: { remove_after_days: days },
         token,
       }),
+    /**
+     * When the vault locks itself in a browser left unused (0.9.0-dev.87,
+     * `features.auto_lock`): the household's time (null, Off), the reader's
+     * own (null, as the household says), what is in effect for them, and
+     * whether they may change the household's. Every role reads it.
+     */
+    autoLock: (token: string) => request<AutoLock>('/api/v1/household/auto-lock', { token }),
+    /**
+     * An owner chooses the household's: 5, 10, 15, 30 or 60 minutes, or Off
+     * (null). `403` to anybody else; `422` for any other number. Longer than
+     * it was, or Off, asks to confirm it's you first (`step_up_required`,
+     * `change_auto_lock`).
+     */
+    setHouseholdAutoLock: (token: string, minutes: AutoLockMinutes | null) =>
+      request<AutoLock>('/api/v1/household/auto-lock', {
+        method: 'PUT',
+        body: { minutes },
+        token,
+      }),
+    /**
+     * Anybody's own: a time no longer than the household's (`422
+     * validation_failed`, `detail: 'minutes'`), or null for the household's.
+     * Longer in effect than before asks to confirm it's you first
+     * (`change_auto_lock`).
+     */
+    setMyAutoLock: (token: string, minutes: AutoLockMinutes | null) =>
+      request<AutoLock>('/api/v1/me/auto-lock', { method: 'PUT', body: { minutes }, token }),
     /**
      * Whether every adult must have two-step sign-in (0.9.0): on for every
      * household made since, off for those before. Owners always must. Every

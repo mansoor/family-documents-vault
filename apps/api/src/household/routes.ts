@@ -1,5 +1,6 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
+import type { Db } from '@fdv/db';
 import { metaOf, parse } from '../auth/routes.js';
 import { ApiError, notFound } from '../errors.js';
 import type { Principal } from '../auth/service.js';
@@ -434,6 +435,32 @@ export function registerHousehold(
       req.body ?? {},
     );
     return household.setEndedSharing(principal(req), body.remove_after_days, metaOf(req));
+  });
+
+  // Lock by itself after a while away (0.9.0-dev.87): read by every role;
+  // the household's time chosen by an owner — 5, 10, 15, 30 or 60 minutes, or
+  // Off (null) — and each person's own, shorter, by themselves. Longer than
+  // before, or Off, asks them to confirm it's them first (`change_auto_lock`).
+  const autoLockBody = z
+    .object({
+      minutes: z
+        .union([z.literal(5), z.literal(10), z.literal(15), z.literal(30), z.literal(60)])
+        .nullable(),
+    })
+    .strict();
+  const confirmLonger = (p: Principal) => async (trx: Db) => {
+    if (stepUp) await stepUp.require(p, 'change_auto_lock', trx);
+  };
+  app.get('/api/v1/household/auto-lock', auth, async (req) => household.autoLock(principal(req)));
+  app.put('/api/v1/household/auto-lock', guard('household.auto_lock'), async (req) => {
+    const p = principal(req);
+    const body = parse(autoLockBody, req.body ?? {});
+    return household.setAutoLock(p, body.minutes, metaOf(req), confirmLonger(p));
+  });
+  app.put('/api/v1/me/auto-lock', auth, async (req) => {
+    const p = principal(req);
+    const body = parse(autoLockBody, req.body ?? {});
+    return household.setMyAutoLock(p, body.minutes, metaOf(req), confirmLonger(p));
   });
 
   // Two-step sign-in for adults (0.9.0): read by everybody signed in; an

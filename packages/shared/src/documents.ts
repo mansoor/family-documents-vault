@@ -5,6 +5,7 @@
  */
 
 import type { OriginalPlace } from './original-place.js';
+import { NOTE_KIND } from './notes.js';
 
 export type DatePrecision = 'day' | 'month' | 'year';
 export type Visibility = 'household' | 'adults' | 'private';
@@ -116,6 +117,16 @@ export interface DocumentView {
    * (`noteFirstWords`). Absent for anything else, and from older vaults.
    */
   note_name?: string;
+  /**
+   * A note whose words are behind "Confirm it's you" (0.9.0-dev.87): an Only
+   * me note (`open_private_document`) or an Essential one (`open_essential`),
+   * given here with `notes` null — in a list always, and in any other answer
+   * unless this session confirmed it's them within the last five minutes.
+   * GET /documents/{id} of such a note answers `403 step_up_required` with
+   * that action first. Absent where its words are given, and from older
+   * vaults.
+   */
+  confirm_to_read?: NoteConfirm;
   /**
    * When its note's words last changed — written, changed or taken away
    * (5.35, A30). Only the words move it: an edit to anything else, or the
@@ -558,6 +569,27 @@ export interface SensitiveStillShared {
   code: 'sensitive_still_shared';
   links?: number;
   documents?: number;
+}
+
+/**
+ * What reading a note's words asks first (0.9.0-dev.87), as opening a
+ * document's file does: an Only me note's `open_private_document`, an
+ * Essential one's `open_essential`. Sensitive alone asks nothing.
+ */
+export type NoteConfirm = 'open_private_document' | 'open_essential';
+
+/**
+ * Which confirmation a note asks before its words are read or saved, or
+ * null: only a note (`type_key` NOTE_KIND), only Only me or Essential.
+ */
+export function noteConfirm(d: {
+  type_key: string | null;
+  visibility: string;
+  is_essential: boolean;
+}): NoteConfirm | null {
+  if (d.type_key !== NOTE_KIND) return null;
+  if (d.visibility === 'private') return 'open_private_document';
+  return d.is_essential ? 'open_essential' : null;
 }
 
 /** Sensitive, in words every client uses (0.9.0, AIR2). */

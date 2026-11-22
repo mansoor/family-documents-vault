@@ -52,9 +52,28 @@ export interface OfflineItem {
   private: boolean;
 }
 
+/**
+ * An Essential note a phone may keep (0.9.0-dev.87): a note has no file and
+ * no version, so it comes with its words, by the same rule as an Essential
+ * document (`mayKeepOffline`) — an Only me one only when the grant includes
+ * them, and marked so, for the phone's separate store.
+ */
+export interface OfflineNote {
+  /** The note, its words (`notes`) given: the grant is what confirmed it's them. */
+  document: DocumentView;
+  /** An Only me note (kept in the phone's separate store). */
+  private: boolean;
+}
+
 /** GET /api/v1/offline/essentials. */
 export interface OfflineSet {
   items: OfflineItem[];
+  /**
+   * The Essential notes it may keep, words and all (0.9.0-dev.87): a
+   * complete set, as `items` is — a note missing from it is to be removed.
+   * Absent from older vaults.
+   */
+  notes?: OfflineNote[];
   grant: OfflineGrant | null;
   /** How many days a phone may show its copies without reaching the vault. */
   max_offline_days: number;

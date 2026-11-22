@@ -132,6 +132,7 @@ export type Capability =
    * or never removed.
    */
   | 'household.ended_sharing'
+  | 'household.auto_lock'
   /**
    * Lock somebody's sign-in, and unlock it (5.28, A51, A52): never one's
    * own, and never another owner's (A50). An owner power (A54): asked with a
@@ -328,6 +329,13 @@ const MATRIX: Record<Capability, Rule> = {
     // (0.9.0, RQ). The database holds it too (0106).
     roles: ['owner'],
     refusal: 'Only an owner can change how long ended links and requests are kept.',
+  },
+  'household.auto_lock': {
+    // When the vault locks itself in a browser left unused (0.9.0-dev.87),
+    // for the family. The database holds it too (0128). Each person may
+    // choose a shorter time for themselves.
+    roles: ['owner'],
+    refusal: 'Only an owner can change when the vault locks itself for the family.',
   },
   'member.suspend': {
     // Only owners lock (A52), and one owner cannot lock out another (A50):

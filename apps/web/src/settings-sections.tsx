@@ -228,6 +228,9 @@ export function settingsGroups(
           wordingCard(role, caps) ? 'Neutral wording in notifications' : null,
           readsOnlyMeRule(role) ? 'Only me documents outside the family' : null,
           endedSharingCard(role, caps) ? 'links that no longer work' : null,
+          role === 'owner' && caps?.features.auto_lock === true
+            ? 'locking after a while away'
+            : null,
           privacy.length > 0 ? 'who sees identity details' : null,
         ]
           .filter(Boolean)

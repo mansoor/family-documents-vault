@@ -346,6 +346,20 @@ export interface FakeState {
   sessionLock?: boolean;
   locked?: boolean;
   unlocks?: unknown[];
+  /**
+   * Lock by itself after a while away (0.9.0-dev.87): `features.auto_lock`
+   * and GET /me's `auto_lock_minutes`, said when a test gives a time (null,
+   * Off); the household's time and one's own for Settings; each POST
+   * /auth/lock's body as sent, in `lockBodies`; each POST /auth/still-here
+   * counted in `stillHere`; and each request's background header, in `calls`.
+   */
+  autoLockMinutes?: number | null;
+  /** A note's changes answered without its words where it asks (0.9.0-dev.87), as a restore's is. */
+  withholdNoteWords?: boolean;
+  autoLockHousehold?: number | null;
+  autoLockMine?: number | null;
+  lockBodies?: unknown[];
+  stillHere?: number;
   /** Why (0.9.0): `confirm` when a passkey or a code is set up and this sign-in has not given it. */
   twoStepReason?: 'enrol' | 'confirm';
   /** A password sign-in answers that the second step is the owner's passkey (0.9.0). */
@@ -1562,7 +1576,32 @@ export function installFakeApi(state: FakeState) {
     // screen's answers 423 while it is locked.
     if (path === '/api/v1/auth/lock' && method === 'POST') {
       state.locked = true;
+      (state.lockBodies ??= []).push(body ?? null);
       return Promise.resolve(new Response(null, { status: 204 }));
+    }
+    if (path === '/api/v1/auth/still-here' && method === 'POST' && !state.locked) {
+      state.stillHere = (state.stillHere ?? 0) + 1;
+      return Promise.resolve(new Response(null, { status: 204 }));
+    }
+    // When the vault locks itself (0.9.0-dev.87), as Settings reads and changes it.
+    if (path === '/api/v1/household/auto-lock' || path === '/api/v1/me/auto-lock') {
+      const view = () => {
+        const household = state.autoLockHousehold === undefined ? 15 : state.autoLockHousehold;
+        const mine = state.autoLockMine ?? null;
+        return {
+          household,
+          mine,
+          in_effect:
+            household === null ? mine : mine === null ? household : Math.min(mine, household),
+          can_change: storedRole() === 'owner',
+        };
+      };
+      if (method === 'PUT') {
+        const to = (body as { minutes: number | null }).minutes;
+        if (path === '/api/v1/household/auto-lock') state.autoLockHousehold = to;
+        else state.autoLockMine = to;
+      }
+      return json(view());
     }
     if (path === '/api/v1/auth/unlock' && method === 'POST') {
       const b = (body ?? {}) as { password?: string; code?: string };
@@ -1689,6 +1728,7 @@ export function installFakeApi(state: FakeState) {
           ...(state.activityCsv !== undefined ? { activity_export: true } : {}),
           // Lock (0.9.0-dev.86): said when a test gives it.
           ...(state.sessionLock ? { session_lock: true } : {}),
+          ...(state.autoLockMinutes !== undefined ? { auto_lock: true } : {}),
           // Who opened a link; health records kept as they are (0.9.0, H5).
           ...(state.linkOpenings ? { share_opens: true, record_formats: true } : {}),
           // Caregivers and turning 18 (0.9.0, H1b): said when a test asks.
@@ -1898,6 +1938,9 @@ export function installFakeApi(state: FakeState) {
         kind: state.myKind ?? 'family',
         access_expires_at: state.myAccessEnd ?? null,
         locked: state.locked === true,
+        ...(state.autoLockMinutes !== undefined
+          ? { auto_lock_minutes: state.autoLockMinutes }
+          : {}),
       });
     if (path === '/api/v1/me/reset-notice' && method === 'DELETE') {
       state.resetNotice = null;
@@ -6467,11 +6510,12 @@ export function installFakeApi(state: FakeState) {
       const items = state.documents
         .filter((d) => d.type_key === NOTE_KIND && Boolean(d.deleted_at) === inTrash)
         .filter((d) => d.visibility !== 'private' || d.owner_member_id === me)
+        // An Only me or an Essential note (0.9.0-dev.87): never by its words.
         .filter(
           (d) =>
             !q ||
             noteMatchWords(d.title as string | null).includes(q) ||
-            noteMatchWords(d.notes as string | null).includes(q),
+            (!askedToOpen(d) && noteMatchWords(d.notes as string | null).includes(q)),
         )
         .sort((a, b) =>
           ((b.updated_at as string | undefined) ?? '').localeCompare(
@@ -6481,8 +6525,13 @@ export function installFakeApi(state: FakeState) {
         .map((d) => ({
           id: d.id,
           title: d.title ?? null,
-          preview: notePreview(d.notes as string | null),
+          // Its title and date alone (0.9.0-dev.87).
+          preview: askedToOpen(d) ? '' : notePreview(d.notes as string | null),
           visibility: d.visibility ?? 'household',
+          is_essential: d.is_essential === true,
+          sensitive: d.sensitive ?? null,
+          sensitive_effective: d.sensitive_effective === true,
+          confirm_to_read: askedToOpen(d),
           owner_member_id: d.owner_member_id ?? null,
           tags: d.tags ?? [],
           updated_at: d.updated_at ?? '2026-09-26T10:05:00Z',
@@ -6513,7 +6562,10 @@ export function installFakeApi(state: FakeState) {
         expires: null,
         issued_by: null,
         physical_location: null,
-        is_essential: false,
+        // Essential and Sensitive from the start (0.9.0-dev.87).
+        is_essential: sent.is_essential === true,
+        sensitive: sent.sensitive ?? null,
+        sensitive_effective: sent.sensitive === true,
         latest_version_id: null,
         versions: 0,
         status: { value: 'none', label: 'No expiry' },
@@ -7148,6 +7200,12 @@ export function installFakeApi(state: FakeState) {
         };
         return state.holdDelete ? state.holdDelete.then(answer) : Promise.resolve(answer());
       }
+      // An Only me or an Essential note (0.9.0-dev.87): its words read, and
+      // any change to it saved, only once it is confirmed to be them.
+      const noteAsk = doc.type_key === NOTE_KIND ? askedToOpen(doc) : null;
+      if (state.stepUpNeeded && noteAsk && (method === 'GET' || method === 'PATCH')) {
+        return stepUp(noteAsk);
+      }
       if (method === 'PATCH') {
         // As the vault: taking a check away asks for it first (5.4), and a
         // write made from an older copy is refused, with the document as it
@@ -7260,6 +7318,12 @@ export function installFakeApi(state: FakeState) {
         if (!wasSensitive && (edit as { sensitive?: unknown }).sensitive === true && links > 0) {
           doc.sensitive_effective = true;
           return json({ ...doc, warnings: [{ code: 'sensitive_still_shared', links }] });
+        }
+        // An answer that withholds a note's words (0.9.0-dev.87), as a vault's
+        // other answers may, where a test says so.
+        const withheld = doc.type_key === NOTE_KIND ? askedToOpen(doc) : null;
+        if (state.withholdNoteWords && withheld) {
+          return json({ ...doc, notes: null, confirm_to_read: withheld });
         }
         return json(doc);
       }

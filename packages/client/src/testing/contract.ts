@@ -3845,6 +3845,99 @@ export const contractScenarios: Scenario[] = [
     },
   },
   {
+    name: 'the vault locks itself after a while away: 15 minutes for the family unless an owner chose otherwise, anybody a shorter time of their own, never longer (0.9.0-dev.87)',
+    run: async (api, ctx) => {
+      expect((await api.capabilities()).features.auto_lock).toBe(true);
+      // A fresh sign-in: a longer time asks to confirm it's you, as it was given.
+      const { access_token: token } = await signIn(api, ctx);
+      expect(await api.autoLock(token)).toEqual({
+        household: 15,
+        mine: null,
+        in_effect: 15,
+        can_change: true,
+      });
+      // Not a browser's session: never locked by itself, nor told a time.
+      expect((await api.me(token)).auto_lock_minutes ?? null).toBeNull();
+      expect(await api.setMyAutoLock(token, 5)).toMatchObject({ mine: 5, in_effect: 5 });
+      const longer = await refusal(api.setMyAutoLock(token, 30));
+      expect([longer.status, longer.code, longer.detail]).toEqual([
+        422,
+        'validation_failed',
+        'minutes',
+      ]);
+      expect(await api.setHouseholdAutoLock(token, 10)).toMatchObject({
+        household: 10,
+        mine: 5,
+        in_effect: 5,
+      });
+      expect(await api.setMyAutoLock(token, null)).toMatchObject({ mine: null, in_effect: 10 });
+      // Off for the family: anybody may still choose a time for themselves.
+      expect(await api.setHouseholdAutoLock(token, null)).toMatchObject({
+        household: null,
+        in_effect: null,
+      });
+      expect((await api.setMyAutoLock(token, 60)).in_effect).toBe(60);
+      await api.setMyAutoLock(token, null);
+      const odd = await refusal(api.setHouseholdAutoLock(token, 20 as never));
+      expect([odd.status, odd.code]).toEqual([422, 'validation_failed']);
+      expect((await api.setHouseholdAutoLock(token, 15)).household).toBe(15);
+      // Somebody still here: a browser's word, nothing more.
+      await api.stillHere(token);
+      await api.logout(token);
+    },
+  },
+  {
+    name: 'an Only me or an Essential note is listed by its title and date alone, never found by its words, and read with them once it is confirmed to be you (0.9.0-dev.87)',
+    run: async (api, ctx) => {
+      // A fresh sign-in has confirmed it's them for the next five minutes.
+      const { access_token: token } = await signIn(api, ctx);
+      const me = await api.me(token);
+      const essential = await api.createDocument(token, {
+        type_key: 'note',
+        title: 'Contract safe',
+        owner_member_id: me.member_id,
+        visibility: 'household',
+        is_essential: true,
+        notes: 'The code is behind the clock',
+      });
+      const mine = await api.createDocument(token, {
+        type_key: 'note',
+        title: 'Contract diary',
+        owner_member_id: me.member_id,
+        visibility: 'private',
+        notes: 'Pelican crossing at noon',
+      });
+      const listed = (await api.notes(token)).items;
+      expect(listed.find((n) => n.id === essential.id)).toMatchObject({
+        title: 'Contract safe',
+        preview: '',
+        is_essential: true,
+        confirm_to_read: 'open_essential',
+      });
+      expect(listed.find((n) => n.id === mine.id)).toMatchObject({
+        preview: '',
+        confirm_to_read: 'open_private_document',
+      });
+      expect((await api.notes(token, { q: 'behind the clock' })).items).toEqual([]);
+      expect((await api.notes(token, { q: 'pelican' })).items).toEqual([]);
+      // By its title, as ever.
+      expect((await api.notes(token, { q: 'contract safe' })).items.map((n) => n.id)).toEqual([
+        essential.id,
+      ]);
+      // Read and saved with its words, as this session confirmed it's them.
+      const read = await api.document(token, essential.id);
+      expect(read.notes).toBe('The code is behind the clock');
+      expect(read.confirm_to_read).toBeUndefined();
+      const saved = await api.updateDocument(token, mine.id, { notes: 'Pelican at one' });
+      expect(saved.notes).toBe('Pelican at one');
+      // A phone keeps them with a grant; with none, nothing.
+      expect((await api.offlineEssentials(token)).notes ?? []).toEqual([]);
+      await api.deleteDocument(token, essential.id);
+      await api.deleteDocument(token, mine.id);
+      await api.logout(token);
+    },
+  },
+  {
     name: 'a document no longer needed: kept and listed, said so, reminded of nothing, replaced by one the reader sees, and needed again (0.9.0)',
     run: async (api, ctx) => {
       const token = (ctx.tokens as Tokens).access_token;

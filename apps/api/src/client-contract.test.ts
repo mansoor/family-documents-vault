@@ -613,9 +613,11 @@ describe.skipIf(!testAdminUrl())('a note, newer than the client (N1)', () => {
     expect((await api.documentTypes(token)).items.find((t) => t.key === 'note')).toMatchObject({
       label: 'Note',
     });
-    // Found by its words.
-    const hits = await api.search(token, 'quokkanote');
+    // Found by its title. An Essential note is never found by its words
+    // (0.9.0-dev.87): they are read only once it is confirmed to be you.
+    const hits = await api.search(token, 'stopcock');
     expect(hits.items.map((i) => i.document_id)).toContain(id);
+    expect((await api.search(token, 'quokkanote')).items).toEqual([]);
     // Its words changed, as any document's note.
     const changed = await api.updateDocument(token, id, { notes: 'In the garage' }, read.etag);
     expect(changed.notes).toBe('In the garage');

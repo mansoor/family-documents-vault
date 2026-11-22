@@ -561,6 +561,8 @@ const RULES: Record<string, Rule> = {
   // on the session, and is tried by the step-up's own rule above).
   'POST /api/v1/auth/lock': { who: 'signedIn', body: () => ({}), last: true },
   'POST /api/v1/auth/unlock': { who: 'signedIn', bodies: () => [{ passkey: {} }, {}] },
+  // Somebody still here (0.9.0-dev.87): one's own session alone.
+  'POST /api/v1/auth/still-here': { who: 'signedIn', body: () => ({}) },
   // Whether a reset and a sign-in ask for a code by text (SMS3): one's own.
   'GET /api/v1/auth/text-codes': { who: 'signedIn' },
   'PUT /api/v1/auth/text-codes': { who: 'signedIn', body: () => ({ sign_in: false }) },
@@ -1162,6 +1164,13 @@ const RULES: Record<string, Rule> = {
     who: 'owners',
     body: () => ({ remove_after_days: 365 }),
   },
+  // 0.9.0-dev.87: when the vault locks itself in a browser — read by
+  // everybody signed in; the family's an owner's to change (the database
+  // holds it too, 0128), and each person's own theirs. The sweep sends a
+  // shorter time, which asks nothing.
+  'GET /api/v1/household/auto-lock': { who: 'signedIn' },
+  'PUT /api/v1/household/auto-lock': { who: 'owners', body: () => ({ minutes: 5 }) },
+  'PUT /api/v1/me/auto-lock': { who: 'signedIn', body: () => ({ minutes: 5 }) },
   // 0.9.0: whether every adult must have two-step sign-in — read by
   // everybody signed in, an owner power to change (A54).
   'GET /api/v1/household/two-step': { who: 'signedIn' },

@@ -1,4 +1,4 @@
-import type { DocumentView } from '@fdv/shared';
+import { NOTE_KIND, type DocumentView } from '@fdv/shared';
 
 /**
  * Drafts of notes not yet saved (5.35, A32): kept so a reload, or a slip
@@ -45,7 +45,19 @@ export interface DraftOwner {
   member_id: string;
 }
 
-type Whose = Pick<DocumentView, 'id' | 'visibility'>;
+type Whose = Pick<DocumentView, 'id' | 'visibility'> &
+  Partial<Pick<DocumentView, 'type_key' | 'is_essential' | 'confirm_to_read'>>;
+
+/**
+ * Whether a draft may be kept of this document's note: only one everyone in
+ * the family sees, and never an Essential note's (0.9.0-dev.87), whose words
+ * ask to confirm it's you before they are shown. (An Essential document's
+ * note asks nothing.)
+ */
+export const keepsDrafts = (doc: Whose): boolean =>
+  doc.visibility === 'household' &&
+  !(doc.type_key === NOTE_KIND && doc.is_essential === true) &&
+  !doc.confirm_to_read;
 
 function storage(): Storage | null {
   try {
@@ -57,9 +69,9 @@ function storage(): Storage | null {
 
 const ownPrefix = (who: DraftOwner) => `${PREFIX}${who.household_id}.${who.member_id}.`;
 
-/** Keeps a draft, for a document everyone in the family sees; for any other, forgets it. */
+/** Keeps a draft, where one may be (`keepsDrafts`); for any other, forgets it. */
 export function keepDraft(doc: Whose, who: DraftOwner, draft: NoteDraft): void {
-  if (doc.visibility !== 'household') {
+  if (!keepsDrafts(doc)) {
     forgetDraft(doc.id, who);
     return;
   }
@@ -77,7 +89,7 @@ export function keepDraft(doc: Whose, who: DraftOwner, draft: NoteDraft): void {
  */
 export function draftOf(doc: Whose, who: DraftOwner): NoteDraft | null {
   forgetDrafts(who);
-  if (doc.visibility !== 'household') {
+  if (!keepsDrafts(doc)) {
     forgetDraft(doc.id, who);
     return null;
   }

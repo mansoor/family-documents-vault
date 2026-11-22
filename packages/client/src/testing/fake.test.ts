@@ -193,6 +193,51 @@ describe('the fake vault, for somebody who is not an owner', () => {
     expect(refused).toMatchObject({ status: 404, code: 'not_found' });
   });
 
+  it('an Only me or an Essential note asks to confirm it is you, as the real vault does (0.9.0-dev.87)', async () => {
+    const vault = createFakeVault();
+    const api = createApi(createHttp({ baseUrl: 'https://fake.example', fetch: vault.fetch }));
+    const { access_token: token } = await api.setup({
+      household_name: 'The Fake family',
+      display_name: 'Fake Owner',
+      email: 'owner@example.test',
+      password: 'a long enough password',
+    });
+    const refusal = (p: Promise<unknown>) => p.then(() => null).catch((e: unknown) => e);
+    const safe = await api.createDocument(token, {
+      type_key: 'note',
+      title: 'Safe',
+      is_essential: true,
+      notes: 'Behind the clock',
+    });
+    const plain = await api.createDocument(token, {
+      type_key: 'note',
+      title: 'Bins',
+      notes: 'Blue',
+    });
+    // Signed in just now: confirmed.
+    expect((await api.document(token, safe.id)).notes).toBe('Behind the clock');
+    // Five minutes on: asked, to read and to save; any other note is not.
+    vault.forgetConfirmation();
+    for (const asked of [
+      api.document(token, safe.id),
+      api.updateDocument(token, safe.id, { title: 'Safe at home' }),
+    ]) {
+      expect(await refusal(asked)).toMatchObject({
+        status: 403,
+        code: 'step_up_required',
+        action: 'open_essential',
+      });
+    }
+    expect((await api.document(token, plain.id)).notes).toBe('Blue');
+    expect(await refusal(api.stepUp(token, { password: 'not it' }))).toMatchObject({ status: 401 });
+    await api.stepUp(token, { password: 'a long enough password' });
+    expect((await api.document(token, safe.id)).notes).toBe('Behind the clock');
+    // Turned off, as the fake was before.
+    vault.forgetConfirmation();
+    vault.state.noteStepUps = false;
+    expect((await api.document(token, safe.id)).notes).toBe('Behind the clock');
+  });
+
   it("a note's stamp as the real vault keeps it (5.35): only a change of words moves it; a viewer is told when, not who, and changes no note; a teen only their own", async () => {
     const vault = createFakeVault();
     const api = createApi(createHttp({ baseUrl: 'https://fake.example', fetch: vault.fetch }));

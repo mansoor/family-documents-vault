@@ -27,6 +27,7 @@ import {
   type EndedSharingDays,
 } from './shares.js';
 import { NEUTRAL_WORDING_WORDS, NEUTRAL_WORDINGS, type NeutralWording } from './wording.js';
+import { autoLockSpan, isAutoLockMinutes } from './auto-lock.js';
 
 export interface ActivityEvent {
   id: number;
@@ -140,6 +141,7 @@ export function activityKind(action: string): ActivityKind {
     case 'household.neutral_wording_changed':
     case 'household.ended_sharing_changed':
     case 'household.two_step_changed':
+    case 'household.auto_lock_changed':
     case 'ai_reader.changed':
     case 'ai_reader.tested':
     case 'ai_reader.send_sensitive_changed':
@@ -1225,6 +1227,21 @@ export function eventWords(e: ActivityEvent): (ActivityLine & { named: boolean }
         true,
       );
     }
+    // When the vault locks itself in a browser left unused (0.9.0-dev.87),
+    // chosen by an owner for the family.
+    case 'household.auto_lock_changed': {
+      const was = isAutoLockMinutes(detail.was)
+        ? ` (it was ${autoLockSpan(detail.was)})`
+        : detail.was === null
+          ? ' (it was Off)'
+          : '';
+      return isAutoLockMinutes(detail.minutes)
+        ? line(
+            `${who} set the vault to lock itself in a browser after ${autoLockSpan(detail.minutes)} away${was}`,
+            true,
+          )
+        : line(`${who} turned off the vault locking itself in a browser after a while away`, true);
+    }
     // How long ended links and requests are kept (0.9.0, RQ), from which
     // choice to which.
     case 'household.ended_sharing_changed': {
@@ -1340,6 +1357,23 @@ export function eventWords(e: ActivityEvent): (ActivityLine & { named: boolean }
       return line(`${who} locked the vault in one browser`);
     case 'session.unlocked':
       return line(`${who} unlocked the vault in one browser`);
+    // 0.9.0-dev.87: a browser left unused for the time in effect, locked by
+    // the vault — the time, never which browser.
+    case 'session.locked_away': {
+      const minutes = detail.minutes;
+      return line(
+        isAutoLockMinutes(minutes)
+          ? `${who} was away for ${autoLockSpan(minutes)} or more, so the vault locked itself in one browser`
+          : `${who} was away for a while, so the vault locked itself in one browser`,
+      );
+    }
+    // Their own time for it, shorter than the family's, or the family's again.
+    case 'session.auto_lock_changed':
+      return isAutoLockMinutes(detail.minutes)
+        ? line(
+            `${who} chose to have the vault lock itself after ${autoLockSpan(detail.minutes)} away in their browsers`,
+          )
+        : line(`${who} chose the family’s time for the vault to lock itself in their browsers`);
     // 0.9.0: a failed try at signing in to somebody's account, or at
     // confirming it's them: which step, and whether signing in now waits —
     // never what was typed, nor the address. Whoever tried is not named:

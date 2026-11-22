@@ -234,7 +234,9 @@ export function TagSection(props: {
   /** The document as the vault answered the change. */
   onSaved: (doc: DocumentView) => void;
 }) {
-  const { withToken } = useApp();
+  // An Only me or an Essential note's change asks to confirm it's you, once
+  // in five minutes, as a save of its words does (0.9.0-dev.87).
+  const { guarded } = useApp();
   const { doc } = props;
   const [busy, setBusy] = useState(false);
   const [said, setSaid] = useState<string | null>(null);
@@ -269,7 +271,7 @@ export function TagSection(props: {
           return true;
         }
         try {
-          const saved = await withToken((t) =>
+          const saved = await guarded((t) =>
             api.updateDocument(t, doc.id, { tags: next.tags }, base.etag),
           );
           if (!saved) return false;

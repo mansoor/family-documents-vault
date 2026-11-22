@@ -83,6 +83,17 @@ test.beforeAll(async ({ browser, request }) => {
   // The page's own clock, to move on 15 minutes: it runs as ever until then.
   await page.clock.install();
   token = await signIn(page, request);
+  // The page's clock moves on 16 minutes below with nobody at the keys: the
+  // vault locking itself after a while away (0.9.0-dev.87) is turned Off for
+  // the family here — the sign-in has just confirmed it's them — and the
+  // page loaded again to hear it. Back to 15 after.
+  const off = await request.put('/api/v1/household/auto-lock', {
+    headers: { authorization: `Bearer ${token}` },
+    data: { minutes: null },
+  });
+  expect(off.ok()).toBe(true);
+  await page.reload();
+  await expect(page).toHaveURL(/\/$/);
   for (const title of TITLES) {
     const doc = await request.post('/api/v1/documents', {
       headers: { authorization: `Bearer ${token}` },
@@ -94,6 +105,10 @@ test.beforeAll(async ({ browser, request }) => {
 });
 
 test.afterAll(async ({ request }) => {
+  await request.put('/api/v1/household/auto-lock', {
+    headers: { authorization: `Bearer ${token}` },
+    data: { minutes: 15 },
+  });
   for (const id of made) {
     await request.delete(`/api/v1/documents/${id}`, {
       headers: { authorization: `Bearer ${token}` },

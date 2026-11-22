@@ -16,7 +16,8 @@ import {
   type RefObject,
 } from 'react';
 import { Link, Outlet, useLocation, useNavigate } from 'react-router';
-import { api, type Member } from './api.js';
+import { quiet, type Member } from './api.js';
+import { AutoLock } from './auto-lock.js';
 import { useApp, useLoad } from './app-context.js';
 import { progressOf, running, useUploads } from './batch-store.js';
 import { collectionsOffered } from './collections.js';
@@ -409,7 +410,7 @@ function Shell(props: { desk?: ReactNode }) {
   // to themselves, a guest included (5.34).
   const { data: me } = useLoad(
     async (t) => {
-      const people = (await api.members(t)).items;
+      const people = (await quiet.members(t)).items;
       return people.find((m) => m.is_me) ?? null;
     },
     [authVersion],
@@ -434,17 +435,17 @@ function Shell(props: { desk?: ReactNode }) {
     };
   }, []);
   const { data: sentWaiting } = useLoad(
-    async (t) => (mayReview ? (await api.incoming(t)).items.length : 0),
+    async (t) => (mayReview ? (await quiet.incoming(t)).items.length : 0),
     [authVersion, mayReview, pathname],
   );
   const { data: mineWaiting } = useLoad(
-    async (t) => (many ? (await api.batchCounts(t)).waiting : 0),
+    async (t) => (many ? (await quiet.batchCounts(t)).waiting : 0),
     [authVersion, many, upload.changed, lookedBack],
   );
   const waiting = sentWaiting === null || mineWaiting === null ? null : sentWaiting + mineWaiting;
   // A viewer's collections are only those given to them (5.33).
   const { data: given } = useLoad(
-    async (t) => (givenOnly ? (await api.collections(t)).items.length > 0 : false),
+    async (t) => (givenOnly ? (await quiet.collections(t)).items.length > 0 : false),
     [authVersion, givenOnly],
   );
 
@@ -642,6 +643,8 @@ function Shell(props: { desk?: ReactNode }) {
       <a className="skip-link" href="#main-content" onClick={skip}>
         Skip to main content
       </a>
+      {/* Lock by itself after a while away (0.9.0-dev.87): its timers, and its minute's warning. */}
+      <AutoLock />
       {phone ? (
         <header key="phone" className="phone-bar" inert={covered}>
           <button

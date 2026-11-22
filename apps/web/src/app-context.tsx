@@ -11,7 +11,7 @@ import {
   type ReactNode,
 } from 'react';
 import { StepUpCoordinator } from '@fdv/client';
-import { api, ApiRequestError, isSessionOver, NetworkError } from './api.js';
+import { api, ApiRequestError, isSessionOver, NetworkError, quiet } from './api.js';
 import { onFamilyZoneHeard, setCurrentFamilyZone } from './family-zone-store.js';
 
 /** The family's zone is asked again as the tab is come back to, at most this often. */
@@ -119,8 +119,12 @@ interface AppState {
    * this browser locked it.
    */
   locked: boolean;
-  /** Lock: the page let go of at once, and the vault asked to keep it locked. */
-  lock: () => Promise<void>;
+  /**
+   * Lock: the page let go of at once, and the vault asked to keep it locked.
+   * `away` (0.9.0-dev.87): it locked itself, its time with nobody using it
+   * up, and the vault's line says so.
+   */
+  lock: (opts?: { away?: boolean }) => Promise<void>;
   /** Unlocked by a credential given on the lock screen: the app comes back. */
   unlocked: () => void;
   /** The lock screen asked the vault whether it is locked (`Me.locked`). */
@@ -323,6 +327,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
   );
   // And in memory, for a browser whose storage is blocked.
   const pendingHere = useRef(false);
+  // Whether the lock asked for was the page's own, its time up (0.9.0-dev.87).
+  const awayHere = useRef(false);
   const pending = useCallback(
     () => pendingHere.current || lockPendingFor(session.info?.member_id),
     [session],
@@ -333,22 +339,28 @@ export function AppProvider({ children }: { children: ReactNode }) {
     try {
       const got = await session.token({ wait: false });
       if (got.kind !== 'ok') return;
-      await api.lock(got.token);
+      await api.lock(got.token, awayHere.current ? { away: true } : {});
       pendingHere.current = false;
+      awayHere.current = false;
       setLockPending(null);
     } catch {
       // Not reached: sent again when the browser is back online, or soon.
     }
   }, [session, pending]);
-  const lock = useCallback(async () => {
-    pendingHere.current = true;
-    setLockPending(session.info?.member_id ?? null);
-    lockedNow(true);
-    await sendLock();
-  }, [session, lockedNow, sendLock]);
+  const lock = useCallback(
+    async (opts: { away?: boolean } = {}) => {
+      pendingHere.current = true;
+      awayHere.current = opts.away === true;
+      setLockPending(session.info?.member_id ?? null);
+      lockedNow(true);
+      await sendLock();
+    },
+    [session, lockedNow, sendLock],
+  );
   const unlocked = useCallback(() => {
     setLockedHint(null);
     pendingHere.current = false;
+    awayHere.current = false;
     setLockPending(null);
     lockedNowFor.current = null;
     setLockedFor(null);
@@ -433,7 +445,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const zoneAskedAt = useRef(0);
   const askZone = useCallback(() => {
     zoneAskedAt.current = Date.now();
-    return withToken((t) => api.profile(t)).then((p) => {
+    // Asked by the page by itself, as the tab is come back to: not use (0.9.0-dev.87).
+    return withToken((t) => quiet.profile(t)).then((p) => {
       if (p?.timezone) setFamilyZone(p.timezone);
     });
   }, [withToken, setFamilyZone]);
@@ -591,33 +604,58 @@ export function useApp(): AppState {
 
 /**
  * Loads data for a screen with the usual states. `deps` re-runs the load.
+ * `guarded` (0.9.0-dev.87): what may ask to confirm it's you first — an Only
+ * me or an Essential note's words — asks, and is loaded once it is;
+ * `declined` says it was not, and `reload` asks again.
  */
-export function useLoad<T>(load: (token: string) => Promise<T>, deps: unknown[]) {
-  const { withToken } = useApp();
+export function useLoad<T>(
+  load: (token: string) => Promise<T>,
+  deps: unknown[],
+  opts: {
+    guarded?: boolean;
+    /**
+     * What is in hand already (0.9.0-dev.87: a note just made): shown at
+     * once, and not asked for until `reload`.
+     */
+    initial?: T | null;
+  } = {},
+) {
+  const { withToken, guarded } = useApp();
+  const asks = opts.guarded === true;
   // A stable key for the dependency list: the rule wants an array literal.
   const depsKey = JSON.stringify(deps);
-  const [data, setData] = useState<T | null>(null);
+  const inHand = opts.initial ?? null;
+  // While the dependencies are those it was in hand for, it is not asked for.
+  const skipFor = useRef(inHand !== null ? depsKey : null);
+  const [data, setData] = useState<T | null>(inHand);
   const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [errorCode, setErrorCode] = useState<string | null>(null);
+  const [loading, setLoading] = useState(inHand === null);
+  const [declined, setDeclined] = useState(false);
 
   const run = useCallback(async () => {
     setLoading(true);
+    setDeclined(false);
     try {
-      const r = await withToken(load);
+      const r = asks ? await guarded(load) : await withToken(load);
       if (r !== null) setData(r);
+      else if (asks) setDeclined(true);
       setError(null);
+      setErrorCode(null);
     } catch (err) {
       setError(describeError(err));
+      setErrorCode(err instanceof ApiRequestError ? err.code : null);
     } finally {
       setLoading(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [withToken, depsKey]);
+  }, [withToken, guarded, asks, depsKey]);
 
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
+    // What was in hand is shown first; asked for again only by `reload`.
+    if (skipFor.current === depsKey) return;
     void run();
-  }, [run]);
+  }, [run, depsKey]);
 
-  return { data, error, loading, reload: run, setData };
+  return { data, error, errorCode, loading, reload: run, setData, declined };
 }

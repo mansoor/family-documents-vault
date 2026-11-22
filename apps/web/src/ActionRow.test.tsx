@@ -106,13 +106,15 @@ const panelOf = (b: HTMLElement) =>
   document.getElementById(b.getAttribute('aria-controls') ?? '') as HTMLElement;
 
 describe('the row on a note', () => {
-  it('Download, Print, who can see it, its tags, collections, a link, and the Trash at the end; none open', async () => {
+  it('Download, Print, who can see it, Essential and sensitive, its tags, collections, a link, and the Trash at the end; none open', async () => {
     const { row } = await openAt(state(), '/notes/note-boiler');
     await waitFor(() => expect(button(row, /^Collections: 0 collections$/)).toBeVisible());
     expect(names(row)).toEqual([
       'Download',
       'Print',
       'Who can see itEveryone',
+      // Essential and Sensitive (0.9.0-dev.87): no pill while it is neither.
+      'Essential and sensitive',
       'Tags0',
       'Collections0',
       'Share a link',
@@ -187,7 +189,7 @@ describe('the row on a note', () => {
   it('a toolbar: one Tab stop, the arrows along it, Home and End', async () => {
     const { row } = await openAt(state(), '/notes/note-boiler');
     const all = within(row).getAllByRole('button');
-    expect(all.map((b) => b.tabIndex)).toEqual([0, -1, -1, -1, -1, -1, -1]);
+    expect(all.map((b) => b.tabIndex)).toEqual([0, -1, -1, -1, -1, -1, -1, -1]);
     all[0]?.focus();
     fireEvent.keyDown(all[0] as HTMLElement, { key: 'ArrowRight' });
     expect(all[1]).toHaveFocus();

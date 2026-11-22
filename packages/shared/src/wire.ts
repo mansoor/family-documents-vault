@@ -1,5 +1,5 @@
 import type { SharedEmergency } from './emergency.js';
-import type { DateValue, DocumentView, Visibility } from './documents.js';
+import type { DateValue, DocumentView, NoteConfirm, Visibility } from './documents.js';
 import type { DetailProposal } from './proposals.js';
 import type { MemberKind } from './guests.js';
 import type { OriginalPlaceInput } from './original-place.js';
@@ -143,6 +143,14 @@ export interface Me {
    * Absent from older vaults.
    */
   locked?: boolean;
+  /**
+   * After how many minutes with nobody using it this session locks by
+   * itself (0.9.0-dev.87, `features.auto_lock`): the household's time or the
+   * person's own shorter one, for a browser's session; null for a phone's,
+   * and where it is Off. A browser locks its page as the time is up.
+   * Absent from older vaults.
+   */
+  auto_lock_minutes?: number | null;
 }
 
 /** That an owner made a hand-over link for this sign-in (5.29): who, and when. */
@@ -1184,8 +1192,22 @@ export interface SharedNote {
 export interface NoteSummary {
   id: string;
   title: string | null;
+  /**
+   * Its first words; empty for a note with none, and for one whose words are
+   * behind "Confirm it's you" (`confirm_to_read`), which a list never gives.
+   */
   preview: string;
   visibility: 'household' | 'adults' | 'private';
+  /** Essential (0.9.0-dev.87). Absent from older vaults. */
+  is_essential?: boolean;
+  /** Sensitive, its own choice and all said with its kind's (0.9.0-dev.87). Absent from older vaults. */
+  sensitive?: boolean | null;
+  sensitive_effective?: boolean;
+  /**
+   * What reading its words asks first (0.9.0-dev.87): an Only me or an
+   * Essential note's; null for any other. Absent from older vaults.
+   */
+  confirm_to_read?: NoteConfirm | null;
   owner_member_id: string | null;
   tags: string[];
   updated_at: string;
