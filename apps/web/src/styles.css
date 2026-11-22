@@ -6301,15 +6301,21 @@ html:has(.shell-phone):has(.has-toast) {
 }
 
 /* Its edge facing the list, alone (0.9.0-dev.88): 12 px to take hold of,
-   over the pane's left border, from under the bar on top to the window's
-   foot however far the pane is scrolled. A line of --accent on hover,
-   with the focus and while dragged: 7.2:1 against --bg in light, 6.5:1 in
-   dark (3:1 is asked of a control's edge). */
+   from the pane's left border inwards, in its left padding (20 px), from
+   under the bar on top to the window's foot however far the pane is
+   scrolled. None of it over the list, whose rows stay the list's to click
+   right up to the border; none over the pane's heading or its buttons,
+   which start after the padding, nor its scrollbar, at its right. Its
+   left is the pane's: the window less the tray and --pane-w, so its right
+   is that less its width (FlyoutEdgeCss.test.ts holds it to that). A line
+   of --accent on the border on hover, with the focus and while dragged:
+   7.2:1 against --bg in light, 6.5:1 in dark (3:1 is asked of a control's
+   edge). */
 .flyout-edge {
   position: fixed;
   top: var(--shell-top, 0px);
   bottom: 0;
-  right: calc(var(--tray-now, 0px) + var(--pane-w) - 6px);
+  right: calc(var(--tray-now, 0px) + var(--pane-w) - 12px);
   width: 12px;
   /* Over the pane's own heading, which sticks at its top (3). */
   z-index: 5;
@@ -6322,7 +6328,7 @@ html:has(.shell-phone):has(.has-toast) {
   position: absolute;
   top: 0;
   bottom: 0;
-  left: 5px;
+  left: 0;
   width: 2px;
   background: transparent;
 }
@@ -6332,7 +6338,7 @@ html:has(.shell-phone):has(.has-toast) {
   content: '';
   position: absolute;
   top: calc(50% - 20px);
-  left: 3px;
+  left: 0;
   width: 6px;
   height: 40px;
   border-radius: 3px;
@@ -6353,20 +6359,17 @@ html:has(.shell-phone):has(.has-toast) {
   outline-offset: -2px;
 }
 
-/* A finger takes hold of 24 px (WCAG 2.5.8), the line and the grip still
-   on the pane's border. */
+/* A finger takes hold of 24 px (WCAG 2.5.8), still from the border
+   inwards, the line and the grip where they were; the pane alone keeps
+   24 px of padding there, so the edge covers none of what is in it. */
 @media (pointer: coarse) {
+  .flyout:not(.flyout-side):not(.flyout-full) {
+    padding-left: 24px;
+  }
+
   .flyout-edge {
-    right: calc(var(--tray-now, 0px) + var(--pane-w) - 12px);
+    right: calc(var(--tray-now, 0px) + var(--pane-w) - 24px);
     width: 24px;
-  }
-
-  .flyout-edge::before {
-    left: 11px;
-  }
-
-  .flyout-edge::after {
-    left: 9px;
   }
 }
 
