@@ -1,3 +1,4 @@
+import type { FolderFilter } from './cabinet.js';
 import type { DocumentView } from './documents.js';
 
 /**
@@ -15,6 +16,11 @@ import type { DocumentView } from './documents.js';
  *    overlap — a paper goes behind one divider only, and a layout whose
  *    ranges share a day is refused, saying which two — and they replace the
  *    years. A paper in no range goes behind "Other years".
+ *
+ * Year dividers with only one of them to show — a folder in a 2026 drawer,
+ * say — are passed over, and the folder is one plain list; a folder whose
+ * question is one year is never divided by year (`shownDividers`). A
+ * folder's own ranges are never passed over.
  *
  * Pins. A person may pin a paper into one of their folders by hand: it is
  * shown first, marked, before the dividers, and counted in the folder once.
@@ -56,12 +62,123 @@ export function dividerMode(d: FolderDividers | undefined): DividerMode {
   return d && !d.years ? 'none' : 'years';
 }
 
+const ISO_DAY = /^\d{4}-\d{2}-\d{2}$/;
+
+/**
+ * Whether a folder's question already keeps it to one calendar year: the
+ * date each paper is about (or the day it was issued, which is that date
+ * wherever there is one) from and to days of the same year — a year
+ * folder as a drawing makes it ("2026": 1 Jan to 31 Dec), or a part of one.
+ * Year dividers there would be one "2026" holding everything.
+ */
+export function asksOneYear(filter: FolderFilter): boolean {
+  return (['dated', 'issued'] as const).some((r) => {
+    const from = filter[`${r}_from`];
+    const to = filter[`${r}_to`];
+    return (
+      from !== undefined &&
+      to !== undefined &&
+      ISO_DAY.test(from) &&
+      ISO_DAY.test(to) &&
+      from <= to &&
+      from.slice(0, 4) === to.slice(0, 4)
+    );
+  });
+}
+
+/**
+ * How a folder's papers are grouped as it is opened: as its dividers say,
+ * except that a folder whose question is one year already (`asksOneYear`)
+ * is never divided by year — the year is the folder, or its drawer. Its
+ * own named ranges are always kept: they are the person's own.
+ */
+export function shownDividerMode(folder: {
+  filter: FolderFilter;
+  dividers?: FolderDividers | undefined;
+}): DividerMode {
+  const mode = dividerMode(folder.dividers);
+  return mode === 'years' && asksOneYear(folder.filter) ? 'none' : mode;
+}
+
+/**
+ * A folder's dividers as GET /cabinet/folders/{id} gives them, from how
+ * many of its papers (its pinned ones left out) are behind each divider,
+ * by the key `dividerKeyOf` gives a paper. One grouped count is all it
+ * needs, however many dividers there are.
+ *
+ *  - Its own named ranges: each one, newest first, empty or not, then
+ *    Other years with something behind it. Never passed over.
+ *  - By year: each year with something behind it, newest first, then Other
+ *    years with something. A level with only one of them is passed over:
+ *    the folder is one plain list (`all`), as is one whose question is one
+ *    year already. With nothing behind any, none.
+ *  - No dividers: one plain list.
+ */
+export function shownDividers(
+  folder: { filter: FolderFilter; dividers?: FolderDividers | undefined },
+  counts: ReadonlyMap<string, number>,
+): FolderDivider[] {
+  const n = (key: string) => counts.get(key) ?? 0;
+  const sum = [...counts.values()].reduce((a, b) => a + b, 0);
+  const all: FolderDivider[] = [
+    { key: 'all', kind: 'all', name: '', from: null, to: null, count: sum },
+  ];
+  const other: FolderDivider[] =
+    n('other') > 0
+      ? [
+          {
+            key: 'other',
+            kind: 'other',
+            name: OTHER_YEARS,
+            from: null,
+            to: null,
+            count: n('other'),
+          },
+        ]
+      : [];
+  switch (shownDividerMode(folder)) {
+    case 'none':
+      return all;
+    case 'ranges':
+      return [
+        ...rangesNewestFirst(folder.dividers).map(({ key, range }): FolderDivider => ({
+          key,
+          kind: 'range',
+          name: range.name,
+          from: range.from,
+          to: range.to,
+          count: n(key),
+        })),
+        ...other,
+      ];
+    case 'years': {
+      const years = [...counts]
+        .flatMap(([key, count]) => {
+          const y = /^year:(\d{4})$/.exec(key)?.[1];
+          return y !== undefined && count > 0 ? [{ y, count }] : [];
+        })
+        .sort((a, b) => (a.y < b.y ? 1 : a.y > b.y ? -1 : 0))
+        .map(({ y, count }): FolderDivider => ({
+          key: `year:${y}`,
+          kind: 'year',
+          name: y,
+          from: `${y}-01-01`,
+          to: `${y}-12-31`,
+          count,
+        }));
+      const groups = [...years, ...other];
+      return groups.length === 1 ? all : groups;
+    }
+  }
+}
+
 /** One divider of a folder, as GET /cabinet/folders/{id} gives it. */
 export interface FolderDivider {
   /**
    * `year:2025`; `range:0` (the range's place in the folder's own list);
-   * `other`, papers in none of its ranges; or `all`, a folder with no
-   * dividers. What GET /cabinet/folders/{id}/documents asks with.
+   * `other`, papers in none of its ranges; or `all`, a folder shown as one
+   * plain list: no dividers, a year folder, or years with only one to show.
+   * What GET /cabinet/folders/{id}/documents asks with.
    */
   key: string;
   kind: 'year' | 'range' | 'other' | 'all';

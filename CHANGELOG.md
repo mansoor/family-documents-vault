@@ -6,6 +6,16 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.9.0-dev.89] - 2026-11-22 — no more needless clicks in My cabinet
+
+### Changed
+
+- **A cabinet with only one drawer opens straight on its folders.** There is no drawer to open first: its folders are there at once, under a line saying which drawer they are in ("In the 2026 drawer."), and the cabinet's card says how many folders it holds.
+- **A drawer with only one folder is one row**, such as "2024 › Me", that opens the folder with one click.
+- **Your cabinet itself doesn't change.** Only what you see while browsing is simpler: every drawer and folder is still there when you arrange your cabinet, and when a paper brings a second drawer or folder, it simply appears beside the first. The line above a folder's papers still names its cabinet, its drawer and the folder, and Back takes you where you were.
+- **No more lone "2026" divider.** A folder that is one year already, such as Me in the 2026 drawer, shows its papers as one list, with no year divider inside it. A folder whose papers are all from one year does the same, in a cabinet you arranged yourself too. A folder with papers from two or more years still has a divider for each year. Dividers you named yourself, such as school stages, are always shown, even when one of them holds everything.
+- **The phone app shows those folders as one list too**, as it already does for a folder with its dividers turned off. Nothing else changes in the phone app.
+
 ## [0.9.0-dev.88] - 2026-11-22 — a document beside the list as wide as you like
 
 ### Added

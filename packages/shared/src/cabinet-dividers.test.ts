@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  asksOneYear,
   daySpanWords,
   isDay,
   isDividerEnd,
@@ -9,6 +10,8 @@ import {
   dividersProblemOf,
   rangesNewestFirst,
   schoolStages,
+  shownDividerMode,
+  shownDividers,
   type FolderDividers,
 } from './cabinet-dividers.js';
 import { layoutProblemOf, type CabinetLayout } from './cabinet.js';
@@ -209,5 +212,83 @@ describe('school stages', () => {
     const stages = schoolStages('2016-04-02');
     expect(stages && dividersProblemOf({ years: true, ranges: stages })).toBeNull();
     expect(schoolStages('not a day')).toBeNull();
+  });
+});
+
+describe('a level with one group, passed over', () => {
+  const counts = (o: Record<string, number>) => new Map(Object.entries(o));
+  const keys = (ds: ReturnType<typeof shownDividers>) => ds.map((d) => [d.key, d.count]);
+  const year2026 = { dated_from: '2026-01-01', dated_to: '2026-12-31' };
+
+  it('knows a folder that is one year already, as a drawing asks it or a part of one', () => {
+    expect(asksOneYear(year2026)).toBe(true);
+    expect(asksOneYear({ dated_from: '2026-03-01', dated_to: '2026-06-30' })).toBe(true);
+    expect(asksOneYear({ issued_from: '2026-01-01', issued_to: '2026-12-31' })).toBe(true);
+    // Two years merged, an open end, or no dates: not one year.
+    expect(asksOneYear({ dated_from: '2025-01-01', dated_to: '2026-12-31' })).toBe(false);
+    expect(asksOneYear({ dated_from: '2026-01-01' })).toBe(false);
+    expect(asksOneYear({ added_from: '2026-01-01', added_to: '2026-12-31' })).toBe(false);
+    expect(asksOneYear({ category: 'tax' })).toBe(false);
+    expect(asksOneYear({ dated_from: '2026-12-31', dated_to: '2026-01-01' })).toBe(false);
+  });
+
+  it('never divides a year folder by year: the repeated “2026” in a 2026 drawer', () => {
+    const folder = { filter: { member_id: 'me', ...year2026 } };
+    expect(shownDividerMode(folder)).toBe('none');
+    expect(keys(shownDividers(folder, counts({ 'year:2026': 4 })))).toEqual([['all', 4]]);
+    // Nothing behind it yet: still one plain list, empty.
+    expect(keys(shownDividers(folder, counts({})))).toEqual([['all', 0]]);
+    // Its own ranges are kept, a year folder or not; and dividers turned off stay off.
+    const ranged = { ...folder, dividers: SCHOOL };
+    expect(shownDividerMode(ranged)).toBe('ranges');
+    expect(shownDividerMode({ ...folder, dividers: { years: false, ranges: [] } })).toBe('none');
+  });
+
+  it('hides year dividers with only one year to show, in a folder arranged by hand too', () => {
+    // A folder that asks no year, whose papers happen to be all of 2026.
+    const byHand = { filter: { category: 'financial' } };
+    expect(keys(shownDividers(byHand, counts({ 'year:2026': 3 })))).toEqual([['all', 3]]);
+    // Only papers dated outside the years with dividers: one group too.
+    expect(keys(shownDividers(byHand, counts({ other: 2 })))).toEqual([['all', 2]]);
+    // A year a status leaves nothing behind is no group.
+    expect(keys(shownDividers(byHand, counts({ 'year:2026': 3, 'year:2025': 0 })))).toEqual([
+      ['all', 3],
+    ]);
+    // Two groups: each its divider, newest first, Other years last.
+    expect(keys(shownDividers(byHand, counts({ 'year:2024': 1, 'year:2026': 3 })))).toEqual([
+      ['year:2026', 3],
+      ['year:2024', 1],
+    ]);
+    expect(keys(shownDividers(byHand, counts({ 'year:2024': 1, other: 1 })))).toEqual([
+      ['year:2024', 1],
+      ['other', 1],
+    ]);
+    const [newest] = shownDividers(byHand, counts({ 'year:2024': 1, 'year:2026': 3 }));
+    expect(newest).toEqual({
+      key: 'year:2026',
+      kind: 'year',
+      name: '2026',
+      from: '2026-01-01',
+      to: '2026-12-31',
+      count: 3,
+    });
+    // Nothing at all: no dividers, as before.
+    expect(shownDividers(byHand, counts({}))).toEqual([]);
+  });
+
+  it('never passes over a folder’s own ranges, even one of them, even empty', () => {
+    const one = {
+      filter: year2026,
+      dividers: { years: true, ranges: [{ name: 'College', from: '2027-09-01', to: null }] },
+    };
+    expect(keys(shownDividers(one, counts({})))).toEqual([['range:0', 0]]);
+    expect(
+      keys(shownDividers({ filter: {}, dividers: SCHOOL }, counts({ 'range:2': 2, other: 1 }))),
+    ).toEqual([
+      ['range:1', 0],
+      ['range:2', 2],
+      ['range:0', 0],
+      ['other', 1],
+    ]);
   });
 });

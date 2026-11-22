@@ -11,11 +11,11 @@ import {
   DIVIDER_YEARS,
   dividerMode,
   dividersProblemOf,
-  OTHER_YEARS,
   resolvedRanges,
   PIN_IN_TRASH,
   PIN_LIMITS,
-  rangesNewestFirst,
+  shownDividerMode,
+  shownDividers,
   TOO_MANY_PINS,
   CABINET_CHANGED,
   CABINET_LIMITS,
@@ -61,10 +61,9 @@ import {
   type ListQuery,
 } from '../documents/service.js';
 import {
-  documentCounts,
+  documentDividerCounts,
   documentMatches,
   documentPlaces,
-  documentYears,
   refusedForCabinet,
   type CabinetPlaces,
   type PlacedDocument,
@@ -104,69 +103,32 @@ function everyFolder(layout: CabinetLayout): CabinetFolder[] {
   return layout.cabinets.flatMap((c) => c.drawers.flatMap((d) => d.folders));
 }
 
-/** A divider's question: one of a folder's, the folder's pins left out. */
-interface DividerAsk {
-  divider: Omit<FolderDivider, 'count'>;
-  cabinet: CabinetConditions;
-}
-
 /**
- * The dividers a folder is drawn with (C2), each with what it asks beside
- * the folder's question: a year's days, a range's, or none of the ranges'
- * (Other years) — so that, its pins left out, every paper of the folder is
- * behind exactly one of them. Years are those the folder's papers are about.
+ * The dividers a folder is opened with, each counted, from one
+ * grouped count of its question (its pins left out): by year, by the
+ * folder's own ranges, or all together — so that every paper of the folder
+ * is behind exactly one of them. Which are shown, and which levels are
+ * passed over, is `shownDividers`'s, as the fakes work it out too.
  */
-async function dividerAsks(
+async function foldersDividers(
   trx: Db,
   p: Principal,
   folder: CabinetFolder,
   q: ListQuery,
-): Promise<DividerAsk[]> {
-  const except = q.cabinet?.except;
-  const dividers = dividersOf(folder);
-  const ask = (divider: Omit<FolderDivider, 'count'>, more: CabinetConditions): DividerAsk => ({
-    divider,
-    cabinet: { ...(except ? { except } : {}), ...more },
-  });
-  switch (dividerMode(dividers)) {
-    case 'none':
-      return [ask({ key: 'all', kind: 'all', name: '', from: null, to: null }, {})];
-    case 'years': {
-      // A year of four figures has its divider; any other is behind Other years.
-      const years = (await documentYears(trx, p, q)).filter(
-        (y) => y >= DIVIDER_YEARS.first && y <= DIVIDER_YEARS.last,
-      );
-      return [
-        ...years.map((y) => {
-          const span: DaySpan = { from: `${y}-01-01`, to: `${y}-12-31` };
-          return ask(
-            { key: `year:${y}`, kind: 'year', name: String(y), ...span },
-            { within: span },
-          );
-        }),
-        ask(
-          { key: 'other', kind: 'other', name: OTHER_YEARS, from: null, to: null },
-          { outside: [EVERY_YEAR] },
-        ),
-      ];
-    }
-    case 'ranges': {
-      const ranges = rangesNewestFirst(dividers);
-      const spans = ranges.map(({ range }): DaySpan => ({ from: range.from, to: range.to }));
-      return [
-        ...ranges.map(({ key, range }) =>
-          ask(
-            { key, kind: 'range', name: range.name, from: range.from, to: range.to },
-            { within: { from: range.from, to: range.to } },
-          ),
-        ),
-        ask(
-          { key: 'other', kind: 'other', name: OTHER_YEARS, from: null, to: null },
-          { outside: spans },
-        ),
-      ];
-    }
-  }
+): Promise<FolderDivider[]> {
+  const shape = { filter: folder.filter, dividers: dividersOf(folder) };
+  const mode = shownDividerMode(shape);
+  const counts = await documentDividerCounts(
+    trx,
+    p,
+    q,
+    mode === 'none'
+      ? 'all'
+      : mode === 'years'
+        ? 'years'
+        : { spans: resolvedRanges(shape.dividers) },
+  );
+  return shownDividers(shape, counts);
 }
 
 /** The years that have a divider of their own: four figures, as Postgres and the vault take a day. */
@@ -186,11 +148,16 @@ function dividersOf(folder: CabinetFolder) {
     : undefined;
 }
 
-/** What one divider of a folder asks beside its question, by its key; null for none of its. */
+/**
+ * What one divider of a folder asks beside its question, by its key; null
+ * for none of its. A folder without its own ranges may be one plain list
+ * (`all`): by year with one year or fewer to show, or a year folder.
+ */
 function dividerOf(folder: CabinetFolder, key: string): CabinetConditions | null {
   const dividers = dividersOf(folder);
   const mode = dividerMode(dividers);
-  if (mode === 'none') return key === 'all' ? {} : null;
+  if (key === 'all') return mode === 'ranges' ? null : {};
+  if (mode === 'none') return null;
   if (mode === 'years') {
     if (key === 'other') return { outside: [EVERY_YEAR] };
     const year = /^year:(\d{4})$/.exec(key);
@@ -666,17 +633,10 @@ export class CabinetService {
       const pinned = (await livePins(trx, p, { folder: folderId })).get(folderId) ?? [];
       const q = questionOf(folder);
       if (!q || refusedForCabinet(p, q)) return { version, pinned, dividers: null };
-      const asks = await dividerAsks(trx, p, folder, { ...q, cabinet: { except: pinned } });
-      const got = await documentCounts(
-        trx,
-        p,
-        asks.map((a) => ({ ...q, cabinet: a.cabinet })),
-      );
-      const dividers = asks
-        .map((a, i): FolderDivider => ({ ...a.divider, count: got[i] ?? 0 }))
-        // A year a status leaves nothing behind is no divider; a range of the
-        // folder's own is one, empty or not; Other years, only with something.
-        .filter((d) => d.count > 0 || d.kind === 'range' || d.kind === 'all');
+      // One grouped count: a year a status leaves nothing behind is no
+      // divider; a range of the folder's own is one, empty or not; Other
+      // years, only with something; a level of one, passed over.
+      const dividers = await foldersDividers(trx, p, folder, { ...q, cabinet: { except: pinned } });
       return { version, pinned, dividers };
     });
     const pinned =

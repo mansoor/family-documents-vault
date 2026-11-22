@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import type { CabinetLayout, CabinetPreview } from '@fdv/shared';
 import axe from 'axe-core';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -222,21 +222,25 @@ describe('browsing my cabinet', () => {
       cabinet: { layout: LAYOUT, version: 3, updated_at: new Date().toISOString() },
     });
     const cards = await screen.findByRole('list', { name: 'Your cabinets' });
+    // Aisha's one drawer is passed over: her card says how many folders it opens on.
     expect(
       within(cards)
         .getAllByRole('button')
         .map((b) => b.textContent),
-    ).toEqual(['Mansoor2 drawers', 'Aisha1 drawer']);
+    ).toEqual(['Mansoor2 drawers', 'Aisha1 folder']);
     expect(screen.getByText(/Arranged by person, then topic, then year/)).toBeVisible();
     expect(screen.getByText(/Only you see this arrangement/)).toBeVisible();
     const tree = screen.getByRole('navigation', { name: 'Drawers and folders in Mansoor' });
-    // The first drawer open; the other closed until asked.
+    // The first drawer open.
     expect(within(tree).getByRole('button', { name: /^Identity/ })).toHaveAttribute(
       'aria-expanded',
       'true',
     );
-    const fin = within(tree).getByRole('button', { name: /^Financial/ });
-    expect(fin).toHaveAttribute('aria-expanded', 'false');
+    // Financial holds one folder: one row that opens it, no drawer to open first.
+    const fin = await within(tree).findByRole('button', {
+      name: new RegExp(`^${thisYear}, in the Financial drawer, ?1 document$`),
+    });
+    expect(fin).not.toHaveAttribute('aria-expanded');
     // Each folder says how many it holds, to a screen reader too.
     const thisOne = await within(tree).findByRole('button', {
       name: new RegExp(`^${thisYear}, ?1 document$`),
@@ -260,19 +264,16 @@ describe('browsing my cabinet', () => {
       dated_from: `${thisYear}-01-01`,
       dated_to: `${thisYear}-12-31`,
     });
-    // The folder's papers are the vault's answer for it (C2): behind its year's divider.
+    // The folder's papers are the vault's answer for it: a folder of one
+    // year is one plain list, never a lone divider of its own year.
     expect(
       state.calls.some(
         (c) =>
           c.method === 'GET' &&
-          c.url ===
-            `/api/v1/cabinet/folders/f-id-this/documents?divider=${encodeURIComponent(`year:${thisYear}`)}&limit=50`,
+          c.url === '/api/v1/cabinet/folders/f-id-this/documents?divider=all&limit=50',
       ),
     ).toBe(true);
-    expect(within(pane).getByRole('button', { name: new RegExp(`^${thisYear}`) })).toHaveAttribute(
-      'aria-expanded',
-      'true',
-    );
+    expect(within(pane).queryByRole('button', { name: new RegExp(`^${thisYear}`) })).toBeNull();
     await expectAccessible();
   });
 
@@ -306,6 +307,221 @@ describe('browsing my cabinet', () => {
     expect(screen.getByText('Topic: Identity')).toBeVisible();
     fireEvent.click(screen.getByRole('button', { name: 'Take off the filter Topic: Identity' }));
     await waitFor(() => expect(window.location.search).toBe(''));
+  });
+});
+
+describe('levels with one group, passed over while browsing', () => {
+  const folder = (id: string, name: string, filter: Record<string, string>) => ({
+    id,
+    name,
+    hidden: false,
+    filter: { notes: 'exclude', ...filter },
+  });
+  /**
+   * By topic, then year, then person. Identity: this year for Mansoor and
+   * Aisha, last year for Aisha alone. Financial: one drawer, this year, one
+   * folder, Mansoor's.
+   */
+  const SKIPPED: CabinetLayout = {
+    arranged_by: 'category_year_person',
+    cabinets: [
+      {
+        id: 'c-id',
+        name: 'Identity',
+        hidden: false,
+        drawers: [
+          {
+            id: 'd-this',
+            name: String(thisYear),
+            hidden: false,
+            folders: [
+              folder('f-this-me', 'Mansoor', {
+                category: 'identity',
+                member_id: 'me',
+                ...year(thisYear),
+              }),
+              folder('f-this-aisha', 'Aisha', {
+                category: 'identity',
+                member_id: AISHA.id,
+                ...year(thisYear),
+              }),
+            ],
+          },
+          {
+            id: 'd-last',
+            name: String(lastYear),
+            hidden: false,
+            folders: [
+              folder('f-last-aisha', 'Aisha', {
+                category: 'identity',
+                member_id: AISHA.id,
+                ...year(lastYear),
+              }),
+            ],
+          },
+        ],
+      },
+      {
+        id: 'c-fin',
+        name: 'Financial',
+        hidden: false,
+        drawers: [
+          {
+            id: 'd-fin',
+            name: String(thisYear),
+            hidden: false,
+            folders: [
+              folder('f-fin-me', 'Mansoor', {
+                category: 'financial',
+                member_id: 'me',
+                ...year(thisYear),
+              }),
+            ],
+          },
+        ],
+      },
+      {
+        id: 'c-med',
+        name: 'Medical',
+        hidden: false,
+        drawers: [
+          {
+            id: 'd-med-last',
+            name: String(lastYear),
+            hidden: false,
+            folders: [
+              folder('f-med-last', 'Aisha', {
+                category: 'medical',
+                member_id: AISHA.id,
+                ...year(lastYear),
+              }),
+            ],
+          },
+          {
+            id: 'd-med-this',
+            name: String(thisYear),
+            hidden: false,
+            folders: [
+              folder('f-med-me', 'Mansoor', {
+                category: 'medical',
+                member_id: 'me',
+                ...year(thisYear),
+              }),
+              folder('f-med-aisha', 'Aisha', {
+                category: 'medical',
+                member_id: AISHA.id,
+                ...year(thisYear),
+              }),
+            ],
+          },
+        ],
+      },
+    ],
+  };
+  const open = (path: string) =>
+    at(path, { cabinet: { layout: SKIPPED, version: 4, updated_at: new Date().toISOString() } });
+
+  it('shows a drawer with one folder as one row that opens it, its path still naming the drawer, and Back goes where it was', async () => {
+    const state = open('/documents?show=cabinet');
+    const tree = await screen.findByRole('navigation', { name: 'Drawers and folders in Identity' });
+    // The drawer of two folders opens and closes as before.
+    expect(
+      within(tree).getByRole('button', { name: new RegExp(`^${thisYear} ?2 folders$`) }),
+    ).toHaveAttribute('aria-expanded', 'true');
+    // Last year holds Aisha's folder alone: one row, no drawer to open first.
+    const row = await within(tree).findByRole('button', {
+      name: new RegExp(`^Aisha, in the ${lastYear} drawer, ?1 document$`),
+    });
+    expect(row).not.toHaveAttribute('aria-expanded');
+    fireEvent.click(row);
+    await waitFor(() => expect(window.location.search).toContain('folder=f-last-aisha'));
+    expect(row).toHaveAttribute('aria-current', 'true');
+    const pane = await screen.findByRole('region', { name: 'Aisha' });
+    expect(within(pane).getByText(`Identity › ${lastYear} › Aisha`)).toBeVisible();
+    expect(await within(pane).findByText("Aisha's passport")).toBeVisible();
+    // A folder of one year is one list: no lone divider of its year to open.
+    expect(within(pane).queryByRole('button', { name: new RegExp(`^${lastYear}`) })).toBeNull();
+    expect(state.calls.some((c) => c.url.includes('/f-last-aisha/documents?divider=all'))).toBe(
+      true,
+    );
+    // The layout is kept whole: nothing was saved to pass the drawer over.
+    expect(state.calls.some((c) => c.method === 'PUT')).toBe(false);
+    await expectAccessible();
+    // Back: the cabinet as it was, no folder chosen; never somewhere new.
+    act(() => window.history.back());
+    await waitFor(() => expect(window.location.search).toBe('?show=cabinet'));
+    expect(await screen.findByText('Choose a folder to see what is in it.')).toBeVisible();
+  });
+
+  it('opens a cabinet with one drawer straight on its folders, saying which drawer they are in', async () => {
+    open('/documents?show=cabinet&cabinet=c-id');
+    const cards = await screen.findByRole('list', { name: 'Your cabinets' });
+    expect(
+      within(cards)
+        .getAllByRole('button')
+        .map((b) => b.textContent),
+    ).toEqual(['Identity2 drawers', 'Financial1 folder', 'Medical2 drawers']);
+    fireEvent.click(within(cards).getByRole('button', { name: /^Financial/ }));
+    const tree = await screen.findByRole('navigation', {
+      name: 'Drawers and folders in Financial',
+    });
+    expect(within(tree).getByText(`In the ${thisYear} drawer.`)).toBeVisible();
+    // No drawer to open: its folders are there straight away.
+    expect(
+      within(tree)
+        .getAllByRole('button')
+        .filter((b) => b.hasAttribute('aria-expanded')),
+    ).toEqual([]);
+    fireEvent.click(within(tree).getByRole('button', { name: /^Mansoor, ?1 document$/ }));
+    await waitFor(() => expect(window.location.search).toContain('folder=f-fin-me'));
+    const pane = await screen.findByRole('region', { name: 'Mansoor' });
+    expect(within(pane).getByText(`Financial › ${thisYear} › Mansoor`)).toBeVisible();
+    expect(await within(pane).findByText('Barclays statement, September 2026')).toBeVisible();
+    await expectAccessible();
+    // Back: the Financial cabinet, its folders still there.
+    act(() => window.history.back());
+    await waitFor(() => expect(window.location.search).toBe('?show=cabinet&cabinet=c-fin'));
+    expect(
+      await screen.findByRole('navigation', { name: 'Drawers and folders in Financial' }),
+    ).toBeVisible();
+    expect(screen.getByText('Choose a folder to see what is in it.')).toBeVisible();
+  });
+
+  it('opens the first drawer of folders in each cabinet chosen, whatever was open in the one before', async () => {
+    open('/documents?show=cabinet');
+    const cards = await screen.findByRole('list', { name: 'Your cabinets' });
+    const drawer = (tree: HTMLElement, y: number) =>
+      within(tree).getByRole('button', { name: new RegExp(`^${y} ?2 folders$`) });
+    let tree = await screen.findByRole('navigation', { name: 'Drawers and folders in Identity' });
+    expect(drawer(tree, thisYear)).toHaveAttribute('aria-expanded', 'true');
+    // Medical: its first drawer is one folder's row; the next, of two, opens.
+    fireEvent.click(within(cards).getByRole('button', { name: /^Medical/ }));
+    tree = await screen.findByRole('navigation', { name: 'Drawers and folders in Medical' });
+    expect(drawer(tree, thisYear)).toHaveAttribute('aria-expanded', 'true');
+    expect(
+      within(tree).getByRole('button', { name: new RegExp(`^Aisha, in the ${lastYear} drawer`) }),
+    ).not.toHaveAttribute('aria-expanded');
+    // Closed here, then a cabinet of one drawer, then Identity again: its first opens anew.
+    fireEvent.click(drawer(tree, thisYear));
+    expect(drawer(tree, thisYear)).toHaveAttribute('aria-expanded', 'false');
+    fireEvent.click(within(cards).getByRole('button', { name: /^Financial/ }));
+    expect(
+      await screen.findByRole('navigation', { name: 'Drawers and folders in Financial' }),
+    ).toBeVisible();
+    fireEvent.click(within(cards).getByRole('button', { name: /^Identity/ }));
+    tree = await screen.findByRole('navigation', { name: 'Drawers and folders in Identity' });
+    expect(drawer(tree, thisYear)).toHaveAttribute('aria-expanded', 'true');
+    await expectAccessible();
+  });
+
+  it('keeps every drawer while arranging: passing over is only for browsing', async () => {
+    open('/documents?show=cabinet&arrange=1');
+    expect(
+      await screen.findByRole('textbox', { name: `Name of the drawer ${thisYear} in Financial` }),
+    ).toBeVisible();
+    expect(
+      screen.getByRole('textbox', { name: `Name of the drawer ${lastYear} in Identity` }),
+    ).toBeVisible();
   });
 });
 
@@ -450,13 +666,14 @@ describe('arranging my cabinet', () => {
         },
       ],
     ]);
-    // Back to browsing, the hidden cabinet not among the cards.
+    // Back to browsing, the hidden cabinet not among the cards; its one
+    // drawer passed over, the card says how many folders it opens on.
     const cards = await screen.findByRole('list', { name: 'Your cabinets' });
     expect(
       within(cards)
         .getAllByRole('button')
         .map((b) => b.textContent),
-    ).toEqual(['Mine1 drawer']);
+    ).toEqual(['Mine2 folders']);
   });
 
   it('refuses to lay a save over one made elsewhere, and keeps the arrangement', async () => {
