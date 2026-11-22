@@ -3,6 +3,7 @@ import { resolve } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   besideIn,
+  clampPane,
   closedIn,
   EMPTY_FLYOUTS,
   fewerIn,
@@ -14,6 +15,7 @@ import {
   isSideBySide,
   itemOf,
   keepFlyouts,
+  keepPaneWidth,
   LIST_PEEK,
   MAX_OPEN,
   minimisedIn,
@@ -21,7 +23,12 @@ import {
   neighbourIn,
   oneAtATimeIn,
   openedIn,
+  PANE_MIN,
+  paneBounds,
+  paneDefault,
+  paneWidthKey,
   readFlyouts,
+  readPaneWidth,
   shownIn,
   SIDE_PANE_MIN,
   suggestions,
@@ -398,6 +405,14 @@ describe('side by side', () => {
     expect(css).toMatch(
       /--side-room: calc\(\s*100vw - var\(--side-w, 216px\) - var\(--tray-now, 0px\) - var\(--list-peek\)\s*\)/,
     );
+    // The one alone, by its edge: paneBounds' numbers.
+    expect(css).toContain(`--pane-min: ${PANE_MIN}px;`);
+    expect(css).toContain(
+      '--pane-default: min(calc(100vw - var(--tray-now, 0px)), clamp(720px, 62vw, 1100px));',
+    );
+    expect(css).toMatch(
+      /--pane-room: calc\(\s*100vw - var\(--page-start, 0px\) - var\(--tray-now, 0px\) - var\(--list-peek\)\s*\)/,
+    );
   });
 
   it('takes back no side by side it would not have kept', () => {
@@ -411,5 +426,48 @@ describe('side by side', () => {
     const back = fromStored({ items, front: 'd', side: ['b', 'c'] });
     expect(back.last).toBe('c');
     expect(states(back)).toEqual(['a:freed', 'b:shown', 'c:shown', 'd:freed']);
+  });
+});
+
+describe('the width of the one alone', () => {
+  afterEach(() => localStorage.clear());
+
+  it('starts as ever; at least PANE_MIN; at most the room that keeps the list in sight, or where it starts', () => {
+    // 62vw, between 720 and 1,100 px, and never past the tray.
+    expect(paneDefault(1600)).toBeCloseTo(992);
+    expect(paneDefault(2400)).toBe(1100);
+    expect(paneDefault(1000)).toBe(720);
+    expect(paneDefault(760)).toBe(760 - TRAY_WIDTH);
+    // Roomy: the window less the sidebar, the tray and the list's 240 px.
+    expect(paneBounds(1600, 216)).toEqual({ min: PANE_MIN, max: 1068, start: 992 });
+    expect(paneBounds(1920, 72)).toEqual({ min: PANE_MIN, max: 1920 - 72 - 76 - 240, start: 1100 });
+    // Too narrow for that: no wider than it starts, so nothing jumps.
+    expect(paneBounds(1280, 216)).toEqual({ min: PANE_MIN, max: 794, start: 794 });
+    expect(paneBounds(800, 72)).toEqual({ min: PANE_MIN, max: 720, start: 720 });
+    const b = paneBounds(1600, 216);
+    expect(clampPane(100, b)).toBe(PANE_MIN);
+    expect(clampPane(5000, b)).toBe(1068);
+    expect(clampPane(700.4, b)).toBe(700);
+  });
+
+  it('kept in this browser for each person: the number alone', () => {
+    expect(readPaneWidth('me')).toBeNull();
+    keepPaneWidth('me', 640.6);
+    expect(localStorage.getItem(paneWidthKey('me'))).toBe('641');
+    expect(readPaneWidth('me')).toBe(641);
+    expect(readPaneWidth('someone-else')).toBeNull();
+    expect(readPaneWidth(null)).toBeNull();
+    keepPaneWidth(null, 500);
+    expect(localStorage.length).toBe(1);
+    for (const bad of ['', 'wide', '-4', '0', 'NaN', '1e9']) {
+      localStorage.setItem(paneWidthKey('me'), bad);
+      expect(readPaneWidth('me')).toBeNull();
+    }
+    keepPaneWidth('me', null);
+    expect(localStorage.getItem(paneWidthKey('me'))).toBeNull();
+    // Not the tab's open documents: a sign-out's forgetting leaves it.
+    keepPaneWidth('me', 500);
+    forgetFlyouts();
+    expect(readPaneWidth('me')).toBe(500);
   });
 });

@@ -20,12 +20,14 @@ import {
   isSideBySide,
   itemOf,
   keepFlyouts,
+  keepPaneWidth,
   minimisedIn,
   mostSideBySide,
   neighbourIn,
   oneAtATimeIn,
   openedIn,
   readFlyouts,
+  readPaneWidth,
   shownIn,
   SIDE_BY_SIDE_FROM,
   sideRoom,
@@ -137,6 +139,15 @@ export interface Flyouts {
   /** From the 8th open: that many open slow the vault down, until put away. */
   warning: boolean;
   dismissWarning: () => void;
+  /**
+   * The width chosen for the one beside the list, alone, by its edge
+   * (0.9.0-dev.88), kept in this browser; null for the one it starts with.
+   * Side by side forgets it: each pane there has its share, and one at a
+   * time again starts as wide as ever.
+   */
+  paneWidth: number | null;
+  /** A width chosen, kept; null back to the one it starts with. */
+  setPaneWidth: (px: number | null) => void;
 }
 
 const FlyoutContext = createContext<Flyouts | null>(null);
@@ -248,6 +259,10 @@ export function FlyoutProvider(props: { memberId: string | null; children: React
   // Side by side comes back only as far as it is offered: narrower, the one
   // in front alone, the others freed, as one at a time.
   const [set, setSet] = useState<FlyoutSet>(() => readFlyouts(memberId, most));
+  // The width chosen for the one alone: none while side by side.
+  const [paneWidth, setPaneWidthNow] = useState<number | null>(() =>
+    isSideBySide(set) ? null : readPaneWidth(memberId),
+  );
   const [titles, setTitles] = useState<ReadonlyMap<string, string>>(() => new Map());
   // Waiting for a document clicked in the list, to show beside the one in front.
   const [pickingNow, setPickingNow] = useState(false);
@@ -280,7 +295,9 @@ export function FlyoutProvider(props: { memberId: string | null; children: React
   const [who, setWho] = useState(memberId);
   if (who !== memberId) {
     setWho(memberId);
-    setSet(readFlyouts(memberId, most));
+    const theirs = readFlyouts(memberId, most);
+    setSet(theirs);
+    setPaneWidthNow(isSideBySide(theirs) ? null : readPaneWidth(memberId));
     setTitles(new Map());
     setPickingNow(false);
     setLimit(null);
@@ -300,6 +317,24 @@ export function FlyoutProvider(props: { memberId: string | null; children: React
       setSet((was) => fewerIn(was, most, Date.now()));
     }
   }
+  // Side by side: the width chosen for one alone is forgotten, here and
+  // in this browser (below), and one at a time again starts as ever.
+  const sideNow = isSideBySide(set);
+  const [sideWas, setSideWas] = useState(sideNow);
+  if (sideWas !== sideNow) {
+    setSideWas(sideNow);
+    if (sideNow) setPaneWidthNow(null);
+  }
+  useEffect(() => {
+    if (sideNow) keepPaneWidth(who, null);
+  }, [sideNow, who]);
+  const setPaneWidth = useCallback(
+    (px: number | null) => {
+      setPaneWidthNow(px === null ? null : Math.round(px));
+      keepPaneWidth(who, px);
+    },
+    [who],
+  );
   // The names, for what is said between renders; and how many side by side.
   const named = useRef(titles);
   const mostNow = useRef(most);
@@ -686,6 +721,8 @@ export function FlyoutProvider(props: { memberId: string | null; children: React
     asPage,
     warning: warning && set.items.length >= WARN_FROM,
     dismissWarning: () => setWarning(false),
+    paneWidth: sideNow ? null : paneWidth,
+    setPaneWidth,
   };
   return <FlyoutContext.Provider value={value}>{props.children}</FlyoutContext.Provider>;
 }

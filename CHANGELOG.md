@@ -6,6 +6,21 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.9.0-dev.88] - 2026-11-22 — a document beside the list as wide as you like
+
+### Added
+
+- **Make a document beside the list wider or narrower.** On a computer or a tablet, drag the edge of the document open beside the list, the one facing the list, with the mouse, a pen or a finger. Press Esc while dragging to give the drag up. Or move to it with Tab and use ← and → (with Shift, further), Home for the narrowest and End for the widest. Double-click it, or press Enter, for the usual width again.
+- **It stays as wide as you left it** in this browser, for you, until you change it: the next document you open beside the list opens as wide. Only the width is kept, nothing about any document.
+- **The list stays in sight.** A document beside the list is never narrower than 360 pixels, and never so wide that the start of the list is hidden, unless the window is too narrow for that, where it is no wider than it usually is. Make the window narrower and the document narrows with it; make it wider again and it goes back to the width you chose.
+- **Side by side starts afresh.** Showing two or three documents side by side gives each its even share, as before, and forgets the width you chose: back to one at a time, the document opens at the usual width.
+- **The vault says notes ask before their words.** The vault now tells the phone app that Only me and Essential notes ask you to confirm it's you, and that notes have Essential and sensitive switches, so the next phone app (0.21.0) can offer them.
+
+### Changed
+
+- **The phone app 0.21.0** is listed among the apps the vault works with, so its client is tested against every change too.
+- **The phone app's release build refuses plain `http://`.** From 0.21.0 its release build connects only over `https://`; the preview and development builds still accept plain `http://` on the home network. Caddy's own certificate, with `vault-ca.crt` installed on the phone, works with every build. The README's phone section says so.
+
 ## [0.9.0-dev.87] - 2026-11-21 — notes that ask, locking after a while away, a wider Share
 
 ### Added

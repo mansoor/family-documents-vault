@@ -1,5 +1,6 @@
 import {
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
   useSyncExternalStore,
@@ -285,18 +286,44 @@ export function useSidebar(mode: ShellMode, page: RefObject<HTMLDivElement | nul
  * moved with ← and → (Shift: further), Home or a double-click for today's
  * width (WCAG 2.5.7: dragging is not the only way). A window splitter, as
  * WAI-ARIA has it.
+ *
+ * A drag whose release was missed — a mouse moving with no button down,
+ * or the window left mid-drag — ends where it is, as a release would
+ * (0.9.0-dev.88): the sidebar never follows a pointer nobody is holding.
  */
 export function ResizeHandle({ side }: { side: Sidebar }) {
-  const drag = useRef<{ id: number; x: number; from: number } | null>(null);
+  const drag = useRef<{ id: number; x: number; from: number; onBlur: () => void } | null>(null);
+  const handle = useRef<HTMLDivElement>(null);
+  // The latest, for the window's blur, which is listened for from the press.
+  const latest = useRef(side);
+  useLayoutEffect(() => {
+    latest.current = side;
+  });
+  const finish = () => {
+    const d = drag.current;
+    if (!d) return;
+    drag.current = null;
+    window.removeEventListener('blur', d.onBlur);
+    if (handle.current?.hasPointerCapture?.(d.id)) handle.current.releasePointerCapture(d.id);
+    const now = latest.current;
+    now.setResizing(false);
+    now.setWidth(now.width, true);
+  };
+  // Gone mid-drag (folded by its button, the window narrowed): nothing left listening.
+  useEffect(
+    () => () => {
+      const d = drag.current;
+      if (d) window.removeEventListener('blur', d.onBlur);
+    },
+    [],
+  );
   const end = (e: ReactPointerEvent<HTMLDivElement>) => {
     if (drag.current?.id !== e.pointerId) return;
-    drag.current = null;
-    e.currentTarget.releasePointerCapture?.(e.pointerId);
-    side.setResizing(false);
-    side.setWidth(side.width, true);
+    finish();
   };
   return (
     <div
+      ref={handle}
       className="side-resize"
       role="separator"
       aria-orientation="vertical"
@@ -310,12 +337,19 @@ export function ResizeHandle({ side }: { side: Sidebar }) {
         e.preventDefault();
         e.currentTarget.focus();
         e.currentTarget.setPointerCapture?.(e.pointerId);
-        drag.current = { id: e.pointerId, x: e.clientX, from: side.width };
+        // finish reads only refs: this render's is as good as any.
+        drag.current = { id: e.pointerId, x: e.clientX, from: side.width, onBlur: finish };
+        window.addEventListener('blur', finish);
         side.setResizing(true);
       }}
       onPointerMove={(e) => {
         const d = drag.current;
         if (d?.id !== e.pointerId) return;
+        // A mouse with no button down: its release was missed. Let go here.
+        if (e.pointerType === 'mouse' && e.buttons === 0) {
+          finish();
+          return;
+        }
         side.setWidth(d.from + e.clientX - d.x, false);
       }}
       onPointerUp={end}

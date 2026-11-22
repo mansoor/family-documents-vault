@@ -78,6 +78,44 @@ export function sideRoom(): number {
   return window.innerWidth - side - TRAY_WIDTH - LIST_PEEK;
 }
 
+/**
+ * The one beside the list, alone, can be made wider or narrower by its
+ * edge facing the list (0.9.0-dev.88). Never narrower than PANE_MIN, where
+ * a document's view is still a phone's, and never wider than the room
+ * that keeps LIST_PEEK of the list in sight — or, where the window is too
+ * narrow for that, than it is to start with (`paneDefault`), so nothing
+ * jumps. ← and → move it PANE_STEP (Shift: four times as far). The
+ * stylesheet works it out with the same numbers (.flyout's --pane-w).
+ */
+export const PANE_MIN = 360;
+export const PANE_STEP = 16;
+
+/** Its width to start with, as styles.css has always had it: min(100vw − tray, clamp(720, 62vw, 1100)). */
+export function paneDefault(viewport: number): number {
+  return Math.min(viewport - TRAY_WIDTH, Math.min(1100, Math.max(720, viewport * 0.62)));
+}
+
+export interface PaneBounds {
+  min: number;
+  max: number;
+  /** Its width with nothing chosen. */
+  start: number;
+}
+
+/**
+ * In a window `viewport` wide whose page starts `pageStart` from its left
+ * (the sidebar, or its rail, or nothing on a phone's layout).
+ */
+export function paneBounds(viewport: number, pageStart: number): PaneBounds {
+  const start = Math.round(paneDefault(viewport));
+  const room = Math.floor(viewport - pageStart - TRAY_WIDTH - LIST_PEEK);
+  return { min: PANE_MIN, max: Math.max(PANE_MIN, room, start), start };
+}
+
+export function clampPane(px: number, bounds: PaneBounds): number {
+  return Math.round(Math.min(bounds.max, Math.max(bounds.min, px)));
+}
+
 /** How many may be side by side in `room`: three when each would have SIDE_PANE_MIN, else two. */
 export function mostSideBySide(room: number): 2 | 3 {
   return room / 3 >= SIDE_PANE_MIN ? 3 : 2;
@@ -478,5 +516,47 @@ export function forgetFlyouts(): void {
     for (const key of mine) s.removeItem(key);
   } catch {
     // Nothing kept, or nothing to keep it in.
+  }
+}
+
+// ------------------------------------------------- the width chosen, kept
+
+/**
+ * The width chosen for the one beside the list, kept in this browser
+ * (localStorage) for the person signed in: the number alone, nothing of any
+ * document. Side by side forgets it (`keepPaneWidth(…, null)`).
+ */
+const WIDTH_PREFIX = 'fdv.flyout-width.';
+export const paneWidthKey = (memberId: string) => `${WIDTH_PREFIX}${memberId}`;
+
+function widthStorage(): Storage | null {
+  try {
+    return window.localStorage;
+  } catch {
+    return null;
+  }
+}
+
+/** The width this person chose in this browser, or null for the one it starts with. */
+export function readPaneWidth(memberId: string | null): number | null {
+  if (!memberId) return null;
+  try {
+    const raw = widthStorage()?.getItem(paneWidthKey(memberId));
+    const n = raw === null || raw === undefined || raw.trim() === '' ? NaN : Number(raw);
+    return Number.isFinite(n) && n > 0 && n < 100_000 ? Math.round(n) : null;
+  } catch {
+    return null;
+  }
+}
+
+export function keepPaneWidth(memberId: string | null, width: number | null): void {
+  if (!memberId) return;
+  try {
+    const s = widthStorage();
+    if (!s) return;
+    if (width === null) s.removeItem(paneWidthKey(memberId));
+    else s.setItem(paneWidthKey(memberId), String(Math.round(width)));
+  } catch {
+    // Blocked, or full: the width holds until the page is loaded again.
   }
 }

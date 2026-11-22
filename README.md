@@ -337,14 +337,16 @@ checks before it trusts the vault.
 **The address.** Give the phone the address you open in the browser. With `https://` —
 the Caddy overlay, or Tailscale, above — nothing more is needed. If Caddy made its own
 certificate authority, install `vault-ca.crt` on the phone once: on Android, _Settings →
-Security → Encryption & credentials → Install a certificate → CA certificate_ (the app
-trusts certificates you install yourself); on iPhone, install the profile, then turn on
-full trust for it under _Settings → General → About → Certificate Trust Settings_. Until
-then the app says the phone doesn't trust the vault's certificate yet, and shows these
-steps, rather than "can't reach". A certificate for another name, or one that has run
-out, gets its own words.
+Security → Encryption & credentials → Install a certificate → CA certificate_ (every build
+of the app, the release build included, trusts certificates you install yourself); on
+iPhone, install the profile, then turn on full trust for it under _Settings → General →
+About → Certificate Trust Settings_. Until then the app says the phone doesn't trust the
+vault's certificate yet, and shows these steps, rather than "can't reach". A certificate
+for another name, or one that has run out, gets its own words.
 
-**Plain `http://` on the home network** works too, within limits the app keeps to:
+**Plain `http://` on the home network** works with the app's preview and development
+builds only — the release build (0.21.0 and later) refuses it — within limits the app
+keeps to:
 
 - only to a private address — `192.168.x.x`, `10.x.x.x`, `172.16.x.x`–`172.31.x.x`, a
   Tailscale `100.64.x.x`–`100.127.x.x` address, or a name ending in `.local`, `.lan` or

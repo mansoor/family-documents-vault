@@ -184,8 +184,8 @@ function pass(ms: number) {
 function drag(from: number, to: number, pointerType = 'mouse', pointerId = 1) {
   const el = handle();
   fireEvent.pointerDown(el, { pointerId, pointerType, button: 0, clientX: from });
-  fireEvent.pointerMove(el, { pointerId, pointerType, clientX: (from + to) / 2 });
-  fireEvent.pointerMove(el, { pointerId, pointerType, clientX: to });
+  fireEvent.pointerMove(el, { pointerId, pointerType, buttons: 1, clientX: (from + to) / 2 });
+  fireEvent.pointerMove(el, { pointerId, pointerType, buttons: 1, clientX: to });
   fireEvent.pointerUp(el, { pointerId, pointerType, clientX: to });
 }
 
@@ -212,7 +212,7 @@ describe('the sidebar’s width, from 1024 px', () => {
     // While dragged: no words chosen on the way.
     expect(shell()).toHaveClass('side-resizing');
     expect(getComputedStyle(screen.getByRole('main')).userSelect).toBe('none');
-    fireEvent.pointerMove(el, { pointerId: 1, pointerType: 'mouse', clientX: 300 });
+    fireEvent.pointerMove(el, { pointerId: 1, pointerType: 'mouse', buttons: 1, clientX: 300 });
     expect(now()).toBe(300);
     expect(pageLeft()).toBe('300px');
     // Kept once let go, not on every move.
@@ -223,6 +223,31 @@ describe('the sidebar’s width, from 1024 px', () => {
     // A move after it is let go does nothing.
     fireEvent.pointerMove(el, { pointerId: 1, pointerType: 'mouse', clientX: 340 });
     expect(now()).toBe(300);
+  });
+
+  it('a release missed — a mouse with no button down, or the window left — lets go where it is', async () => {
+    await loaded();
+    const el = handle();
+    fireEvent.pointerDown(el, { pointerId: 1, pointerType: 'mouse', button: 0, clientX: 216 });
+    fireEvent.pointerMove(el, { pointerId: 1, pointerType: 'mouse', buttons: 1, clientX: 280 });
+    // Let go outside the window: the next move comes with no button down.
+    fireEvent.pointerMove(el, { pointerId: 1, pointerType: 'mouse', buttons: 0, clientX: 340 });
+    expect(shell()).not.toHaveClass('side-resizing');
+    expect(now()).toBe(280);
+    expect(stored('width')).toBe('280');
+    fireEvent.pointerMove(el, { pointerId: 1, pointerType: 'mouse', buttons: 1, clientX: 340 });
+    expect(now()).toBe(280);
+
+    // The window left mid-drag.
+    fireEvent.pointerDown(el, { pointerId: 2, pointerType: 'mouse', button: 0, clientX: 280 });
+    fireEvent.pointerMove(el, { pointerId: 2, pointerType: 'mouse', buttons: 1, clientX: 250 });
+    act(() => {
+      window.dispatchEvent(new Event('blur'));
+    });
+    expect(shell()).not.toHaveClass('side-resizing');
+    expect(stored('width')).toBe('250');
+    fireEvent.pointerMove(el, { pointerId: 2, pointerType: 'mouse', buttons: 1, clientX: 300 });
+    expect(now()).toBe(250);
   });
 
   it('a finger or a pen drags it too; another mouse button does not', async () => {
@@ -967,7 +992,12 @@ describe('folding and opening move, smoothly (the owner’s ask)', () => {
     expect(moving()).toBe(true);
     expect(sideMoves()).toBe('none');
     expect(pageMoves()).toBe('none');
-    fireEvent.pointerMove(handle(), { pointerId: 1, pointerType: 'mouse', clientX: 260 });
+    fireEvent.pointerMove(handle(), {
+      pointerId: 1,
+      pointerType: 'mouse',
+      buttons: 1,
+      clientX: 260,
+    });
     expect(sideW()).toBe('260px');
     expect(sideMoves()).toBe('none');
     fireEvent.pointerUp(handle(), { pointerId: 1, pointerType: 'mouse', clientX: 260 });

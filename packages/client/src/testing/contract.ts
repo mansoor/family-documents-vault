@@ -3889,6 +3889,8 @@ export const contractScenarios: Scenario[] = [
   {
     name: 'an Only me or an Essential note is listed by its title and date alone, never found by its words, and read with them once it is confirmed to be you (0.9.0-dev.87)',
     run: async (api, ctx) => {
+      // Said so from 0.9.0-dev.88: what a phone asks by before it offers the switches.
+      expect((await api.capabilities()).features.notes_confirm).toBe(true);
       // A fresh sign-in has confirmed it's them for the next five minutes.
       const { access_token: token } = await signIn(api, ctx);
       const me = await api.me(token);

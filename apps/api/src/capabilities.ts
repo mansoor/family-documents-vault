@@ -299,6 +299,10 @@ export function buildCapabilities(config: CapabilityConfig): Capabilities {
       session_lock: true,
       // 0.9.0-dev.87: a browser's session locks by itself after a while away.
       auto_lock: true,
+      // 0.9.0-dev.87: Only me and Essential notes ask "Confirm it's you"
+      // before their words, and a note's Essential and sensitive switches
+      // exist (said from 0.9.0-dev.88, for the phone app to ask by).
+      notes_confirm: true,
       // 0.9.0 (AIR1): the AI reader set in Settings → Reading, unless the
       // operator keeps it out (FDV_AI_READER_SETTINGS=off); and the kinds
       // of reader this vault reads with — Ollama, Anthropic and an

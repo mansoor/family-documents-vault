@@ -5,7 +5,7 @@ import { BrowserRouter } from 'react-router';
 import { App } from './App.js';
 import { AppProvider } from './app-context.js';
 import { FlyoutProvider, useChangesBeside, useFlyouts, type Flyouts } from './flyout-context.js';
-import { flyoutsKey, FREE_AFTER_MS, SWEEP_EVERY_MS } from './flyout-store.js';
+import { flyoutsKey, FREE_AFTER_MS, paneWidthKey, SWEEP_EVERY_MS } from './flyout-store.js';
 import { setShortcutsOn } from './shortcuts.js';
 import { fresh, installFakeApi, ME, PASSPORT, signedIn, type FakeState } from './test-api.js';
 
@@ -1005,6 +1005,331 @@ describe('side by side', () => {
   });
 });
 
+describe('the width of the one beside the list', () => {
+  // At 1,600 px with the sidebar at 216: 992 px to start with (62vw), at
+  // least 360, and at most 1,068 (the window less the sidebar, the tray
+  // and the list's 240 px).
+  const START = 992;
+  const MAX = 1068;
+  const EDGE = 'Width of the document beside the list';
+  const edgeOf = (aside: HTMLElement) => within(aside).getByRole('separator', { name: EDGE });
+  const chosen = (aside: HTMLElement) => aside.style.getPropertyValue('--flyout-w');
+  const kept = () => localStorage.getItem(paneWidthKey('me'));
+  const resized = (px: number) =>
+    act(() => {
+      atWidth(px);
+      window.dispatchEvent(new Event('resize'));
+    });
+  /** Pressed on the edge, as the main button or a finger. */
+  const press = (edge: HTMLElement, x: number, pointerId = 1, pointerType = 'mouse') =>
+    fireEvent.pointerDown(edge, { pointerId, pointerType, button: 0, buttons: 1, clientX: x });
+  /** Moved with it held. */
+  const move = (edge: HTMLElement, x: number, pointerId = 1, pointerType = 'mouse') =>
+    fireEvent.pointerMove(edge, { pointerId, pointerType, buttons: 1, clientX: x });
+  /** Pressed, moved to `x`, and drawn there. */
+  async function held(aside: HTMLElement, from: number, x: number, pointerId = 1) {
+    const edge = edgeOf(aside);
+    press(edge, from, pointerId);
+    move(edge, x, pointerId);
+    await waitFor(() => expect(chosen(aside)).toBe(`${START + from - x}px`));
+    return edge;
+  }
+
+  it('its edge facing the list: ← and → in steps, Home and End, Enter back to the usual; kept in this browser', async () => {
+    at(3, ROOMY);
+    const aside = await open(1);
+    const edge = edgeOf(aside);
+    expect(edge).toHaveAttribute('aria-orientation', 'vertical');
+    expect(edge).toHaveAttribute('tabindex', '0');
+    expect(edge).toHaveAttribute('aria-controls', aside.id);
+    expect(edge).toHaveAttribute('aria-valuenow', String(START));
+    expect(edge).toHaveAttribute('aria-valuemin', '360');
+    expect(edge).toHaveAttribute('aria-valuemax', String(MAX));
+    expect(edge).toHaveAttribute('aria-valuetext', `${START} pixels wide`);
+    expect(chosen(aside)).toBe('');
+    await expectAccessible();
+
+    // ← moves the edge left: wider, 16 px; Shift, 64; → narrower.
+    fireEvent.keyDown(edge, { key: 'ArrowLeft' });
+    expect(edge).toHaveAttribute('aria-valuenow', String(START + 16));
+    expect(chosen(aside)).toBe(`${START + 16}px`);
+    expect(kept()).toBe(String(START + 16));
+    fireEvent.keyDown(edge, { key: 'ArrowRight', shiftKey: true });
+    expect(edge).toHaveAttribute('aria-valuenow', String(START + 16 - 64));
+    // The limits, and no further.
+    fireEvent.keyDown(edge, { key: 'End' });
+    expect(edge).toHaveAttribute('aria-valuenow', String(MAX));
+    fireEvent.keyDown(edge, { key: 'ArrowLeft' });
+    expect(edge).toHaveAttribute('aria-valuenow', String(MAX));
+    fireEvent.keyDown(edge, { key: 'Home' });
+    expect(edge).toHaveAttribute('aria-valuenow', '360');
+    fireEvent.keyDown(edge, { key: 'ArrowRight' });
+    expect(edge).toHaveAttribute('aria-valuenow', '360');
+    expect(kept()).toBe('360');
+
+    // Enter: the usual width again, nothing kept.
+    fireEvent.keyDown(edge, { key: 'Enter' });
+    expect(edge).toHaveAttribute('aria-valuenow', String(START));
+    expect(chosen(aside)).toBe('');
+    expect(kept()).toBeNull();
+    // And a double-click.
+    fireEvent.keyDown(edge, { key: 'ArrowRight' });
+    expect(kept()).toBe(String(START - 16));
+    fireEvent.doubleClick(edge);
+    expect(edge).toHaveAttribute('aria-valuenow', String(START));
+    expect(kept()).toBeNull();
+
+    // Another opened alone has the width chosen too; one minimised has no edge.
+    fireEvent.keyDown(edge, { key: 'ArrowRight' });
+    const other = await open(2);
+    expect(aside).not.toBeVisible();
+    expect(within(aside).queryByRole('separator', { name: EDGE, hidden: true })).toBeNull();
+    expect(edgeOf(other)).toHaveAttribute('aria-valuenow', String(START - 16));
+    expect(chosen(other)).toBe(`${START - 16}px`);
+    // Only the number is kept, nothing of any document.
+    expect(kept()).toBe(String(START - 16));
+    await expectAccessible();
+  });
+
+  it('dragged with the pointer: once a frame, straight onto the pane, kept as it lets go; no words chosen on the way', async () => {
+    at(3, ROOMY);
+    const aside = await open(1);
+    const grid1 = await grid();
+    const edge = edgeOf(aside);
+    const frames = vi.spyOn(window, 'requestAnimationFrame');
+    const writes = vi.spyOn(Storage.prototype, 'setItem');
+
+    // Pressed: the page marked (no words chosen), the focus here. Not
+    // default-prevented, so a menu open elsewhere still hears the press.
+    expect(press(edge, 600)).toBe(true);
+    expect(edge).toHaveFocus();
+    expect(document.documentElement).toHaveClass('flyout-resizing');
+    // Three moves before the next frame: drawn once, with the last.
+    for (const x of [590, 570, 550]) move(edge, x);
+    expect(frames).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(chosen(aside)).toBe(`${START + 50}px`));
+    expect(edge).toHaveAttribute('aria-valuenow', String(START + 50));
+    // Nothing kept, nothing of the page drawn again, until it lets go.
+    expect(writes.mock.calls.filter(([key]) => key === paneWidthKey('me'))).toEqual([]);
+    expect(kept()).toBeNull();
+    // Past the widest: held there.
+    move(edge, 100);
+    fireEvent.pointerUp(edge, { pointerId: 1, pointerType: 'mouse', clientX: 100 });
+    expect(document.documentElement).not.toHaveClass('flyout-resizing');
+    expect(chosen(aside)).toBe(`${MAX}px`);
+    expect(edge).toHaveAttribute('aria-valuenow', String(MAX));
+    expect(kept()).toBe(String(MAX));
+    // The list is the same list, never drawn again from nothing.
+    expect(await grid()).toBe(grid1);
+
+    // A finger too; narrower, to the narrowest and no further.
+    press(edge, 300, 7, 'touch');
+    move(edge, 1500, 7, 'touch');
+    fireEvent.pointerUp(edge, { pointerId: 7, pointerType: 'touch', clientX: 1500 });
+    expect(kept()).toBe('360');
+    expect(edge).toHaveAttribute('aria-valuenow', '360');
+
+    // A press that never moves chooses nothing; the right button takes no hold.
+    localStorage.removeItem(paneWidthKey('me'));
+    press(edge, 500, 2);
+    fireEvent.pointerUp(edge, { pointerId: 2, pointerType: 'mouse', button: 0, clientX: 500 });
+    expect(kept()).toBeNull();
+    fireEvent.pointerDown(edge, { pointerId: 3, pointerType: 'mouse', button: 2, clientX: 500 });
+    move(edge, 400, 3);
+    fireEvent.pointerUp(edge, { pointerId: 3, pointerType: 'mouse', button: 2, clientX: 400 });
+    expect(kept()).toBeNull();
+    expect(document.documentElement).not.toHaveClass('flyout-resizing');
+  });
+
+  it('given up mid-drag — Esc, the pointer cancelled, its capture lost, the window left — as wide as before, and Esc minimises nothing', async () => {
+    at(3, ROOMY);
+    const aside = await open(1);
+
+    // Esc: back to the usual width, nothing kept, the document still there.
+    let edge = await held(aside, 600, 550);
+    fireEvent.keyDown(edge, { key: 'Escape' });
+    expect(chosen(aside)).toBe('');
+    expect(edge).toHaveAttribute('aria-valuenow', String(START));
+    expect(document.documentElement).not.toHaveClass('flyout-resizing');
+    expect(kept()).toBeNull();
+    expect(screen.getByRole('dialog', { name: 'Paper 01' })).toBeVisible();
+    // A move after it does nothing.
+    move(edge, 400);
+    expect(chosen(aside)).toBe('');
+
+    // With a width chosen before: back to that one.
+    fireEvent.keyDown(edge, { key: 'ArrowRight' });
+    expect(chosen(aside)).toBe(`${START - 16}px`);
+    press(edge, 600);
+    move(edge, 550);
+    await waitFor(() => expect(chosen(aside)).toBe(`${START - 16 + 50}px`));
+    fireEvent.pointerCancel(edge, { pointerId: 1, pointerType: 'mouse' });
+    expect(chosen(aside)).toBe(`${START - 16}px`);
+    expect(edge).toHaveAttribute('aria-valuenow', String(START - 16));
+    expect(kept()).toBe(String(START - 16));
+    fireEvent.doubleClick(edge);
+    expect(kept()).toBeNull();
+
+    // Its capture lost with no release: given up.
+    edge = await held(aside, 600, 560, 4);
+    fireEvent.lostPointerCapture(edge, { pointerId: 4, pointerType: 'mouse' });
+    expect(chosen(aside)).toBe('');
+    expect(kept()).toBeNull();
+
+    // The window left mid-drag: given up.
+    await held(aside, 600, 570, 5);
+    act(() => {
+      window.dispatchEvent(new Event('blur'));
+    });
+    expect(chosen(aside)).toBe('');
+    expect(document.documentElement).not.toHaveClass('flyout-resizing');
+    expect(kept()).toBeNull();
+
+    // A mouse moving with no button down: its release was missed; let go there.
+    edge = await held(aside, 600, 580, 6);
+    fireEvent.pointerMove(edge, { pointerId: 6, pointerType: 'mouse', buttons: 0, clientX: 300 });
+    expect(document.documentElement).not.toHaveClass('flyout-resizing');
+    expect(chosen(aside)).toBe(`${START + 20}px`);
+    expect(kept()).toBe(String(START + 20));
+    move(edge, 300, 6);
+    expect(chosen(aside)).toBe(`${START + 20}px`);
+  });
+
+  it('the edge gone mid-drag (minimised): the pane as wide as before, nothing held', async () => {
+    at(3, ROOMY);
+    const aside = await open(1);
+    await held(aside, 600, 550);
+    fireEvent.click(within(aside).getByRole('button', { name: 'Minimise Paper 01' }));
+    expect(aside).not.toBeVisible();
+    expect(within(aside).queryByRole('separator', { name: EDGE, hidden: true })).toBeNull();
+    expect(chosen(aside)).toBe('');
+    expect(document.documentElement).not.toHaveClass('flyout-resizing');
+    expect(kept()).toBeNull();
+    // Back from the tray, as wide as ever.
+    fireEvent.click(within(tray()).getByRole('button', { name: 'Paper 01, minimised' }));
+    const again = await screen.findByRole('dialog', { name: 'Paper 01' });
+    expect(edgeOf(again)).toHaveAttribute('aria-valuenow', String(START));
+  });
+
+  it('its frame is cancelled alone: a timer that has the same number still runs', async () => {
+    at(3, ROOMY);
+    const aside = await open(1);
+    const edge = edgeOf(aside);
+    const timer = vi.fn();
+    const id = window.setTimeout(timer, 30);
+    // The frame asked for comes back with the timer's number, and never runs.
+    vi.spyOn(window, 'requestAnimationFrame').mockImplementation(() => id);
+    const cancelled = vi.spyOn(window, 'cancelAnimationFrame');
+    press(edge, 600);
+    move(edge, 550);
+    fireEvent.pointerCancel(edge, { pointerId: 1, pointerType: 'mouse' });
+    expect(cancelled).toHaveBeenCalledWith(id);
+    await waitFor(() => expect(timer).toHaveBeenCalledTimes(1));
+  });
+
+  it('its widest follows the sidebar folded and opened again', async () => {
+    at(3, ROOMY);
+    const edge = edgeOf(await open(1));
+    expect(edge).toHaveAttribute('aria-valuemax', String(MAX));
+    // Folded to its icons (72 px): 144 px more room.
+    fireEvent.click(screen.getByRole('button', { name: 'Collapse the sidebar' }));
+    await waitFor(() => expect(edge).toHaveAttribute('aria-valuemax', String(MAX + 216 - 72)));
+    fireEvent.keyDown(edge, { key: 'End' });
+    expect(edge).toHaveAttribute('aria-valuenow', String(MAX + 144));
+    // Open again: the room as before, the width chosen held within it.
+    fireEvent.click(screen.getByRole('button', { name: 'Expand the sidebar' }));
+    await waitFor(() => expect(edge).toHaveAttribute('aria-valuemax', String(MAX)));
+    expect(edge).toHaveAttribute('aria-valuenow', String(MAX));
+    expect(kept()).toBe(String(MAX + 144));
+  });
+
+  it('a set side by side put back after a reload forgets it too', async () => {
+    localStorage.setItem(paneWidthKey('me'), '500');
+    sessionStorage.setItem(
+      flyoutsKey('me'),
+      JSON.stringify({
+        items: [
+          { id: 'doc-1', view: 'both' },
+          { id: 'doc-2', view: 'both' },
+        ],
+        front: 'doc-2',
+        side: ['doc-1', 'doc-2'],
+      }),
+    );
+    at(3, ROOMY);
+    const bar = await screen.findByRole('region', { name: 'Side by side' });
+    await waitFor(() => expect(kept()).toBeNull());
+    fireEvent.click(within(bar).getByRole('button', { name: 'One at a time' }));
+    const alone = await screen.findByRole('dialog', { name: 'Paper 02' });
+    expect(edgeOf(alone)).toHaveAttribute('aria-valuenow', String(START));
+    expect(chosen(alone)).toBe('');
+  });
+
+  it('remembered for this person in this browser, held within a narrower window and back as it grows', async () => {
+    localStorage.setItem(paneWidthKey('me'), '1000');
+    localStorage.setItem(paneWidthKey('m-2'), '500');
+    at(3, ROOMY);
+    const aside = await open(1);
+    const edge = edgeOf(aside);
+    expect(edge).toHaveAttribute('aria-valuenow', '1000');
+    expect(chosen(aside)).toBe('1000px');
+
+    // Narrower: as wide as it can be there, the usual 794 at 1,280 px.
+    resized(WIDE);
+    expect(edge).toHaveAttribute('aria-valuemax', '794');
+    expect(edge).toHaveAttribute('aria-valuenow', '794');
+    // The width chosen is not lost: the stylesheet holds the pane within the room.
+    expect(kept()).toBe('1000');
+    expect(chosen(aside)).toBe('1000px');
+    // Wider again, the width chosen is back.
+    resized(ROOMY);
+    expect(edge).toHaveAttribute('aria-valuenow', '1000');
+    expect(edge).toHaveAttribute('aria-valuemax', String(MAX));
+  });
+
+  it('side by side forgets it: each pane its share, and one at a time again starts as usual', async () => {
+    at(3, ROOMY);
+    await open(1);
+    const front = await open(2);
+    fireEvent.keyDown(edgeOf(front), { key: 'Home' });
+    expect(kept()).toBe('360');
+    fireEvent.click(within(front).getByRole('button', { name: 'Side by side' }));
+    const picker = await screen.findByRole('dialog', { name: 'Side by side' });
+    fireEvent.click(within(picker).getByRole('button', { name: /^Paper 01minimised/ }));
+    await screen.findByRole('region', { name: 'Side by side' });
+    const sides = [...document.querySelectorAll<HTMLElement>('.flyout-side')];
+    expect(sides).toHaveLength(2);
+    for (const pane of sides) {
+      expect(chosen(pane)).toBe('');
+      expect(within(pane).queryByRole('separator', { name: EDGE })).toBeNull();
+    }
+    expect(kept()).toBeNull();
+    await expectAccessible();
+
+    fireEvent.click(
+      within(screen.getByRole('region', { name: 'Side by side' })).getByRole('button', {
+        name: 'One at a time',
+      }),
+    );
+    const alone = await screen.findByRole('dialog', { name: 'Paper 01' });
+    expect(edgeOf(alone)).toHaveAttribute('aria-valuenow', String(START));
+    expect(chosen(alone)).toBe('');
+    expect(kept()).toBeNull();
+  });
+
+  it('none narrower than 700 px, where it covers the screen', async () => {
+    localStorage.setItem(paneWidthKey('me'), '500');
+    at(3, PHONE);
+    fireEvent.click(await screen.findByRole('button', { name: /^Paper 01/ }));
+    const aside = await screen.findByRole('dialog', { name: 'Paper 01' });
+    expect(aside).toHaveClass('flyout-full');
+    expect(within(aside).queryByRole('separator', { name: EDGE, hidden: true })).toBeNull();
+    expect(chosen(aside)).toBe('');
+    // Still kept for a wider window.
+    expect(kept()).toBe('500');
+  });
+});
+
 describe('the store beside the shell', () => {
   let got: Flyouts | null = null;
   let reloads = 0;
@@ -1047,5 +1372,24 @@ describe('the store beside the shell', () => {
     expect(got?.said).toBeNull();
     expect(got?.set.items).toEqual([]);
     expect(got?.changes.gone.size).toBe(0);
+  });
+
+  it('each person’s width: somebody else signing in has their own, and their choices are theirs', () => {
+    installFakeApi(fresh({ members: [ME], documents: [doc(1)] }));
+    signedIn('owner');
+    localStorage.setItem(paneWidthKey('me'), '500');
+    localStorage.setItem(paneWidthKey('m-2'), '700');
+    const view = render(<Host who="me" />);
+    expect(got?.paneWidth).toBe(500);
+    view.rerender(<Host who="m-2" />);
+    expect(got?.paneWidth).toBe(700);
+    act(() => got?.setPaneWidth(640));
+    expect(localStorage.getItem(paneWidthKey('m-2'))).toBe('640');
+    expect(localStorage.getItem(paneWidthKey('me'))).toBe('500');
+    view.rerender(<Host who="me" />);
+    expect(got?.paneWidth).toBe(500);
+    localStorage.removeItem(paneWidthKey('m-2'));
+    view.rerender(<Host who="m-2" />);
+    expect(got?.paneWidth).toBeNull();
   });
 });
