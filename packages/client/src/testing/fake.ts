@@ -5,23 +5,27 @@ import {
   addToDrawing,
   askedFolders,
   compareFolders,
-  ARRANGE_BY,
+  ARRANGE_BY_LEVELS,
+  cabinetSize,
+  dividerAsks,
+  paperBehind,
+  redrawCabinet,
+  RedrawRefused,
   CABINET_CHANGED,
   CABINET_FILTER_KEYS,
   CABINET_LIMITS,
   CABINET_TOO_BIG,
-  drawCabinet,
   dividerKeyOf,
-  dividerMode,
   layoutProblemOf,
   PIN_IN_TRASH,
   PIN_LIMITS,
-  rangesNewestFirst,
   shownDividers,
   TOO_MANY_PINS,
   type PinsMoved,
   type CabinetGroup,
   type CabinetLayout,
+  type CabinetLevel,
+  type CabinetPreviewAsk,
   type CabinetFromFolders,
   type CabinetView,
   type DocumentPage,
@@ -29,6 +33,7 @@ import {
   THE_HOUSEHOLD,
   NOT_SURE_YET,
   HOUSEHOLD_MEMBER_FILTER,
+  NOBODY_MEMBER_FILTER,
   CLOCK_TIME,
   QUIET_FROM_DEFAULT,
   QUIET_TO_DEFAULT,
@@ -3969,6 +3974,7 @@ export function createFakeVault(): {
           cabinets: true,
           cabinet_dividers: true,
           cabinet_pins: true,
+          cabinet_levels: true,
           caregivers: true,
           // An Idempotency-Key on POST /documents (0.9.0-dev.45), as the vault keeps it.
           idempotent_create: true,
@@ -4757,12 +4763,16 @@ export function createFakeVault(): {
       if (path === '/api/v1/cabinet' && method === 'GET') {
         // A drawn cabinet kept up to date (19 Nov 2026), as the vault keeps it.
         const layout = held.layout;
-        if (!layout?.arranged_by) return ok(held);
-        const all = await placed(layout, 'every');
+        if (!layout?.levels) return ok(held);
+        // Held by a drawn cabinet's folder or pin: one arranged by hand holds nothing for it.
+        const all = await placed(
+          { ...layout, cabinets: layout.cabinets.filter((c) => c.drawn) },
+          'every',
+        );
         if ('status' in all) return ok(held);
         const unheld = all.filter((x) => x.folders === 0).map((x) => x.doc);
-        let n = 0;
-        const kept = addToDrawing(layout, groupsOf(unheld), drawNames(), () => `fake-kept-${++n}`);
+        // Ids never one the cabinet has: a fresh one each time, as the vault's are random.
+        const kept = addToDrawing(layout, groupsOf(unheld), drawNames(), () => next('fake-kept'));
         if (kept.added === 0 || layoutProblemOf(kept.layout) !== null) return ok(held);
         const saved: CabinetView = {
           layout: kept.layout,
@@ -4807,6 +4817,11 @@ export function createFakeVault(): {
         }
         const problem = layoutProblemOf(layout);
         if (problem !== null) return fail(422, problem.code, problem.message);
+        // As the vault keeps it: its levels, null for none sent; nothing of `arranged_by`.
+        const keptLayout: CabinetLayout = {
+          levels: layout.levels ?? null,
+          cabinets: layout.cabinets,
+        };
         for (const { f } of shown({
           ...layout,
           cabinets: layout.cabinets.map((c) => ({
@@ -4879,7 +4894,7 @@ export function createFakeVault(): {
         }
         allPins[who.memberId] = kept;
         const saved: CabinetView = {
-          layout,
+          layout: keptLayout,
           version: held.version + 1,
           updated_at: new Date().toISOString(),
         };
@@ -4907,17 +4922,31 @@ export function createFakeVault(): {
         return ok(saved);
       }
       if (path === '/api/v1/cabinet/preview' && method === 'POST') {
-        const by = body.arrange_by as (typeof ARRANGE_BY)[number];
-        if (!(ARRANGE_BY as readonly string[]).includes(by)) {
-          return fail(422, 'validation_failed', 'That is not a way to arrange a cabinet.');
-        }
+        // Levels (0.9.0-dev.90), or one of an older vault's three ways for its levels.
+        const levels =
+          (body.levels as CabinetLevel[] | undefined) ??
+          (ARRANGE_BY_LEVELS as Readonly<Record<string, readonly CabinetLevel[]>>)[
+            typeof body.arrange_by === 'string' ? body.arrange_by : ''
+          ];
+        if (!levels) return fail(422, 'validation_failed', 'Choose the levels to arrange by.');
         const all = await tabled({ notes: 'exclude' });
         if ('status' in all) return all;
-        let n = 0;
-        const drawn = drawCabinet(by, groupsOf(all.items), drawNames(), () => `fake-node-${++n}`);
-        const drawnProblem = layoutProblemOf(drawn.layout);
-        if (drawnProblem !== null) return fail(422, drawnProblem.code, drawnProblem.message);
-        return ok(drawn);
+        try {
+          const drawn = redrawCabinet(
+            (body.layout as CabinetLayout | undefined) ?? held.layout,
+            {
+              levels: [...levels],
+              ...(body.cabinet ? { cabinet: body.cabinet as CabinetPreviewAsk['cabinet'] } : {}),
+            },
+            groupsOf(all.items),
+            drawNames(),
+            () => next('fake-node'),
+          );
+          return ok({ ...drawn, size: cabinetSize(drawn.layout) });
+        } catch (e) {
+          if (e instanceof RedrawRefused) return fail(422, 'cabinet_levels', e.message);
+          throw e;
+        }
       }
       // Bring your tree (0.9.0, C4): the folders the caller's own papers came
       // from, drawn into their cabinet beside what is there, not saved.
@@ -5071,28 +5100,36 @@ export function createFakeVault(): {
         const got = await tabled(f.filter);
         const pinnedIds = livePins(folderId);
         const rest = 'status' in got ? [] : got.items.filter((d) => !pinnedIds.includes(d.id));
+        // Each paper's divider, by every one of the folder's steps (0.9.0-dev.90).
+        const paperOf = (d: DocumentView) => ({
+          day: datedOf(d),
+          type_key: d.type_key,
+          category: d.category ?? state.types.find((t) => t.key === d.type_key)?.category ?? null,
+          person:
+            d.household_owned === true
+              ? HOUSEHOLD_MEMBER_FILTER
+              : (d.owner_member_id ?? NOBODY_MEMBER_FILTER),
+        });
         const byKey = new Map<string, DocumentView[]>();
         for (const d of rest) {
-          const key = dividerKeyOf(f.dividers, datedOf(d));
+          const key = dividerKeyOf(f, paperOf(d));
           byKey.set(key, [...(byKey.get(key) ?? []), d]);
         }
+        const shownHere = () =>
+          shownDividers(
+            f,
+            new Map([...byKey].map(([key, docs]) => [key, docs.length] as const)),
+            drawNames(),
+          );
         if (folderAt[2] === '/documents' && method === 'GET') {
           const q = { get: (name: string) => param(url, name) ?? null };
           const divider = q.get('divider') ?? '';
-          const mode = dividerMode(f.dividers);
-          // One plain list (`all`) wherever the folder has no ranges of its own:
-          // by year with one year or fewer to show, or a year folder.
-          const known =
-            (mode !== 'ranges' && divider === 'all') ||
-            (mode === 'years' && (divider === 'other' || /^year:[1-9]\d{3}$/.test(divider))) ||
-            (mode === 'ranges' &&
-              (divider === 'other' ||
-                rangesNewestFirst(f.dividers).some((r) => r.key === divider)));
-          if ('status' in got || !known)
+          // Any of the folder's steps, in its order, as the vault reads them;
+          // `all` wherever it has no ranges of its own; Everything else.
+          const ask = dividerAsks(f, divider, divider === 'rest' ? shownHere() : undefined);
+          if ('status' in got || ask === null)
             return fail(404, 'not_found', 'That divider does not exist.');
-          const items = [...(divider === 'all' ? rest : (byKey.get(divider) ?? []))].sort(
-            newestFirst,
-          );
+          const items = rest.filter((d) => paperBehind(ask, paperOf(d))).sort(newestFirst);
           const limit = Number(q.get('limit') ?? 50);
           const start = Number(q.get('cursor') ?? 0);
           const page = items.slice(start, start + limit);
@@ -5109,10 +5146,7 @@ export function createFakeVault(): {
           const pinned =
             'status' in everything ? [] : everything.items.filter((d) => pinnedIds.includes(d.id));
           // Passed over where a level has one group, as the vault does (one grouped count).
-          const dividers = shownDividers(
-            f,
-            new Map([...byKey].map(([key, docs]) => [key, docs.length] as const)),
-          );
+          const dividers = shownHere();
           return ok({
             folder_id: folderId,
             version: held.version,

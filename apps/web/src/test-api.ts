@@ -13,12 +13,19 @@ import {
   type GrownUpQuestionView,
   type MyCaregivers,
   type PersonCaregivers,
-  type ArrangeBy,
   type CabinetLayout,
   type CabinetFromFolders,
   type CabinetPreview,
   type CabinetView,
   dividerKeyOf,
+  dividerAsks,
+  paperBehind,
+  redrawCabinet,
+  RedrawRefused,
+  cabinetSize,
+  shortName,
+  type CabinetGroup,
+  type CabinetPreviewAsk,
   shownDividers,
   type PinsMoved,
   sensitiveOf,
@@ -371,8 +378,16 @@ export interface FakeState {
   placeAsks?: Array<{ document_ids: string[]; folder_id: string | null }>;
   /** The signed-in person's cabinet, as GET /cabinet gives it. */
   cabinet?: CabinetView;
-  /** What Arrange by draws, by its way, as POST /cabinet/preview gives it. */
-  cabinetPreviews?: Partial<Record<ArrangeBy, CabinetPreview>>;
+  /**
+   * What POST /cabinet/preview draws (0.9.0-dev.90): given, for a test of a
+   * drawing too big to make from a few papers; else drawn from the papers,
+   * as the vault draws it.
+   */
+  cabinetPreview?: (ask: CabinetPreviewAsk) => CabinetPreview | null;
+  /** Each POST /cabinet/preview, as sent. */
+  cabinetPreviewAsks?: CabinetPreviewAsk[];
+  /** How many parts the vault has drawn: each new one's id. */
+  cabinetDrawn?: number;
   /** Each PUT /cabinet, as sent. */
   cabinetSaves?: Array<{ layout: CabinetLayout; version: number; pins_moved?: PinsMoved[] }>;
   /** The signed-in person's pins (0.9.0, C2): which paper in which folder. */
@@ -6612,6 +6627,47 @@ export function installFakeApi(state: FakeState) {
           .filter((id) => given?.items.some((d) => d.id === id));
       const datedOf = (d: { issued?: { date: string } | null; created_at?: string }) =>
         (d.issued?.date ?? d.created_at ?? new Date().toISOString()).slice(0, 10);
+      /** What a paper is to a drawing and its dividers (0.9.0-dev.90): its day, kind, topic and whose. */
+      type Paper = {
+        issued?: { date: string } | null;
+        created_at?: string;
+        type_key?: string | null;
+        category?: string | null;
+        owner_member_id?: string | null;
+        household_owned?: boolean;
+      };
+      const paperOf = (d: Paper) => ({
+        day: datedOf(d),
+        type_key: d.type_key ?? null,
+        category:
+          d.category ??
+          (state.types.find((t) => t.key === d.type_key)?.category as string | undefined) ??
+          null,
+        person: d.household_owned === true ? 'household' : (d.owner_member_id ?? 'none'),
+      });
+      /** People and kinds named as the reader is given them; the reader first. */
+      const drawNames = () => {
+        const short = shortName(
+          state.members.map((m) => ({
+            id: m.id as string,
+            display_name: m.display_name as string,
+          })),
+        );
+        const me = (state.members[0]?.id as string | undefined) ?? 'me';
+        const rank = (id: string) =>
+          id === me ? 0 : id === 'household' ? 2 : id === 'none' ? 3 : 1;
+        return {
+          person: (id: string) =>
+            id === 'household'
+              ? 'The household'
+              : id === 'none'
+                ? 'Not sure yet'
+                : (short.get(id) ?? 'Someone in the family'),
+          kind: (key: string) =>
+            (state.types.find((t) => t.key === key)?.label as string | undefined) ?? 'Another kind',
+          personOrder: (a: string, b: string) => rank(a) - rank(b) || a.localeCompare(b),
+        };
+      };
       const folderAt =
         /^\/api\/v1\/cabinet\/folders\/([^/]+)(\/documents|\/pins|\/pins\/([^/]+))?$/.exec(path);
       if (folderAt) {
@@ -6644,26 +6700,29 @@ export function installFakeApi(state: FakeState) {
         >;
         const byKey = new Map<string, typeof rest>();
         for (const d of rest) {
-          const key = dividerKeyOf(f.dividers, datedOf(d));
+          const key = dividerKeyOf(f, paperOf(d));
           byKey.set(key, [...(byKey.get(key) ?? []), d]);
         }
+        const shownHere = () =>
+          shownDividers(
+            f,
+            new Map([...byKey].map(([key, docs]) => [key, docs.length] as const)),
+            drawNames(),
+          );
         const newest = (a: (typeof rest)[number], b: (typeof rest)[number]) =>
           datedOf(b).localeCompare(datedOf(a));
         if (folderAt[2] === '/documents') {
           // One plain list (`all`) wherever a level is passed over, as the vault does.
           const asked = query.get('divider') ?? '';
-          // Never for a folder with ranges of its own: they are never passed over.
-          if (asked === 'all' && (f.dividers?.ranges.length ?? 0) > 0) {
-            return refuse(404, 'not_found', 'That divider does not exist.');
-          }
-          const items = [...(asked === 'all' ? rest : (byKey.get(asked) ?? []))].sort(newest);
+          // Any of the folder's steps, as the vault reads them; `all` never
+          // for a folder with ranges of its own: they are never passed over.
+          const ask = dividerAsks(f, asked, asked === 'rest' ? shownHere() : undefined);
+          if (ask === null) return refuse(404, 'not_found', 'That divider does not exist.');
+          const items = rest.filter((d) => paperBehind(ask, paperOf(d))).sort(newest);
           return json({ items, total: items.length, has_more: false, next_cursor: null });
         }
         // One grouped count, a level of one passed over, as the vault does.
-        const dividers = shownDividers(
-          f,
-          new Map([...byKey].map(([key, docs]) => [key, docs.length] as const)),
-        );
+        const dividers = shownHere();
         return json({
           folder_id: folderId,
           version: held.version,
@@ -6715,7 +6774,7 @@ export function installFakeApi(state: FakeState) {
         }
         state.cabinetPins = pins.filter((x) => kept.has(x.folder_id));
         state.cabinet = {
-          layout: sent.layout,
+          layout: { ...sent.layout, levels: sent.layout.levels ?? null },
           version: held.version + 1,
           updated_at: new Date().toISOString(),
         };
@@ -6726,9 +6785,39 @@ export function installFakeApi(state: FakeState) {
         return state.fromFolders ? json(state.fromFolders) : refuse(404, 'not_found', 'Not found.');
       }
       if (path === '/api/v1/cabinet/preview' && method === 'POST') {
-        const by = (body as { arrange_by: ArrangeBy }).arrange_by;
-        const drawn = state.cabinetPreviews?.[by];
-        return drawn ? json(drawn) : refuse(422, 'validation_failed', 'Nothing to draw.');
+        const ask = body as CabinetPreviewAsk;
+        (state.cabinetPreviewAsks ??= []).push(ask);
+        const given = state.cabinetPreview?.(ask);
+        if (given) return json(given);
+        // Drawn from the papers the reader is given, as the vault draws them.
+        const groups = new Map<string, CabinetGroup>();
+        for (const d of (tabled({ notes: 'exclude' })?.items ?? []) as Paper[]) {
+          const p = paperOf(d);
+          const g = {
+            person: p.person,
+            category: p.category,
+            type_key: p.type_key,
+            year: Number(p.day.slice(0, 4)),
+          };
+          const key = JSON.stringify(g);
+          const had = groups.get(key);
+          if (had) had.n += 1;
+          else groups.set(key, { ...g, n: 1 });
+        }
+        try {
+          const drawn = redrawCabinet(
+            ask.layout ?? held.layout,
+            ask,
+            [...groups.values()],
+            drawNames(),
+            // Ids never one the cabinet has, as the vault's are random.
+            () => `drawn-${(state.cabinetDrawn = (state.cabinetDrawn ?? 0) + 1)}`,
+          );
+          return json({ ...drawn, size: cabinetSize(drawn.layout) });
+        } catch (e) {
+          if (e instanceof RedrawRefused) return refuse(422, 'cabinet_levels', e.message);
+          throw e;
+        }
       }
       if (path === '/api/v1/cabinet/counts' && method === 'GET') {
         return json({

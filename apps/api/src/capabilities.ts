@@ -74,6 +74,11 @@ export const DEPRECATIONS: Capabilities['deprecations'] = [
     field: 'Authorization: Basic on /api/v1/apps/* but POST /api/v1/apps/token',
     removed_in: '0.9.0',
   },
+  // A cabinet's three ways to arrange it (0.9.0-dev.90): levels replace
+  // them. Older apps still read `arranged_by` (always null now) and the
+  // preview still takes `arrange_by` for its levels.
+  { field: 'CabinetLayout.arranged_by', removed_in: '0.13.0' },
+  { field: 'POST /api/v1/cabinet/preview arrange_by', removed_in: '0.13.0' },
 ];
 
 /**
@@ -239,6 +244,8 @@ export function buildCapabilities(config: CapabilityConfig): Capabilities {
       // 0.9.0 (C2): dividers in a folder, and papers pinned into one by hand.
       cabinet_dividers: true,
       cabinet_pins: true,
+      // 0.9.0-dev.90: a cabinet arranged by levels you choose, and per cabinet.
+      cabinet_levels: true,
       // 0.9.0 (H1b): caregivers for somebody's medical papers, and turning 18.
       caregivers: true,
       // 0.9.0-dev.45: POST /documents takes an Idempotency-Key.

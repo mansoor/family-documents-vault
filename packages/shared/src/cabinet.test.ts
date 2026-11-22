@@ -46,7 +46,7 @@ const shape = (l: CabinetLayout, counts: Record<string, number>) =>
 
 describe('Arrange by', () => {
   it('by person, then topic, then year', () => {
-    const d = drawCabinet('person_category_year', HOUSEHOLD, names, ids());
+    const d = drawCabinet(['person', 'topic', 'year'], HOUSEHOLD, names, ids());
     expect(shape(d.layout, d.counts)).toEqual([
       ['Olive', [['Tax', [`${year}:2`, `${year - 1}:1`]]]],
       [
@@ -70,7 +70,7 @@ describe('Arrange by', () => {
   });
 
   it('by topic, then year, then person: a Tax cabinet with a drawer for each year', () => {
-    const d = drawCabinet('category_year_person', HOUSEHOLD, names, ids());
+    const d = drawCabinet(['topic', 'year', 'person'], HOUSEHOLD, names, ids());
     expect(shape(d.layout, d.counts)).toEqual([
       ['Identity', [[String(year - 3), ['Sam:1']]]],
       [
@@ -86,7 +86,7 @@ describe('Arrange by', () => {
   });
 
   it('by person, then kind: one cabinet, a drawer for each person', () => {
-    const d = drawCabinet('person_kind', HOUSEHOLD, names, ids());
+    const d = drawCabinet(['person', 'kind'], HOUSEHOLD, names, ids());
     expect(shape(d.layout, d.counts)).toEqual([
       [
         'My cabinet',
@@ -106,7 +106,7 @@ describe('Arrange by', () => {
   });
 
   it('draws nothing from nothing', () => {
-    const d = drawCabinet('person_category_year', [], names, ids());
+    const d = drawCabinet(['person', 'topic', 'year'], [], names, ids());
     expect(d.layout.cabinets).toEqual([]);
     expect(d.documents).toBe(0);
   });
@@ -121,7 +121,7 @@ describe('a drawn cabinet kept up to date', () => {
   };
 
   it('adds a cabinet for a topic that is new, in the drawing’s order: the 19 Nov bug', () => {
-    const drawn = drawCabinet('category_year_person', BEFORE, names, ids()).layout;
+    const drawn = drawCabinet(['topic', 'year', 'person'], BEFORE, names, ids()).layout;
     expect(drawn.cabinets.map((c) => c.name)).toEqual(['Identity', 'Tax', 'Bills & utilities']);
     // Sam's bank statement and payslip, Sensitive and kept to the adults, added since.
     const later: CabinetGroup[] = [
@@ -152,7 +152,7 @@ describe('a drawn cabinet kept up to date', () => {
   });
 
   it('adds a year to the topic’s own cabinet, and a person to the year’s own drawer, even renamed', () => {
-    const drawn = drawCabinet('category_year_person', BEFORE, names, ids()).layout;
+    const drawn = drawCabinet(['topic', 'year', 'person'], BEFORE, names, ids()).layout;
     const tax = drawn.cabinets.find((c) => c.name === 'Tax') as (typeof drawn.cabinets)[number];
     tax.name = 'Taxes';
     const kept = addToDrawing(
@@ -175,7 +175,7 @@ describe('a drawn cabinet kept up to date', () => {
   });
 
   it('by person, then kind: a new kind in the person’s drawer, a new person a drawer of their own', () => {
-    const drawn = drawCabinet('person_kind', BEFORE, names, ids()).layout;
+    const drawn = drawCabinet(['person', 'kind'], BEFORE, names, ids()).layout;
     const kept = addToDrawing(
       drawn,
       [
@@ -196,11 +196,11 @@ describe('a drawn cabinet kept up to date', () => {
   });
 
   it('never changes a cabinet arranged by hand, nor files a paper with no topic', () => {
-    const drawn = drawCabinet('category_year_person', BEFORE, names, ids()).layout;
+    const drawn = drawCabinet(['topic', 'year', 'person'], BEFORE, names, ids()).layout;
     const later: CabinetGroup[] = [
       { person: 'sam', category: 'financial', type_key: 'bank_statement', year, n: 1 },
     ];
-    const byHand = { ...drawn, arranged_by: null };
+    const byHand = { ...drawn, levels: null };
     expect(addToDrawing(byHand, later, names, newIds())).toEqual({
       layout: byHand,
       added: 0,
@@ -213,7 +213,7 @@ describe('a drawn cabinet kept up to date', () => {
   });
 
   it('finds a merged drawer by any of its folders: no drawer beside it', () => {
-    const drawn = drawCabinet('person_category_year', HOUSEHOLD, names, ids()).layout;
+    const drawn = drawCabinet(['person', 'topic', 'year'], HOUSEHOLD, names, ids()).layout;
     // Sam's Identity and Work drawers merged, as Arrange my cabinet merges them.
     const sam = drawn.cabinets[1] as (typeof drawn.cabinets)[number];
     const [identity, work] = sam.drawers as [CabinetDrawer, CabinetDrawer];
@@ -234,7 +234,7 @@ describe('a drawn cabinet kept up to date', () => {
   });
 
   it('finds a drawer whose folder asks several topics, merged into one', () => {
-    const drawn = drawCabinet('person_category_year', HOUSEHOLD, names, ids()).layout;
+    const drawn = drawCabinet(['person', 'topic', 'year'], HOUSEHOLD, names, ids()).layout;
     const sam = drawn.cabinets[1] as (typeof drawn.cabinets)[number];
     const [identity] = sam.drawers as [CabinetDrawer];
     sam.drawers = [
@@ -262,7 +262,7 @@ describe('a drawn cabinet kept up to date', () => {
   it('adds up to what a cabinet may hold, and leaves the rest in no folder', () => {
     const kinds = Array.from({ length: CABINET_LIMITS.folders + 2 }, (_, i) => `k${i}`);
     const full = drawCabinet(
-      'person_kind',
+      ['person', 'kind'],
       kinds
         .slice(0, CABINET_LIMITS.folders - 1)
         .map((type_key) => ({ person: 'olive', category: 'other', type_key, year, n: 1 })),
@@ -283,7 +283,7 @@ describe('a drawn cabinet kept up to date', () => {
   });
 
   it('never names a part with " › ", which joins a place’s names', () => {
-    const drawn = drawCabinet('person_category_year', BEFORE, names, ids()).layout;
+    const drawn = drawCabinet(['person', 'topic', 'year'], BEFORE, names, ids()).layout;
     const kept = addToDrawing(
       drawn,
       [{ person: 'ann', category: 'tax', type_key: 'tax_form', year, n: 1 }],
@@ -349,7 +349,7 @@ describe('merging two folders', () => {
 
 describe('a layout', () => {
   const one = (over: Partial<{ id: string; name: string }> = {}): CabinetLayout => ({
-    arranged_by: null,
+    levels: null,
     cabinets: [
       {
         id: 'c',

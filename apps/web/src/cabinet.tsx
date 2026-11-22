@@ -1,8 +1,24 @@
 import {
-  ARRANGE_BY,
-  ARRANGE_BY_WORDS,
   asksOneYear,
   CABINET_CHANGED,
+  CABINET_LEVEL_WORDS,
+  CABINET_LEVELS,
+  CABINET_LIMITS,
+  cabinetLevels,
+  cabinetSize,
+  dividerLevelsOf,
+  LEVEL_LIMITS,
+  LEVEL_PRESETS,
+  LEVELS_COMING,
+  levelsProblem,
+  levelsWords,
+  moveDownFor,
+  moveDownWords,
+  NO_MOVE_WORDS,
+  nodeLevels,
+  ownLevelsProblem,
+  sizeWarnings,
+  sizeWarningWords,
   folderQuestionWords,
   folderTreeWords,
   FOLDERS_CABINET,
@@ -21,8 +37,9 @@ import {
   resolvedRanges,
   schoolStages,
   THE_HOUSEHOLD,
-  type ArrangeBy,
   type Cabinet,
+  type CabinetLevel,
+  type CabinetSize,
   type CabinetDrawer,
   type CabinetFolder,
   type CabinetLayout,
@@ -33,13 +50,30 @@ import {
   type FolderDivider,
   type FolderDividers,
   type PinsMoved,
+  type SizeWarning,
 } from '@fdv/shared';
-import { useEffect, useId, useRef, useState, type ReactNode, type RefObject } from 'react';
+import {
+  useEffect,
+  useId,
+  useRef,
+  useState,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type ReactNode,
+  type RefObject,
+} from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router';
 import { api, ApiRequestError } from './api.js';
 import { describeError, useApp, useLoad } from './app-context.js';
 import { documentsCount, folderView } from './documents-table.js';
-import { Button, ConfirmDialog, ErrorNote, LoadFailed, Sheet } from './ui.js';
+import {
+  Button,
+  ConfirmDialog,
+  ErrorNote,
+  LoadFailed,
+  LockIcon,
+  Sheet,
+  useSheetFocus,
+} from './ui.js';
 import { DocRow } from './screens/Home.js';
 import { useChangesBeside, useOpenDocument } from './flyout-context.js';
 import { storedRole } from './session.js';
@@ -338,10 +372,11 @@ export function CabinetDocuments() {
             <strong className="cab-mine">My cabinet</strong>
             {/* The total it holds, each paper once, in the table's own words. */}
             {layout && typeof whole === 'number' && <span>{` · ${documentsCount(whole)}`}</span>}
-            {layout?.arranged_by && (
+            {/* What it is arranged by (0.9.0-dev.90): its levels, or by hand. */}
+            {layout && (
               <span>
                 {' · '}
-                {ARRANGE_BY_WORDS[layout.arranged_by].title.replace(/^By/, 'Arranged by')}
+                {layout.levels ? `Arranged by ${levelsWords(layout.levels)}` : 'Arranged by hand'}
               </span>
             )}
             <span>{' · Only you see this arrangement'}</span>
@@ -559,6 +594,13 @@ function Browse(props: {
                 <span className="muted">
                   {n === 1 ? (folders === 1 ? '1 folder' : `${folders} folders`) : `${n} drawers`}
                 </span>
+                {/* How it is arranged, where it is not the default's (0.9.0-dev.90). */}
+                {layout.levels && c.drawn?.levels && (
+                  <span className="badge badge-own">Own arrangement</span>
+                )}
+                {layout.levels && !c.drawn && (
+                  <span className="badge badge-hand">Arranged by hand</span>
+                )}
               </button>
             </li>
           );
@@ -853,16 +895,44 @@ function FolderPane(props: {
         </section>
       )}
       {contents !== null &&
-        dividers.map((d) => (
-          <DividerSection
-            key={`${d.key}:${asked}`}
-            folderId={folder.id}
-            divider={d}
-            startOpen={d.key === firstOpen || d.kind === 'all'}
-            names={names}
-            onChanged={changed}
-          />
-        ))}
+        dividerGroups(dividers).map((g) =>
+          g.leaves.length === 1 && (g.leaves[0]?.path?.length ?? 0) <= 1 ? (
+            <DividerSection
+              key={`${g.key}:${asked}`}
+              folderId={folder.id}
+              divider={g.leaves[0] as FolderDivider}
+              startOpen={g.leaves[0]?.key === firstOpen || g.leaves[0]?.kind === 'all'}
+              names={names}
+              onChanged={changed}
+            />
+          ) : (
+            // Levels 4 and 5 (0.9.0-dev.90): the leaves under their first step's tab.
+            <DividerGroup
+              key={`${g.key}:${asked}`}
+              name={g.name}
+              count={g.leaves.reduce((n, d) => n + d.count, 0)}
+              startOpen={g.leaves.some((d) => d.key === firstOpen)}
+            >
+              {g.leaves.map((d) => (
+                <DividerSection
+                  key={d.key}
+                  folderId={folder.id}
+                  divider={d}
+                  label={
+                    (d.path ?? [])
+                      .slice(1)
+                      .map((step) => step.name)
+                      .join(' · ') || d.name
+                  }
+                  nested
+                  startOpen={d.key === firstOpen}
+                  names={names}
+                  onChanged={changed}
+                />
+              ))}
+            </DividerGroup>
+          ),
+        )}
       <p className="visually-hidden" role="status" aria-live="polite">
         {said}
       </p>
@@ -890,9 +960,62 @@ function PinIcon() {
   );
 }
 
+/**
+ * A folder's dividers, grouped by their first step (0.9.0-dev.90): those of
+ * two steps under the first's tab ("Bank statement", then "2025"); one of
+ * one step, or one passed over inside its group, a group of its own.
+ */
+function dividerGroups(
+  dividers: readonly FolderDivider[],
+): Array<{ key: string; name: string; leaves: FolderDivider[] }> {
+  const out: Array<{ key: string; name: string; leaves: FolderDivider[] }> = [];
+  for (const d of dividers) {
+    const first = d.path && d.path.length > 1 ? d.path[0] : undefined;
+    const last = out[out.length - 1];
+    if (first && last && last.key === first.key) last.leaves.push(d);
+    else out.push({ key: first?.key ?? d.key, name: first?.name ?? d.name, leaves: [d] });
+  }
+  return out;
+}
+
+/** The tab of a first step of a folder's dividers, its leaves inside it, opened and closed. */
+function DividerGroup(props: {
+  name: string;
+  count: number;
+  startOpen: boolean;
+  children: ReactNode;
+}) {
+  const [open, setOpen] = useState(props.startOpen);
+  const inside = useId();
+  return (
+    <section className="cab-divider cab-divider-group">
+      <h3 className="cab-divider-head">
+        <button
+          type="button"
+          className="cab-divider-tab"
+          aria-expanded={open}
+          aria-controls={open ? inside : undefined}
+          onClick={() => setOpen((o) => !o)}
+        >
+          <span aria-hidden="true" className="cab-caret">
+            {open ? '▾' : '▸'}
+          </span>
+          <span className="cab-divider-name">{props.name}</span>
+          <Count n={props.count} />
+        </button>
+      </h3>
+      {open && (
+        <div id={inside} className="cab-divider-inside">
+          {props.children}
+        </div>
+      )}
+    </section>
+  );
+}
+
 /** A divider's days, in words: "2025", "1 Sep 2014 to 31 Aug 2020", "since 2027". */
 function dividerWords(d: FolderDivider): string | null {
-  if (d.kind === 'year' || d.kind === 'all') return null;
+  if (d.kind === 'year' || d.kind === 'all' || d.kind === 'group') return null;
   if (d.kind === 'other') return 'Papers in none of the ranges';
   return rangeWords(d.from ?? undefined, d.to ?? undefined);
 }
@@ -905,6 +1028,10 @@ function dividerWords(d: FolderDivider): string | null {
 function DividerSection(props: {
   folderId: string;
   divider: FolderDivider;
+  /** Its name inside its group (0.9.0-dev.90): its steps after the group's. */
+  label?: string;
+  /** Inside a group: a heading a level down. */
+  nested?: boolean;
   startOpen: boolean;
   names: ReturnType<typeof useNames>;
   onChanged: () => void;
@@ -994,9 +1121,10 @@ function DividerSection(props: {
   );
   if (divider.kind === 'all') return <div className="cab-divider-all">{list}</div>;
   const words = dividerWords(divider);
+  const Heading = props.nested ? 'h4' : 'h3';
   return (
     <section className="cab-divider">
-      <h3 className="cab-divider-head">
+      <Heading className="cab-divider-head">
         <button
           type="button"
           className="cab-divider-tab"
@@ -1007,11 +1135,11 @@ function DividerSection(props: {
           <span aria-hidden="true" className="cab-caret">
             {open ? '▾' : '▸'}
           </span>
-          <span className="cab-divider-name">{divider.name}</span>
+          <span className="cab-divider-name">{props.label ?? divider.name}</span>
           {words && <span className="muted cab-divider-days">{words}</span>}
           <Count n={divider.count} />
         </button>
-      </h3>
+      </Heading>
       {open && list}
     </section>
   );
@@ -1213,7 +1341,103 @@ function KeepFolderTree(props: {
   );
 }
 
-/** Arrange my cabinet: a way to draw it, the drawing to look over and change, then Use this arrangement. */
+/** Numbers as the family reads them: 1,204. */
+const COUNT = new Intl.NumberFormat('en-GB');
+
+/** What a cabinet is, to the person arranging: drawn by the default, by its own levels, or by hand. */
+function cabinetMark(layout: CabinetLayout, c: Cabinet): 'default' | 'own' | 'hand' {
+  if (!layout.levels || !c.drawn) return 'hand';
+  return c.drawn.levels ? 'own' : 'default';
+}
+const MARK_WORDS = {
+  default: 'Follows the default',
+  own: 'Own arrangement',
+  hand: 'Arranged by hand',
+} as const;
+
+/** What a level is, by its place among `total` levels: cabinet, drawer, folder or divider. */
+function roleOf(at: number, total: number): 'cabinet' | 'drawer' | 'folder' | 'divider' {
+  if (total <= LEVEL_LIMITS.fewest) return at === 0 ? 'drawer' : 'folder';
+  return (['cabinet', 'drawer', 'folder'] as const)[at] ?? 'divider';
+}
+const ROLE_WORDS = {
+  cabinet: 'Cabinet',
+  drawer: 'Drawer',
+  folder: 'Folder',
+  divider: 'Divider',
+} as const;
+/** A role in a sentence: "now level 2, the drawers". */
+const ROLE_PLURAL = {
+  cabinet: 'the cabinets',
+  drawer: 'the drawers',
+  folder: 'the folders',
+  divider: 'dividers inside each folder',
+} as const;
+
+const sameLevels = (
+  a: readonly string[] | null | undefined,
+  b: readonly string[] | null | undefined,
+) =>
+  (a ?? null) === null
+    ? (b ?? null) === null
+    : (b ?? null) !== null && a?.length === b?.length && (a ?? []).every((x, i) => x === b?.[i]);
+
+/**
+ * What saving a new default does, in words, said before it is saved: the
+ * dividers alone; own arrangements let go wherever the vault's redraw lets
+ * them go (the first level changing, or the default going from three or
+ * more levels to two, or from two); pinned papers let go, counted;
+ * cabinets arranged by hand kept. Null where there is nothing to say.
+ */
+export function changeWords(
+  saved: CabinetLayout | null,
+  draft: CabinetLayout | null,
+  /** Pinned papers in folders the draft no longer has. */
+  pinsLost = 0,
+): string | null {
+  if (!draft?.levels || !saved) return null;
+  const pinWords =
+    pinsLost === 0
+      ? ''
+      : pinsLost === 1
+        ? ' 1 pinned paper is in a folder this arrangement doesn’t keep: you are asked before it is let go.'
+        : ` ${pinsLost} pinned papers are in folders this arrangement doesn’t keep: you are asked before they are let go.`;
+  const hand = draft.cabinets.filter((c) => !c.drawn).length;
+  const handWords =
+    hand === 0
+      ? ''
+      : hand === 1
+        ? ' Your cabinet arranged by hand stays as it is, beside the drawn ones.'
+        : ` Your ${hand} cabinets arranged by hand stay as they are, beside the drawn ones.`;
+  const kept =
+    'Names you gave, hidden folders and pins are kept wherever the same folder is drawn again; you are asked first before any pin is let go.';
+  if (saved.levels === null) return `${kept}${handWords}${pinWords}`;
+  if (sameLevels(saved.levels, draft.levels)) return pinWords.trim() || null;
+  if (sameLevels(nodeLevels(saved.levels), nodeLevels(draft.levels))) {
+    return pinWords
+      ? `Only the dividers change: no folder is redrawn.${pinWords}`
+      : 'Only the dividers change: no folder is redrawn, and folders whose dividers you set yourself keep them.';
+  }
+  // Own arrangements stay only while there are three levels or more, the first the same.
+  const ownStay =
+    saved.levels.length >= LEVEL_LIMITS.nodes &&
+    draft.levels.length >= LEVEL_LIMITS.nodes &&
+    saved.levels[0] === draft.levels[0];
+  const own = ownStay ? [] : saved.cabinets.filter((c) => c.drawn?.levels).map((c) => c.name);
+  const ownWords =
+    own.length === 0
+      ? ''
+      : ` ${own.join(', ')} ${own.length === 1 ? 'has its own arrangement, which is' : 'have their own arrangements, which are'} let go: ${draft.levels.length < LEVEL_LIMITS.nodes ? 'with two levels there is one cabinet, which follows them' : 'the first level, the cabinets themselves, changes'}.`;
+  return `${kept}${ownWords}${handWords}${pinWords}`;
+}
+
+/**
+ * Arrange my cabinet (0.9.0-dev.90): the levels it is drawn by — the
+ * default for every cabinet, or one cabinet's own below it — chosen and put
+ * in order, drawn by the vault over what is there, then each part to rename,
+ * hide, move or merge, and Use this arrangement. Cabinets arranged by hand
+ * are kept beside the drawn ones.
+ */
 function ArrangeCabinet(props: {
   saved: CabinetView;
   counts: Record<string, number | null>;
@@ -1225,10 +1449,22 @@ function ArrangeCabinet(props: {
 }) {
   const { withToken } = useApp();
   const { saved } = props;
-  const [choice, setChoice] = useState<ArrangeBy | 'mine'>(saved.layout ? 'mine' : ARRANGE_BY[0]);
   const [draft, setDraft] = useState<CabinetLayout | null>(
     saved.layout ? clone(saved.layout) : null,
   );
+  /** What the picker arranges: the default, or one cabinet by its id. */
+  const [scope, setScope] = useState<string>('default');
+  /** The levels being chosen: the default's all, or a cabinet's below it. */
+  const [picked, setPicked] = useState<CabinetLevel[]>(
+    saved.layout ? [...(saved.layout.levels ?? [])] : [...(LEVEL_PRESETS[0] ?? [])],
+  );
+  /**
+   * What the picker draws over while its levels change: the arrangement as
+   * it was when it started, so one change never builds on another (unset
+   * after any change made by hand, which a drawing then keeps).
+   */
+  const [base, setBase] = useState<CabinetLayout | null | undefined>(undefined);
+  const asked = useRef(0);
   const [counts, setCounts] = useState<Record<string, number | null>>(props.counts);
   const [drawn, setDrawn] = useState<{ documents: number; left_out: number } | null>(null);
   const [loading, setLoading] = useState(false);
@@ -1244,8 +1480,10 @@ function ArrangeCabinet(props: {
   /** Mine let go: the newer arrangement, as it was saved, to work on instead. */
   const loadNewer = () => {
     if (!newer) return;
-    setChoice('mine');
     setDraft(newer.layout ? clone(newer.layout) : null);
+    setScope('default');
+    setPicked([...(newer.layout?.levels ?? [])]);
+    setBase(undefined);
     setCounts({});
     setDrawn(null);
     setVersion(newer.version);
@@ -1256,33 +1494,39 @@ function ArrangeCabinet(props: {
   };
   const [busy, setBusy] = useState(false);
   const [focusOn, setFocusOn] = useState<{ id: string; act: string } | null>(null);
-  const legendId = useId();
 
-  // A way chosen: drawn by the vault from what this person can see.
-  useEffect(() => {
-    if (choice === 'mine') return;
-    let cancelled = false;
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    setMoved([]);
+  /** Drawn by the vault: the default's levels, or one cabinet's own (null: the default's again). */
+  const draw = (ask: {
+    levels: CabinetLevel[];
+    cabinet?: { id: string; levels: CabinetLevel[] | null };
+  }) => {
+    const from = base !== undefined ? base : draft;
+    if (base === undefined) setBase(from);
+    const n = ++asked.current;
     setLoading(true);
-    void withToken((t) => api.previewCabinet(t, choice))
+    void withToken((t) => api.previewCabinet(t, { ...ask, ...(from ? { layout: from } : {}) }))
       .then((p) => {
-        if (cancelled || !p) return;
+        if (!p || n !== asked.current) return;
         setDraft(p.layout);
-        setCounts(p.counts);
+        setCounts({ ...props.counts, ...p.counts });
         setDrawn({ documents: p.documents, left_out: p.left_out });
         setError(null);
       })
       .catch((err: unknown) => {
-        if (!cancelled) setError(describeError(err));
+        if (n === asked.current) setError(describeError(err));
       })
       .finally(() => {
-        if (!cancelled) setLoading(false);
+        if (n === asked.current) setLoading(false);
       });
-    return () => {
-      cancelled = true;
-    };
-  }, [choice, withToken]);
+  };
+
+  // Nothing saved yet: the first shortcut drawn at once, to look over.
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    if (!saved.layout) draw({ levels: [...(LEVEL_PRESETS[0] ?? [])] });
+    // Once, as arranging starts.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // After a move, the focus stays with what moved.
   useEffect(() => {
@@ -1310,12 +1554,12 @@ function ArrangeCabinet(props: {
       fn(next);
       return next;
     });
+    // A change by hand: the next drawing keeps it.
+    setBase(undefined);
     setSaid(words);
     if (focus) setFocusOn(focus);
   };
 
-  /** Pinned papers in all: what a new arrangement may let go of. */
-  const pinnedAll = Object.values(props.pins).reduce((n, x) => n + x, 0);
   /** Those this arrangement lets go of: in folders it no longer has, not moved by a merge. */
   const pinsLost = (layout: CabinetLayout): number => {
     const kept = new Set(
@@ -1333,6 +1577,22 @@ function ArrangeCabinet(props: {
   };
   /** The pins a save would let go of, asked about first (the owner's rule: confirm what is destructive). */
   const [losing, setLosing] = useState<number | null>(null);
+
+  const size = draft ? cabinetSize(draft) : null;
+  const tooBig = size?.over !== null && size?.over !== undefined;
+  // What the picker warns of: only the cabinets it would redraw — those
+  // that follow the default, or the one being arranged — never one arranged
+  // by hand, nor another with its own arrangement.
+  const scopeSize = draft
+    ? cabinetSize({
+        levels: draft.levels,
+        cabinets: draft.cabinets.filter((c) =>
+          scope === 'default'
+            ? draft.levels !== null && c.drawn && !c.drawn.levels
+            : c.id === scope,
+        ),
+      })
+    : null;
 
   const use = async (sure = false) => {
     if (!draft) return;
@@ -1381,6 +1641,59 @@ function ArrangeCabinet(props: {
     } finally {
       setBusy(false);
     }
+  };
+
+  // The scope: the default, or a drawn cabinet of the draft.
+  const scoped = scope === 'default' ? undefined : draft?.cabinets.find((c) => c.id === scope);
+  const defaults = draft?.levels ?? null;
+  /** Levels chosen for the scope: new ones drawn at once, where they are 2 to 5. */
+  const choose = (next: CabinetLevel[], words: string) => {
+    setPicked(next);
+    setSaid(words);
+    if (scoped && defaults) {
+      if (ownLevelsProblem(next, defaults) === null) {
+        draw({ levels: defaults, cabinet: { id: scoped.id, levels: next } });
+      }
+    } else if (levelsProblem(next) === null) {
+      draw({ levels: next });
+    }
+  };
+  const arrangeCabinet = (c: Cabinet) => {
+    if (!defaults) return;
+    setScope(c.id);
+    setBase(undefined);
+    setPicked([...(c.drawn?.levels ?? defaults.slice(1))]);
+    setSaid(`Arranging ${c.name}: choose the levels inside it.`);
+  };
+  const followDefault = (c: Cabinet) => {
+    if (!defaults) return;
+    setScope(c.id);
+    setPicked(defaults.slice(1));
+    setSaid(`${c.name} follows the default again.`);
+    // Drawn over the arrangement as it is now, never a picker's earlier one.
+    setBase(undefined);
+    const from = draft;
+    const n = ++asked.current;
+    setLoading(true);
+    void withToken((t) =>
+      api.previewCabinet(t, {
+        levels: defaults,
+        cabinet: { id: c.id, levels: null },
+        ...(from ? { layout: from } : {}),
+      }),
+    )
+      .then((p) => {
+        if (!p || n !== asked.current) return;
+        setDraft(p.layout);
+        setCounts({ ...props.counts, ...p.counts });
+        setError(null);
+      })
+      .catch((err: unknown) => {
+        if (n === asked.current) setError(describeError(err));
+      })
+      .finally(() => {
+        if (n === asked.current) setLoading(false);
+      });
   };
 
   /** The row of one part: its name, Show, Move up and down, and merging into the one above. */
@@ -1473,6 +1786,7 @@ function ArrangeCabinet(props: {
               }
               setError(null);
               setDraft(trial);
+              setBase(undefined);
               setMoved((had) => [...had, ...moves]);
               setSaid(`${name} merged into ${m.into}.`);
             }}
@@ -1488,6 +1802,8 @@ function ArrangeCabinet(props: {
     (n, c) => n + c.drawers.reduce((m, d) => m + d.folders.length, 0),
     0,
   );
+  const lost = draft ? pinsLost(draft) : 0;
+  const note = changeWords(saved.layout, draft, lost);
 
   return (
     <section className="arrange stack" aria-labelledby="arrange-h">
@@ -1495,53 +1811,39 @@ function ArrangeCabinet(props: {
         <h2 id="arrange-h" className="section-h">
           Arrange my cabinet
         </h2>
-        <p className="muted">Only you see this arrangement.</p>
+        <p className="muted">
+          Only you see this arrangement. Folders fill themselves as papers are added.
+        </p>
       </div>
-      <fieldset className="arrange-by" aria-labelledby={legendId}>
-        <legend id={legendId}>Arrange by</legend>
-        {saved.layout && (
-          <label className={`arrange-choice${choice === 'mine' ? ' arrange-choice-on' : ''}`}>
-            <input
-              type="radio"
-              name="arrange-by"
-              checked={choice === 'mine'}
-              onChange={() => {
-                setChoice('mine');
-                setDraft(saved.layout ? clone(saved.layout) : null);
-                setCounts(props.counts);
-                setDrawn(null);
-              }}
-            />
-            <span>
-              <strong>My cabinet as it is</strong>
-              <span className="muted">Change its names, order and drawers below.</span>
-            </span>
-          </label>
-        )}
-        {ARRANGE_BY.map((by) => (
-          <label key={by} className={`arrange-choice${choice === by ? ' arrange-choice-on' : ''}`}>
-            <input
-              type="radio"
-              name="arrange-by"
-              checked={choice === by}
-              onChange={() => setChoice(by)}
-            />
-            <span>
-              <strong>{ARRANGE_BY_WORDS[by].title}</strong>
-              <span className="muted">{ARRANGE_BY_WORDS[by].example}</span>
-            </span>
-          </label>
-        ))}
-      </fieldset>
+      <div className="arrange-levels">
+        <ArrangeScopes
+          draft={draft}
+          scope={scope}
+          onDefault={() => {
+            setScope('default');
+            setBase(undefined);
+            setPicked([...(draft?.levels ?? [])]);
+          }}
+          onArrange={arrangeCabinet}
+          onUseDefault={followDefault}
+        />
+        <LevelPicker
+          key={scope}
+          scope={scoped && defaults ? { cabinet: scoped, defaults } : null}
+          picked={picked}
+          size={size}
+          scopeSize={scopeSize}
+          loading={loading}
+          note={note}
+          byHand={draft !== null && draft.levels === null}
+          onChoose={choose}
+          onUseDefault={scoped ? () => followDefault(scoped) : undefined}
+          onSaveAnyway={() => void use()}
+        />
+      </div>
 
       <section className="arrange-preview" aria-labelledby="arrange-preview-h" aria-busy={loading}>
         <h3 id="arrange-preview-h">Your cabinet will look like this</h3>
-        {choice !== 'mine' && pinnedAll > 0 && (
-          <p className="muted">
-            {pinnedAll === 1 ? 'You have 1 pinned paper' : `You have ${pinnedAll} pinned papers`}: a
-            new arrangement lets go of the pins in folders it doesn’t keep, and asks first.
-          </p>
-        )}
         {loading && <p className="muted">Drawing your cabinet…</p>}
         {drawn && !loading && (
           <p className="muted">
@@ -1562,6 +1864,12 @@ function ArrangeCabinet(props: {
                   node: c,
                   index: ci,
                   count: draft.cabinets.length,
+                  extra:
+                    cabinetMark(draft, c) === 'default' ? undefined : (
+                      <span className={`badge badge-${cabinetMark(draft, c)}`}>
+                        {MARK_WORDS[cabinetMark(draft, c)]}
+                      </span>
+                    ),
                   rename: (l, v) => {
                     (l.cabinets[ci] as Cabinet).name = v;
                   },
@@ -1679,6 +1987,10 @@ function ArrangeCabinet(props: {
                             {dividing === f.id && (
                               <DividerEditor
                                 folder={f}
+                                arranged={(() => {
+                                  const eff = cabinetLevels(draft, c);
+                                  return eff ? dividerLevelsOf(eff) : undefined;
+                                })()}
                                 names={props.names}
                                 onChange={(dividers, words) =>
                                   change((l) => {
@@ -1715,7 +2027,7 @@ function ArrangeCabinet(props: {
             Load the newer arrangement
           </Button>
         )}
-        <Button disabled={!draft || loading || busy} onClick={() => void use()}>
+        <Button disabled={!draft || loading || busy || tooBig} onClick={() => void use()}>
           {busy ? 'Saving…' : 'Use this arrangement'}
         </Button>
       </div>
@@ -1737,6 +2049,475 @@ function ArrangeCabinet(props: {
   );
 }
 
+/**
+ * What to arrange: the default, for every cabinet, and each cabinet with
+ * how it is arranged — following the default, its own, or by hand — and,
+ * for a drawn one, a ⋯ menu: Arrange this cabinet, and Use the default again.
+ */
+function ArrangeScopes(props: {
+  draft: CabinetLayout | null;
+  scope: string;
+  onDefault: () => void;
+  onArrange: (c: Cabinet) => void;
+  onUseDefault: (c: Cabinet) => void;
+}) {
+  const { draft } = props;
+  const [menu, setMenu] = useState<string | null>(null);
+  // A cabinet has its own arrangement only below a default of three levels or more.
+  const ownOffered = (draft?.levels?.length ?? 0) >= LEVEL_LIMITS.nodes;
+  return (
+    <ul className="arrange-scopes" aria-label="What to arrange">
+      <li>
+        <button
+          type="button"
+          className="arrange-scope"
+          aria-pressed={props.scope === 'default'}
+          onClick={props.onDefault}
+        >
+          <CabinetIcon />
+          <span className="arrange-scope-name">The default, for every cabinet</span>
+          <span className="muted arrange-scope-sub">
+            {draft?.levels ? levelsWords(draft.levels) : 'No levels chosen yet'}
+          </span>
+        </button>
+      </li>
+      {(draft?.cabinets ?? []).map((c) => {
+        const mark = cabinetMark(draft as CabinetLayout, c);
+        const offered = ownOffered && mark !== 'hand';
+        return (
+          <li key={c.id} className="arrange-scope-cab">
+            <div className="arrange-scope" aria-current={props.scope === c.id ? 'true' : undefined}>
+              <CabinetIcon />
+              <span className="arrange-scope-name">{c.name}</span>
+              <span className="arrange-scope-sub">
+                <span className={`badge badge-${mark}`}>{MARK_WORDS[mark]}</span>
+              </span>
+            </div>
+            {offered && (
+              <CabinetMenu
+                cabinet={c}
+                open={menu === c.id}
+                own={mark === 'own'}
+                onOpen={(open) => setMenu(open ? c.id : null)}
+                onArrange={() => {
+                  setMenu(null);
+                  props.onArrange(c);
+                }}
+                onUseDefault={() => {
+                  setMenu(null);
+                  props.onUseDefault(c);
+                }}
+              />
+            )}
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
+/** A cabinet's ⋯: Arrange this cabinet, and, with its own arrangement, Use the default again. */
+function CabinetMenu(props: {
+  cabinet: Cabinet;
+  open: boolean;
+  own: boolean;
+  onOpen: (open: boolean) => void;
+  onArrange: () => void;
+  onUseDefault: () => void;
+}) {
+  const id = useId();
+  const button = useRef<HTMLButtonElement>(null);
+  return (
+    <>
+      <button
+        ref={button}
+        type="button"
+        className="btn btn-quiet btn-small arrange-more"
+        aria-label={`More for ${props.cabinet.name}`}
+        aria-haspopup="menu"
+        aria-expanded={props.open}
+        aria-controls={props.open ? id : undefined}
+        onClick={() => props.onOpen(!props.open)}
+      >
+        ⋯
+      </button>
+      {props.open && (
+        <MenuBox returnFocus={button} onClose={() => props.onOpen(false)}>
+          <div id={id} role="menu" aria-label={props.cabinet.name} onKeyDown={moveInList}>
+            <button type="button" role="menuitem" className="menu-item" onClick={props.onArrange}>
+              Arrange this cabinet…
+            </button>
+            {props.own && (
+              <button
+                type="button"
+                role="menuitem"
+                className="menu-item"
+                onClick={props.onUseDefault}
+              >
+                Use the default again
+              </button>
+            )}
+          </div>
+        </MenuBox>
+      )}
+    </>
+  );
+}
+
+/** A small menu in its place: focus on its first item, Tab kept inside, Escape back to its button. */
+function MenuBox(props: {
+  returnFocus: RefObject<HTMLButtonElement | null>;
+  onClose: () => void;
+  children: ReactNode;
+}) {
+  const box = useRef<HTMLDivElement>(null);
+  useSheetFocus(box, { onEscape: props.onClose, returnFocus: props.returnFocus });
+  return (
+    <div ref={box} className="menu-box arrange-menu">
+      {props.children}
+    </div>
+  );
+}
+
+/** Up and down a menu's items, round from the end, and Home and End. */
+function moveInList(e: ReactKeyboardEvent<HTMLDivElement>) {
+  const items = [...e.currentTarget.querySelectorAll<HTMLElement>('[role="menuitem"]')];
+  const now = items.findIndex((item) => item === document.activeElement);
+  const end = items.length - 1;
+  const to = (
+    {
+      ArrowDown: now < end ? now + 1 : 0,
+      ArrowUp: now > 0 ? now - 1 : end,
+      Home: 0,
+      End: end,
+    } as Record<string, number>
+  )[e.key];
+  if (to === undefined) return;
+  e.preventDefault();
+  items[to]?.focus();
+}
+
+/**
+ * The level picker: the levels in order, each its role — cabinet, drawer,
+ * folder or divider — moved with ↑ and ↓ (or dragged by its grip), removed
+ * with ×, added from the levels not in use; Who issued it shown, coming
+ * next. For one cabinet, the default's first level is the cabinet itself,
+ * fixed. What it makes is counted, with a warning — amber above what is easy
+ * to open, red past what a cabinet can hold — and Move it down for me.
+ */
+function LevelPicker(props: {
+  /** One cabinet's own, below the default's first level; null for the default. */
+  scope: { cabinet: Cabinet; defaults: CabinetLevel[] } | null;
+  picked: CabinetLevel[];
+  /** The whole layout's: what refuses it. */
+  size: CabinetSize | null;
+  /** The cabinets this picker would redraw: what it warns of. */
+  scopeSize: CabinetSize | null;
+  loading: boolean;
+  note: string | null;
+  byHand: boolean;
+  onChoose: (levels: CabinetLevel[], words: string) => void;
+  onUseDefault: (() => void) | undefined;
+  onSaveAnyway: () => void;
+}) {
+  const { scope, picked, size, scopeSize } = props;
+  const headingId = useId();
+  const heading = useRef<HTMLHeadingElement>(null);
+  const listRef = useRef<HTMLOListElement>(null);
+  const [focusOn, setFocusOn] = useState<{ level: CabinetLevel; act: string } | null>(null);
+  const dragging = useRef<number | null>(null);
+  const locked = scope ? (scope.defaults[0] as CabinetLevel) : null;
+  /** Every level, from the cabinet's own first. */
+  const all: CabinetLevel[] = locked ? [locked, ...picked] : picked;
+  const fewest = locked ? LEVEL_LIMITS.fewest + 1 : LEVEL_LIMITS.fewest;
+  const most = LEVEL_LIMITS.most;
+  const unused = CABINET_LEVELS.filter((l) => !all.includes(l));
+  const name = (l: CabinetLevel) => CABINET_LEVEL_WORDS[l].name;
+
+  // After a change, the focus on the level it was about, once its row is
+  // drawn again: the button asked for, else another of its row, else the
+  // picker's heading — never left on a button that is gone.
+  useEffect(() => {
+    if (!focusOn) return;
+    const li = listRef.current?.querySelector<HTMLElement>(`[data-level="${focusOn.level}"]`);
+    const target = [focusOn.act, 'up', 'down', 'remove']
+      .map((act) => li?.querySelector<HTMLButtonElement>(`[data-act="${act}"]:not([disabled])`))
+      .find((b) => b);
+    (target ?? heading.current)?.focus();
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setFocusOn(null);
+  }, [focusOn]);
+
+  const placeWords = (levels: CabinetLevel[], l: CabinetLevel) => {
+    const every = locked ? [locked, ...levels] : levels;
+    const at = every.indexOf(l);
+    return `now level ${at + 1}, ${ROLE_PLURAL[roleOf(at, every.length)]}`;
+  };
+  const moveTo = (from: number, to: number, focus?: string) => {
+    if (to < 0 || to >= picked.length || from === to) return;
+    const next = [...picked];
+    const [l] = next.splice(from, 1);
+    if (!l) return;
+    next.splice(to, 0, l);
+    props.onChoose(next, `${name(l)} moved ${to < from ? 'up' : 'down'}: ${placeWords(next, l)}.`);
+    if (focus) setFocusOn({ level: l, act: focus });
+  };
+
+  // What it makes, and what is said of it: the cabinets it would redraw
+  // warned of; the whole layout refused past what a cabinet can hold.
+  const warnings = scopeSize ? sizeWarnings(scopeSize) : [];
+  const over = size?.over !== null && size?.over !== undefined;
+  const scoped = scopeSize ?? size;
+  const worst: SizeWarning | undefined =
+    over && scoped
+      ? (scoped.biggest_drawer?.folders ?? 0) > CABINET_LIMITS.folders
+        ? {
+            code: 'folders',
+            path: scoped.biggest_drawer?.path ?? ['', ''],
+            folders: scoped.biggest_drawer?.folders ?? 0,
+            cabinet_id: scoped.biggest_drawer?.cabinet_id ?? '',
+          }
+        : (scoped.biggest_cabinet?.drawers ?? 0) > CABINET_LIMITS.drawers
+          ? {
+              code: 'drawers',
+              name: scoped.biggest_cabinet?.name ?? '',
+              drawers: scoped.biggest_cabinet?.drawers ?? 0,
+              cabinet_id: scoped.biggest_cabinet?.cabinet_id ?? '',
+            }
+          : { code: 'folders_total', folders: size?.folders ?? 0 }
+      : warnings.find((w) => w.code !== 'near');
+  const fix = worst ? moveDownFor(picked, worst, locked !== null, locked ? [locked] : []) : null;
+
+  // Where a paper would be found, by the example of each level.
+  const example = all.map((l, i) => ({
+    l,
+    divider: roleOf(i, all.length) === 'divider',
+  }));
+  const yearAbove = all.slice(0, LEVEL_LIMITS.nodes).includes('year');
+
+  return (
+    <section className="level-picker" aria-labelledby={headingId}>
+      <div className="level-picker-top">
+        <h3 id={headingId} ref={heading} tabIndex={-1}>
+          {scope ? scope.cabinet.name : 'The default, for every cabinet'}
+          {scope?.cabinet.drawn?.levels && <span className="badge badge-own">Own arrangement</span>}
+        </h3>
+        {scope && props.onUseDefault && scope.cabinet.drawn?.levels && (
+          <button type="button" className="btn btn-quiet btn-small" onClick={props.onUseDefault}>
+            Use the default again
+          </button>
+        )}
+      </div>
+      <p className="muted">
+        {scope
+          ? `The cabinet itself always comes from the default’s first level, ${name(scope.defaults[0] as CabinetLevel)}. Choose what goes inside it: ${levelsWords(scope.defaults.slice(1))} by default.`
+          : props.byHand
+            ? 'Your cabinet is arranged by hand. Choose levels to add drawn cabinets beside your own, which stay as they are.'
+            : 'Every cabinet follows this order unless its ⋯ menu gives it its own. Only the first three levels make cabinets, drawers and folders; a fourth and fifth are dividers inside each folder, so they cost no folders.'}
+      </p>
+      {!scope && (
+        <div className="level-chips" role="group" aria-label="Start from">
+          <span className="muted">Start from:</span>
+          {LEVEL_PRESETS.map((p) => (
+            <button
+              key={p.join()}
+              type="button"
+              className="chip"
+              aria-pressed={sameLevels(p, picked)}
+              onClick={() => props.onChoose([...p], `Arranged by ${levelsWords(p)}.`)}
+            >
+              {levelsWords(p)}
+            </button>
+          ))}
+        </div>
+      )}
+      <ol ref={listRef} className="levels" aria-label="Levels, in order">
+        {locked && (
+          <li className="level level-locked" data-level={locked}>
+            <span className="level-grip" aria-hidden="true">
+              <LockIcon />
+            </span>
+            <span className="level-n">1</span>
+            <span className="level-name">
+              {name(locked)}
+              <small className="muted">the cabinet itself, set by the default</small>
+            </span>
+            <span className="level-role level-role-cabinet">Cabinet</span>
+          </li>
+        )}
+        {picked.map((l, i) => {
+          const at = locked ? i + 1 : i;
+          const role = roleOf(at, all.length);
+          return (
+            <li
+              key={l}
+              className="level"
+              data-level={l}
+              draggable
+              onDragStart={(e) => {
+                dragging.current = i;
+                e.dataTransfer.effectAllowed = 'move';
+                e.dataTransfer.setData('text/plain', l);
+              }}
+              onDragOver={(e) => e.preventDefault()}
+              onDrop={(e) => {
+                e.preventDefault();
+                const from = dragging.current;
+                dragging.current = null;
+                if (from !== null) moveTo(from, i);
+              }}
+            >
+              <span className="level-grip" aria-hidden="true">
+                ⋮⋮
+              </span>
+              <span className="level-n">{at + 1}</span>
+              <span className="level-name">
+                {name(l)}
+                <small className="muted">{CABINET_LEVEL_WORDS[l].hint}</small>
+              </span>
+              <span className={`level-role level-role-${role}`}>{ROLE_WORDS[role]}</span>
+              <span className="level-acts">
+                <button
+                  type="button"
+                  className="btn btn-quiet btn-small"
+                  data-act="up"
+                  disabled={i === 0}
+                  aria-label={`Move ${name(l)} up`}
+                  onClick={() => moveTo(i, i - 1, 'up')}
+                >
+                  ↑
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-quiet btn-small"
+                  data-act="down"
+                  disabled={i === picked.length - 1}
+                  aria-label={`Move ${name(l)} down`}
+                  onClick={() => moveTo(i, i + 1, 'down')}
+                >
+                  ↓
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-quiet btn-small"
+                  disabled={all.length <= fewest}
+                  aria-label={`Remove ${name(l)}`}
+                  data-act="remove"
+                  onClick={() => {
+                    props.onChoose(
+                      picked.filter((x) => x !== l),
+                      `${name(l)} removed.`,
+                    );
+                    // The level that takes its place, else the one before it.
+                    const next = picked[i + 1] ?? picked[i - 1];
+                    if (next) setFocusOn({ level: next, act: 'remove' });
+                  }}
+                >
+                  ×
+                </button>
+              </span>
+            </li>
+          );
+        })}
+      </ol>
+      <div className="level-chips" role="group" aria-label="Add a level">
+        <span className="muted">
+          {all.length >= most ? `Five levels at most.` : 'Add a level:'}
+        </span>
+        {all.length < most &&
+          unused.map((l) => (
+            <button
+              key={l}
+              type="button"
+              className="chip chip-add"
+              onClick={() => {
+                props.onChoose(
+                  [...picked, l],
+                  `${name(l)} added: ${placeWords([...picked, l], l)}.`,
+                );
+                // Its button is gone: the focus on the level added.
+                setFocusOn({ level: l, act: 'up' });
+              }}
+            >
+              + {name(l)}
+            </button>
+          ))}
+        {LEVELS_COMING.map((c) => (
+          <button key={c.key} type="button" className="chip chip-coming" disabled>
+            {c.name} <span className="chip-soon">coming next</span>
+          </button>
+        ))}
+      </div>
+      {all.length >= LEVEL_LIMITS.fewest && (
+        <p className="level-example">
+          <span className="muted">A paper would be found at: </span>
+          {all.length <= LEVEL_LIMITS.fewest && <span>My cabinet › </span>}
+          {example.map(({ l, divider }, i) => (
+            <span key={l} className={divider ? 'level-example-divider' : undefined}>
+              {i > 0 && ' › '}
+              {CABINET_LEVEL_WORDS[l].example}
+            </span>
+          ))}
+          <span className="muted">
+            {all.length <= LEVEL_LIMITS.nodes
+              ? yearAbove
+                ? ' · no dividers, Year is above'
+                : ' · dividers by year'
+              : ''}
+          </span>
+        </p>
+      )}
+      {size && (
+        <p className="muted level-size">
+          <strong>Your cabinet:</strong>{' '}
+          {`${size.cabinets === 1 ? '1 cabinet' : `${size.cabinets} cabinets`} · ${size.drawers === 1 ? '1 drawer' : `${COUNT.format(size.drawers)} drawers`} · ${size.folders === 1 ? '1 folder' : `${COUNT.format(size.folders)} folders`}.`}
+        </p>
+      )}
+      {!props.loading && (over || warnings.length > 0) && (
+        <div className={`level-warn${over ? ' level-warn-over' : ''}`} role="status">
+          <p>
+            <strong>
+              {over ? 'That is more than a cabinet can hold.' : 'That is a lot of folders.'}
+            </strong>{' '}
+            {over
+              ? `${worst ? sizeWarningWords(worst) : ''} A cabinet holds at most ${COUNT.format(CABINET_LIMITS.folders_total)} folders, ${CABINET_LIMITS.folders} in a drawer and ${CABINET_LIMITS.drawers} drawers in a cabinet, so this can’t be used.`
+              : `${warnings.map(sizeWarningWords).join(' ')} Opening them takes many clicks.`}{' '}
+            {fix ? moveDownWords(fix) : worst ? NO_MOVE_WORDS : ''}
+          </p>
+          <div className="row">
+            {fix && (
+              <button
+                type="button"
+                className="btn btn-primary btn-small"
+                onClick={() => {
+                  props.onChoose(
+                    fix.levels,
+                    `${fix.added ? `${name(fix.added)} added. ` : ''}${name(fix.level)} moved down: ${placeWords(fix.levels, fix.level)}.`,
+                  );
+                  // The box goes while the vault draws: the focus on the level moved.
+                  setFocusOn({ level: fix.level, act: 'up' });
+                }}
+              >
+                Move it down for me
+              </button>
+            )}
+            {!over && (
+              <button
+                type="button"
+                className="btn btn-quiet btn-small"
+                onClick={props.onSaveAnyway}
+              >
+                Save anyway
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+      {props.note && <p className="muted level-note">{props.note}</p>}
+    </section>
+  );
+}
+
 /** A folder's dividers in a word or two: "years", "none", "3 ranges". */
 function dividersSummary(d: FolderDividers | undefined): string {
   switch (dividerMode(d)) {
@@ -1744,11 +2525,18 @@ function dividersSummary(d: FolderDividers | undefined): string {
       return 'by year';
     case 'none':
       return 'none';
+    case 'levels':
+      return byLevelsWords(d?.levels ?? []);
     case 'ranges': {
       const n = d?.ranges.length ?? 0;
       return n === 1 ? '1 range' : `${n} ranges`;
     }
   }
+}
+
+/** Divider levels in words: "by kind, then year". */
+function byLevelsWords(levels: readonly CabinetLevel[]): string {
+  return `by ${levels.map((l) => CABINET_LEVEL_WORDS[l].name.toLowerCase()).join(', then ')}`;
 }
 
 /**
@@ -1763,6 +2551,11 @@ function dividersSummary(d: FolderDividers | undefined): string {
  */
 function DividerEditor(props: {
   folder: CabinetFolder;
+  /**
+   * The divider levels its cabinet's levels give it (0.9.0-dev.90), for a
+   * drawn folder: what "As arranged" puts back, whatever it is set to now.
+   */
+  arranged?: CabinetLevel[] | undefined;
   names: ReturnType<typeof useNames>;
   onChange: (dividers: FolderDividers | undefined, words: string) => void;
 }) {
@@ -1772,8 +2565,21 @@ function DividerEditor(props: {
   const mode = dividerMode(folder.dividers);
   const ranges = folder.dividers?.ranges ?? [];
   const spans = resolvedRanges(folder.dividers);
+  // The levels the folder was drawn with (0.9.0-dev.90), to go back to.
+  // Worked out from its cabinet's levels as they are now, never kept from before.
+  const arranged = props.arranged ?? [];
+  const byArrangement = dividerMode({ levels: arranged, ranges: [] }) === 'levels';
+  const asArranged =
+    mode === 'levels' &&
+    (folder.dividers?.levels ?? []).length === arranged.length &&
+    arranged.every((l, i) => folder.dividers?.levels[i] === l);
+  /** The folder's levels with no ranges: none of its own for plain years. */
+  const withoutRanges = (): FolderDividers | undefined => {
+    const levels = folder.dividers?.levels ?? ['year'];
+    return dividerMode({ levels, ranges: [] }) === 'years' ? undefined : { levels, ranges: [] };
+  };
   const set = (next: DividerRange[], words: string) =>
-    props.onChange({ years: true, ranges: next }, words);
+    props.onChange({ levels: folder.dividers?.levels ?? ['year'], ranges: next }, words);
   const at = (i: number, change: Partial<DividerRange>) =>
     set(
       ranges.map((r, j) => (j === i ? { ...r, ...change } : r)),
@@ -1797,28 +2603,38 @@ function DividerEditor(props: {
   return (
     <fieldset className="divider-editor" aria-labelledby={`${groupId}-l`}>
       <legend id={`${groupId}-l`}>Dividers in {folder.name}</legend>
-      {(['years', 'none', 'ranges'] as const).map((m) => (
+      {(byArrangement
+        ? (['levels', 'years', 'none', 'ranges'] as const)
+        : (['years', 'none', 'ranges'] as const)
+      ).map((m) => (
         <label key={m} className="divider-choice">
           <input
             type="radio"
             name={`${groupId}-mode`}
-            checked={mode === m}
+            checked={m === 'levels' ? asArranged : mode === m}
             onChange={() =>
-              m === 'years'
-                ? props.onChange(undefined, 'Divided by year.')
-                : m === 'none'
-                  ? props.onChange({ years: false, ranges: [] }, 'No dividers.')
-                  : set(
-                      ranges.length > 0 ? ranges : [{ name: '', from: null, to: null }],
-                      'Your own dividers: name each, and when it starts and ends.',
-                    )
+              m === 'levels'
+                ? props.onChange(
+                    { levels: [...arranged], ranges: [] },
+                    `Divided ${byLevelsWords(arranged)}.`,
+                  )
+                : m === 'years'
+                  ? props.onChange(undefined, 'Divided by year.')
+                  : m === 'none'
+                    ? props.onChange({ levels: [], ranges: [] }, 'No dividers.')
+                    : set(
+                        ranges.length > 0 ? ranges : [{ name: '', from: null, to: null }],
+                        'Your own dividers: name each, and when it starts and ends.',
+                      )
             }
           />
-          {m === 'years'
-            ? 'By year, by themselves'
-            : m === 'none'
-              ? 'No dividers'
-              : 'My own date ranges'}
+          {m === 'levels'
+            ? `As arranged: ${byLevelsWords(arranged)}`
+            : m === 'years'
+              ? 'By year, by themselves'
+              : m === 'none'
+                ? 'No dividers'
+                : 'My own date ranges'}
         </label>
       ))}
       {mode === 'years' && asksOneYear(folder.filter) && (
@@ -1884,7 +2700,7 @@ function DividerEditor(props: {
                     aria-label={`Remove ${label}`}
                     onClick={() =>
                       ranges.length === 1
-                        ? props.onChange(undefined, `${label} removed. Divided by year.`)
+                        ? props.onChange(withoutRanges(), `${label} removed.`)
                         : set(
                             ranges.filter((_, j) => j !== i),
                             `${label} removed.`,

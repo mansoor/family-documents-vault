@@ -43,7 +43,7 @@ afterEach(() => {
 });
 
 const LAYOUT: CabinetLayout = {
-  arranged_by: null,
+  levels: null,
   cabinets: [
     {
       id: 'c-study',

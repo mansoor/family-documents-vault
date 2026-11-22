@@ -584,6 +584,17 @@ export interface CapabilityFeatures {
    */
   cabinet_pins?: boolean;
   /**
+   * Cabinet levels (0.9.0-dev.90): a layout arranged by an ordered list of
+   * 2 to 5 levels (`levels`: `topic`, `person`, `year`, `kind`), each drawn
+   * cabinet saying what made it (`drawn`), with its own levels below it if
+   * it has any; a folder's `dividers.levels`, up to two; POST
+   * /cabinet/preview's `levels`, `cabinet` and `layout`, and its `size`; and
+   * GET /cabinet/folders/{id}'s dividers by those levels, each a leaf with
+   * its `path` (kind `group`), its `name` the steps' joined by " · " — the
+   * flat list an older app shows. Absent from older vaults.
+   */
+  cabinet_levels?: boolean;
+  /**
    * Caregivers and turning 18 (0.9.0, H1b): GET /caregivers, GET and POST
    * /members/{id}/caregivers, POST /members/{id}/caregivers/{caregiverId}/
    * keep and /revoke, GET /members/{id}/caregiver-views; GET

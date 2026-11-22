@@ -109,7 +109,7 @@ describe.skipIf(!testAdminUrl())('the folder a paper came from (C4)', () => {
       )
     ).rows.map((r) => r.detail);
   const mine: CabinetLayout = {
-    arranged_by: null,
+    levels: null,
     cabinets: [
       {
         id: 'mine',
@@ -296,7 +296,7 @@ describe.skipIf(!testAdminUrl())('the folder a paper came from (C4)', () => {
     const saved = await call('viewer', 'PUT', '/api/v1/cabinet', {
       version: 0,
       layout: {
-        arranged_by: null,
+        levels: null,
         cabinets: [
           {
             id: 'c',

@@ -1,5 +1,6 @@
-import type { FolderFilter } from './cabinet.js';
+import type { CabinetLevel, FolderFilter } from './cabinet.js';
 import type { DocumentView } from './documents.js';
+import { CATEGORY_LABELS } from './tokens.js';
 
 /**
  * Dividers and pins (0.9.0, C2; the owner's ideas 4 and 7 of 13 Nov 2026):
@@ -15,7 +16,10 @@ import type { DocumentView } from './documents.js';
  *    2020-08-31; "College", from 2027-09-01, its end open). Ranges never
  *    overlap — a paper goes behind one divider only, and a layout whose
  *    ranges share a day is refused, saying which two — and they replace the
- *    years. A paper in no range goes behind "Other years".
+ *    years. A paper in no range goes behind "Other years";
+ *  - or (0.9.0-dev.90) by up to two levels, in order — kind, then year,
+ *    say: "Bank statement · 2025" — which a drawing writes from its levels
+ *    4 and 5. Year is never one where it is a level above already.
  *
  * Year dividers with only one of them to show — a folder in a 2026 drawer,
  * say — are passed over, and the folder is one plain list; a folder whose
@@ -46,20 +50,67 @@ export interface DividerRange {
   to: string | null;
 }
 
-/** How a folder's papers are grouped. A folder without it has year dividers. */
+/**
+ * How a folder's papers are grouped (0.9.0; by levels since
+ * 0.9.0-dev.90). A folder without it has year dividers: `{ levels:
+ * ['year'], ranges: [] }`.
+ */
 export interface FolderDividers {
-  /** Year dividers, by themselves: on unless turned off. Not used while there are ranges. */
-  years: boolean;
-  /** The folder's own ranges: when there are any, they replace the years. */
+  /**
+   * Up to two levels, in order, each a divider inside the one before ("by
+   * kind, then year"); none: one plain list. A drawing writes them: its
+   * levels 4 and 5.
+   */
+  levels: CabinetLevel[];
+  /**
+   * The folder's own ranges: when there are any, they take Year's place
+   * among the levels, or come first where Year is not one.
+   */
   ranges: DividerRange[];
 }
 
-/** What groups a folder's papers: its own ranges, years, or nothing. */
-export type DividerMode = 'years' | 'ranges' | 'none';
+/** What a folder without dividers of its own is divided by. */
+export const YEAR_DIVIDERS: FolderDividers = { levels: ['year'], ranges: [] };
+
+/** What groups a folder's papers, in words a page may choose by: its own ranges, years, levels, or nothing. */
+export type DividerMode = 'years' | 'ranges' | 'none' | 'levels';
 
 export function dividerMode(d: FolderDividers | undefined): DividerMode {
   if (d && d.ranges.length > 0) return 'ranges';
-  return d && !d.years ? 'none' : 'years';
+  const levels = d?.levels ?? ['year'];
+  if (levels.length === 0) return 'none';
+  return levels.length === 1 && levels[0] === 'year' ? 'years' : 'levels';
+}
+
+/** One step of how a folder is divided: a level, or the folder's own ranges in Year's place. */
+export type DividerDim = CabinetLevel | 'ranges';
+
+/**
+ * A folder's divider steps as they may be asked: its levels, its own
+ * ranges in Year's place (or first, where Year is not one of them).
+ */
+export function askedDims(folder: { dividers?: FolderDividers | undefined }): DividerDim[] {
+  const d = folder.dividers;
+  const levels: DividerDim[] = [...(d?.levels ?? ['year'])];
+  if (!d || d.ranges.length === 0) return levels;
+  const at = levels.indexOf('year');
+  if (at === -1) return ['ranges', ...levels];
+  levels[at] = 'ranges';
+  return levels;
+}
+
+/**
+ * A folder's divider steps as it is opened: as asked, except that a folder
+ * whose question is one year already (`asksOneYear`) is never divided by
+ * year — the year is the folder, or its drawer. Its own named ranges are
+ * always kept: they are the person's own.
+ */
+export function dividerDims(folder: {
+  filter: FolderFilter;
+  dividers?: FolderDividers | undefined;
+}): DividerDim[] {
+  const dims = askedDims(folder);
+  return asksOneYear(folder.filter) ? dims.filter((d) => d !== 'year') : dims;
 }
 
 const ISO_DAY = /^\d{4}-\d{2}-\d{2}$/;
@@ -86,109 +137,377 @@ export function asksOneYear(filter: FolderFilter): boolean {
   });
 }
 
+/** What a paper is, to the dividers: the day it is about, its kind, its topic and whose it is. */
+export interface DividerPaper {
+  /** `YYYY-MM-DD`: issued, else added (the list's `dated_`). */
+  day: string;
+  type_key: string | null;
+  category: string | null;
+  /** A person's id, `household`, or `none` (Not sure yet). */
+  person: string;
+}
+
+/** How dividers name people and kinds, as the reader is given them, and put people in order. */
+export interface DividerNames {
+  person: (id: string) => string;
+  kind: (key: string) => string;
+  personOrder?: ((a: string, b: string) => number) | undefined;
+}
+
+const PLAIN_NAMES: DividerNames = { person: (id) => id, kind: (key) => key };
+
+/** The papers without a kind, a topic: behind these, always last. */
+export const NO_KIND_YET = 'No kind yet';
+export const NO_TOPIC_YET = 'No topic yet';
+/** What the smallest dividers past the most a folder shows go behind. */
+export const EVERYTHING_ELSE = 'Everything else';
+
+const inSpan = (day: string, s: DaySpan) =>
+  (s.from === null || s.from <= day) && (s.to === null || day <= s.to);
+
+/** One step of a paper's divider key. */
+function segmentOf(dim: DividerDim, paper: DividerPaper, spans: readonly DaySpan[]): string {
+  switch (dim) {
+    case 'year': {
+      const y = /^(\d{4})-/.exec(paper.day);
+      return y && inYears(Number(y[1])) ? `year:${y[1]}` : 'other';
+    }
+    case 'ranges': {
+      const at = spans.findIndex((s) => inSpan(paper.day, s));
+      return at === -1 ? 'other' : `range:${at}`;
+    }
+    case 'kind':
+      return `kind:${paper.type_key ?? ''}`;
+    case 'topic':
+      return `topic:${paper.category ?? ''}`;
+    case 'person':
+      return `person:${paper.person}`;
+  }
+}
+
 /**
- * How a folder's papers are grouped as it is opened: as its dividers say,
- * except that a folder whose question is one year already (`asksOneYear`)
- * is never divided by year — the year is the folder, or its drawer. Its
- * own named ranges are always kept: they are the person's own.
+ * The divider a paper is behind, by its key: one step for each of the
+ * folder's divider steps, joined by `/` (`kind:payslip/year:2025`); `all`
+ * for a folder with none. What one grouped count of a folder is keyed by,
+ * in the vault and the fakes alike.
  */
-export function shownDividerMode(folder: {
-  filter: FolderFilter;
-  dividers?: FolderDividers | undefined;
-}): DividerMode {
-  const mode = dividerMode(folder.dividers);
-  return mode === 'years' && asksOneYear(folder.filter) ? 'none' : mode;
+export function dividerKeyOf(
+  folder: { filter: FolderFilter; dividers?: FolderDividers | undefined },
+  paper: DividerPaper,
+): string {
+  const dims = dividerDims(folder);
+  if (dims.length === 0) return 'all';
+  const spans = resolvedRanges(folder.dividers);
+  return dims.map((d) => segmentOf(d, paper, spans)).join('/');
+}
+
+/** One step of a divider, read back: its level, and its value. */
+interface Step {
+  dim: DividerDim;
+  seg: string;
 }
 
 /**
  * A folder's dividers as GET /cabinet/folders/{id} gives them, from how
- * many of its papers (its pinned ones left out) are behind each divider,
- * by the key `dividerKeyOf` gives a paper. One grouped count is all it
- * needs, however many dividers there are.
+ * many of its papers (its pinned ones left out) are behind each key
+ * `dividerKeyOf` gives. One grouped count is all it needs, however many
+ * dividers there are.
  *
  *  - Its own named ranges: each one, newest first, empty or not, then
  *    Other years with something behind it. Never passed over.
- *  - By year: each year with something behind it, newest first, then Other
- *    years with something. A level with only one of them is passed over:
- *    the folder is one plain list (`all`), as is one whose question is one
- *    year already. With nothing behind any, none.
- *  - No dividers: one plain list.
+ *  - Any other step: each value with something behind it, in its order —
+ *    years newest first then Other years, people as the drawing puts them,
+ *    topics in the vault's order, kinds by name — those without a value
+ *    ("No kind yet") last. A step with only one value is passed over (the
+ *    first for the whole folder, the second within each of the first's),
+ *    its dividers moving up; with every step passed over, the folder is one
+ *    plain list (`all`), as is a folder with no steps. With nothing behind
+ *    any, none.
+ *  - Each divider is one leaf, its name its steps' joined by " · " ("Bank
+ *    statement · 2025"), its `path` each step: an older app shows the flat
+ *    list, a newer one groups the leaves under their first step.
+ *  - At most `DIVIDER_LIMITS.shown`: past it, the smallest go behind
+ *    "Everything else" (`rest`), last.
  */
 export function shownDividers(
   folder: { filter: FolderFilter; dividers?: FolderDividers | undefined },
   counts: ReadonlyMap<string, number>,
+  names: DividerNames = PLAIN_NAMES,
 ): FolderDivider[] {
-  const n = (key: string) => counts.get(key) ?? 0;
   const sum = [...counts.values()].reduce((a, b) => a + b, 0);
-  const all: FolderDivider[] = [
-    { key: 'all', kind: 'all', name: '', from: null, to: null, count: sum },
-  ];
-  const other: FolderDivider[] =
-    n('other') > 0
-      ? [
-          {
-            key: 'other',
-            kind: 'other',
-            name: OTHER_YEARS,
-            from: null,
-            to: null,
-            count: n('other'),
-          },
-        ]
-      : [];
-  switch (shownDividerMode(folder)) {
-    case 'none':
-      return all;
-    case 'ranges':
-      return [
-        ...rangesNewestFirst(folder.dividers).map(({ key, range }): FolderDivider => ({
-          key,
-          kind: 'range',
-          name: range.name,
-          from: range.from,
-          to: range.to,
-          count: n(key),
-        })),
-        ...other,
-      ];
-    case 'years': {
-      const years = [...counts]
-        .flatMap(([key, count]) => {
-          const y = /^year:(\d{4})$/.exec(key)?.[1];
-          return y !== undefined && count > 0 ? [{ y, count }] : [];
-        })
-        .sort((a, b) => (a.y < b.y ? 1 : a.y > b.y ? -1 : 0))
-        .map(({ y, count }): FolderDivider => ({
-          key: `year:${y}`,
-          kind: 'year',
-          name: y,
-          from: `${y}-01-01`,
-          to: `${y}-12-31`,
-          count,
-        }));
-      const groups = [...years, ...other];
-      return groups.length === 1 ? all : groups;
+  const all: FolderDivider = {
+    key: 'all',
+    kind: 'all',
+    name: '',
+    from: null,
+    to: null,
+    count: sum,
+    path: [],
+  };
+  const dims = dividerDims(folder);
+  if (dims.length === 0) return [all];
+  const entries = [...counts]
+    .filter(([, n]) => n > 0)
+    .map(([key, n]) => ({ segs: key.split('/'), n }));
+  const hasRanges = dims.includes('ranges');
+  if (entries.length === 0 && !hasRanges) return [];
+  const spans = resolvedRanges(folder.dividers);
+  const newest = rangesNewestFirst(folder.dividers);
+  const leaves: Array<{ path: Step[]; n: number }> = [];
+  const walk = (i: number, group: typeof entries, path: Step[]) => {
+    if (i === dims.length) {
+      leaves.push({ path, n: group.reduce((a, e) => a + e.n, 0) });
+      return;
     }
+    const dim = dims[i] as DividerDim;
+    const by = new Map<string, typeof entries>();
+    for (const e of group) {
+      const seg = e.segs[i] ?? '';
+      by.set(seg, [...(by.get(seg) ?? []), e]);
+    }
+    if (dim === 'ranges') {
+      for (const { key } of newest) walk(i + 1, by.get(key) ?? [], [...path, { dim, seg: key }]);
+      const other = by.get('other');
+      if (other) walk(i + 1, other, [...path, { dim, seg: 'other' }]);
+      return;
+    }
+    // One value, or none: passed over, its steps moving up.
+    if (by.size <= 1) {
+      walk(i + 1, group, path);
+      return;
+    }
+    for (const seg of [...by.keys()].sort(orderOf(dim, names))) {
+      walk(i + 1, by.get(seg) ?? [], [...path, { dim, seg }]);
+    }
+  };
+  walk(0, entries, []);
+  if (leaves.length === 1 && leaves[0]?.path.length === 0) return [all];
+  const shown = leaves.map((l) => leafOf(l.path, l.n, spans, folder.dividers, names));
+  if (shown.length <= DIVIDER_LIMITS.shown) return shown;
+  // The biggest kept, in their order; the smallest behind Everything else.
+  const keep = new Set(
+    [...shown]
+      .map((d, i) => ({ d, i }))
+      .sort((a, b) => b.d.count - a.d.count || a.i - b.i)
+      .slice(0, DIVIDER_LIMITS.shown - 1)
+      .map(({ d }) => d.key),
+  );
+  const rest = shown.filter((d) => !keep.has(d.key));
+  return [
+    ...shown.filter((d) => keep.has(d.key)),
+    {
+      key: 'rest',
+      kind: 'group',
+      name: EVERYTHING_ELSE,
+      from: null,
+      to: null,
+      count: rest.reduce((n, d) => n + d.count, 0),
+      path: [],
+    },
+  ];
+}
+
+/** The order of one step's values: those without a value last. */
+function orderOf(dim: DividerDim, names: DividerNames): (a: string, b: string) => number {
+  const valueOf = (seg: string) => seg.slice(seg.indexOf(':') + 1);
+  const noneLast = (a: string, b: string, then: (x: string, y: string) => number) => {
+    const x = valueOf(a);
+    const y = valueOf(b);
+    if (x === '' || y === '') return x === y ? 0 : x === '' ? 1 : -1;
+    return then(x, y);
+  };
+  switch (dim) {
+    case 'year':
+      // The newest first; Other years last.
+      return (a, b) =>
+        a === 'other' ? 1 : b === 'other' ? -1 : Number(valueOf(b)) - Number(valueOf(a));
+    case 'kind':
+      return (a, b) =>
+        noneLast(a, b, (x, y) => names.kind(x).localeCompare(names.kind(y)) || x.localeCompare(y));
+    case 'topic':
+      return (a, b) => noneLast(a, b, (x, y) => topicRank(x) - topicRank(y) || x.localeCompare(y));
+    case 'person':
+      return (a, b) => noneLast(a, b, (x, y) => names.personOrder?.(x, y) || x.localeCompare(y));
+    case 'ranges':
+      return () => 0;
   }
+}
+
+const TOPIC_ORDER = Object.keys(CATEGORY_LABELS);
+const topicRank = (c: string) => {
+  const at = TOPIC_ORDER.indexOf(c);
+  return at === -1 ? TOPIC_ORDER.length : at;
+};
+
+/** One leaf of a folder's dividers, named. */
+function leafOf(
+  path: readonly Step[],
+  count: number,
+  spans: readonly DaySpan[],
+  dividers: FolderDividers | undefined,
+  names: DividerNames,
+): FolderDivider {
+  let from: string | null = null;
+  let to: string | null = null;
+  const steps = path.map(({ dim, seg }): DividerStep => {
+    const value = seg.slice(seg.indexOf(':') + 1);
+    let name: string;
+    if (seg === 'other') name = OTHER_YEARS;
+    else if (dim === 'year') {
+      name = value;
+      from = `${value}-01-01`;
+      to = `${value}-12-31`;
+    } else if (dim === 'ranges') {
+      const i = Number(value);
+      name = dividers?.ranges[i]?.name ?? '';
+      from = spans[i]?.from ?? null;
+      to = spans[i]?.to ?? null;
+    } else if (dim === 'kind') name = value === '' ? NO_KIND_YET : names.kind(value);
+    else if (dim === 'topic')
+      name = value === '' ? NO_TOPIC_YET : (CATEGORY_LABELS[value] ?? value);
+    else name = names.person(value);
+    return { level: dim === 'ranges' ? 'year' : dim, key: seg, name };
+  });
+  const only = path.length === 1 ? path[0] : undefined;
+  const kind: FolderDivider['kind'] =
+    only?.seg === 'other'
+      ? 'other'
+      : only?.dim === 'year'
+        ? 'year'
+        : only?.dim === 'ranges'
+          ? 'range'
+          : 'group';
+  return {
+    key: path.map((p) => p.seg).join('/'),
+    kind,
+    name: steps.map((s) => s.name).join(' · '),
+    from,
+    to,
+    count,
+    path: steps,
+  };
+}
+
+/** One step of a divider, as GET /cabinet/folders/{id} names it (0.9.0-dev.90). */
+export interface DividerStep {
+  /** The level it is a step of: a folder's own range is in Year's place. */
+  level: CabinetLevel;
+  /** `year:2025`, `range:0`, `other`, `kind:payslip`, `topic:`, `person:household`… */
+  key: string;
+  name: string;
 }
 
 /** One divider of a folder, as GET /cabinet/folders/{id} gives it. */
 export interface FolderDivider {
   /**
    * `year:2025`; `range:0` (the range's place in the folder's own list);
-   * `other`, papers in none of its ranges; or `all`, a folder shown as one
-   * plain list: no dividers, a year folder, or years with only one to show.
-   * What GET /cabinet/folders/{id}/documents asks with.
+   * `other`, papers in none of its ranges, or of no year 1000 to 9999;
+   * `all`, a folder shown as one plain list: no dividers, a year folder, or
+   * every step with only one value to show. Since 0.9.0-dev.90 also each
+   * step of a folder divided by levels joined by `/`
+   * (`kind:bank_statement/year:2025`), and `rest`, Everything else. What
+   * GET /cabinet/folders/{id}/documents asks with.
    */
   key: string;
-  kind: 'year' | 'range' | 'other' | 'all';
-  /** Its name: the year, the range's own, "Other years"; empty for `all`. */
+  /** `group` (0.9.0-dev.90): divided by a level other than Year, or by two steps. */
+  kind: 'year' | 'range' | 'other' | 'all' | 'group';
+  /**
+   * Its name: the year, the range's own, "Other years"; each step's joined
+   * by " · " ("Bank statement · 2025"); empty for `all`.
+   */
   name: string;
-  /** Its days, both included; null where open (and for `other` and `all`). */
+  /** Its days, both included, where a year or range is a step of it; else null. */
   from: string | null;
   to: string | null;
   /** How many papers are behind it for the caller, pinned ones left out. */
   count: number;
+  /** Each of its steps, in order (0.9.0-dev.90): none for `all` and `rest`. */
+  path?: DividerStep[] | undefined;
+}
+
+/**
+ * What one divider asks beside its folder's question: every one of `atoms`,
+ * and none of the leaves in `none_of` (Everything else).
+ */
+export type DividerAtom =
+  | { within: DaySpan }
+  | { outside: DaySpan[] }
+  | { level: 'kind' | 'topic' | 'person'; value: string | null };
+
+export interface DividerAsk {
+  atoms: DividerAtom[];
+  none_of?: DividerAtom[][] | undefined;
+}
+
+/**
+ * What one divider of a folder asks, by its key; null for none of its. Any
+ * of the folder's steps may be asked, in its order, a step passed over left
+ * out: what it held is all of it. `all` answers any folder without ranges of
+ * its own; `rest` needs the dividers shown (`shown`), and asks for none of
+ * them.
+ */
+export function dividerAsks(
+  folder: { filter: FolderFilter; dividers?: FolderDividers | undefined },
+  key: string,
+  shown?: readonly FolderDivider[],
+): DividerAsk | null {
+  const dims = askedDims(folder);
+  if (key === 'all') return dims.includes('ranges') ? null : { atoms: [] };
+  if (key === 'rest') {
+    if (!shown?.some((d) => d.key === 'rest')) return null;
+    const leaves = shown
+      .filter((d) => d.key !== 'rest' && d.key !== 'all')
+      .map((d) => dividerAsks(folder, d.key)?.atoms ?? []);
+    return { atoms: [], none_of: leaves };
+  }
+  const spans = resolvedRanges(folder.dividers);
+  const atoms: DividerAtom[] = [];
+  let next = 0;
+  for (const seg of key.split('/')) {
+    const level = /^(kind|topic|person):(.*)$/s.exec(seg);
+    const want: DividerDim[] =
+      seg === 'other'
+        ? ['year', 'ranges']
+        : /^year:\d{4}$/.test(seg)
+          ? ['year']
+          : /^range:\d{1,2}$/.test(seg)
+            ? ['ranges']
+            : level
+              ? [level[1] as DividerDim]
+              : [];
+    const at = dims.findIndex((d, i) => i >= next && want.includes(d));
+    if (at === -1) return null;
+    next = at + 1;
+    const dim = dims[at] as DividerDim;
+    if (seg === 'other') {
+      atoms.push({ outside: dim === 'year' ? [DIVIDER_YEAR_SPAN] : [...spans] });
+    } else if (dim === 'year') {
+      const y = Number(seg.slice(5));
+      if (!inYears(y)) return null;
+      atoms.push({ within: { from: `${seg.slice(5)}-01-01`, to: `${seg.slice(5)}-12-31` } });
+    } else if (dim === 'ranges') {
+      const span = spans[Number(seg.slice(6))];
+      if (!span) return null;
+      atoms.push({ within: span });
+    } else {
+      const value = (level?.[2] ?? '') === '' ? null : (level?.[2] as string);
+      if (dim === 'person' && value === null) return null;
+      atoms.push({ level: dim, value });
+    }
+  }
+  return { atoms };
+}
+
+/** Whether a paper is behind one divider: what the fakes ask in place of the vault's SQL. */
+export function paperBehind(ask: DividerAsk, paper: DividerPaper): boolean {
+  const holds = (a: DividerAtom): boolean => {
+    if ('within' in a) return inSpan(paper.day, a.within);
+    if ('outside' in a) return !a.outside.some((s) => inSpan(paper.day, s));
+    const v =
+      a.level === 'kind' ? paper.type_key : a.level === 'topic' ? paper.category : paper.person;
+    return (v ?? null) === a.value;
+  };
+  return ask.atoms.every(holds) && !(ask.none_of ?? []).some((leaf) => leaf.every(holds));
 }
 
 /**
@@ -229,6 +548,10 @@ export const DIVIDER_LIMITS = {
   ranges: 20,
   /** A range's name, in characters. */
   name: 80,
+  /** Divider levels in one folder. */
+  levels: 2,
+  /** Dividers shown in one folder: past it, the smallest go behind Everything else. */
+  shown: 100,
 } as const;
 
 export const PIN_LIMITS = {
@@ -246,6 +569,12 @@ export const PIN_IN_TRASH = 'A paper in the Trash can’t be pinned. Restore it 
 
 /** The years a day may be in: four figures, as the vault and Postgres both take them. */
 export const DIVIDER_YEARS = { first: 1000, last: 9999 } as const;
+
+/** The days every year with a divider of its own covers: four figures, as the vault and Postgres take them. */
+export const DIVIDER_YEAR_SPAN: DaySpan = {
+  from: `${DIVIDER_YEARS.first}-01-01`,
+  to: `${DIVIDER_YEARS.last}-12-31`,
+};
 
 const DAY = /^(\d{4})-(\d{2})-(\d{2})$/;
 const YEAR = /^(\d{4})$/;
@@ -303,7 +632,11 @@ export type DividerProblemCode =
   | 'cabinet_divider_name_missing'
   | 'cabinet_divider_name_too_long'
   | 'cabinet_divider_dates'
-  | 'cabinet_divider_overlap';
+  | 'cabinet_divider_overlap'
+  | 'cabinet_divider_levels';
+
+/** The levels a folder may be divided by: a cabinet's own (`CABINET_LEVELS`). */
+const DIVIDER_LEVELS: ReadonlySet<string> = new Set(['topic', 'person', 'year', 'kind']);
 
 /** Two spans share a day: each end open counts as reaching as far as it can. */
 function overlap(a: DaySpan, b: DaySpan): boolean {
@@ -325,6 +658,20 @@ const typedWords = (r: DividerRange) =>
 export function dividersProblemOf(
   d: FolderDividers,
 ): { code: DividerProblemCode; message: string } | null {
+  // Its levels (0.9.0-dev.90): at most two, each once.
+  const levels: unknown = (d as { levels?: unknown }).levels;
+  if (
+    !Array.isArray(levels) ||
+    levels.length > DIVIDER_LIMITS.levels ||
+    !levels.every((l) => typeof l === 'string' && DIVIDER_LEVELS.has(l)) ||
+    new Set(levels).size !== levels.length ||
+    !Array.isArray((d as { ranges?: unknown }).ranges)
+  ) {
+    return {
+      code: 'cabinet_divider_levels',
+      message: `A folder can be divided by at most ${DIVIDER_LIMITS.levels} levels, each once.`,
+    };
+  }
   if (d.ranges.length > DIVIDER_LIMITS.ranges) {
     return {
       code: 'cabinet_too_many_dividers',
@@ -385,27 +732,6 @@ export function rangesNewestFirst(
       const bf = b.range.from ?? '';
       return af === bf ? 0 : af < bf ? 1 : -1;
     });
-}
-
-/**
- * The divider a paper dated `day` (`YYYY-MM-DD`) is behind, by its key. A
- * year outside 1000 to 9999 has no year divider of its own: Other years.
- */
-export function dividerKeyOf(d: FolderDividers | undefined, day: string): string {
-  switch (dividerMode(d)) {
-    case 'none':
-      return 'all';
-    case 'years': {
-      const y = /^(\d{4})-/.exec(day);
-      return y && inYears(Number(y[1])) ? `year:${y[1]}` : 'other';
-    }
-    case 'ranges': {
-      const at = resolvedRanges(d).findIndex(
-        (r) => (r.from === null || r.from <= day) && (r.to === null || day <= r.to),
-      );
-      return at === -1 ? 'other' : `range:${at}`;
-    }
-  }
 }
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];

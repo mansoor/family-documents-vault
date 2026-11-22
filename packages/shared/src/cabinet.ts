@@ -24,11 +24,110 @@ import {
 } from './cabinet-dividers.js';
 import { CATEGORY_LABELS } from './tokens.js';
 
-/** The ways the vault draws a cabinet from what it knows ("Arrange by"). */
+/**
+ * The levels a cabinet is arranged by (0.9.0-dev.90; the owner's idea of 19
+ * Nov 2026): an ordered list of 2 to 5 of them. The first three are the
+ * cabinet, the drawer and the folder; the fourth and fifth are dividers
+ * inside each folder, worked out as it opens, so they cost no folders. With
+ * two levels there is one cabinet, "My cabinet": the first level is its
+ * drawers and the second its folders.
+ *
+ *  - `topic`: the kind's category ("Financial").
+ *  - `person`: whose it is (a person, The household, or Not sure yet).
+ *  - `year`: the year it is about (issued, else added).
+ *  - `kind`: its kind ("Bank statement").
+ */
+export const CABINET_LEVELS = ['topic', 'person', 'year', 'kind'] as const;
+export type CabinetLevel = (typeof CABINET_LEVELS)[number];
+
+/** How many levels an arrangement has, and how many of them make cabinets, drawers and folders. */
+export const LEVEL_LIMITS = {
+  fewest: 2,
+  most: 5,
+  /** Cabinet, drawer and folder: the rest are dividers. */
+  nodes: 3,
+  /** Divider levels inside one folder. */
+  dividers: 2,
+} as const;
+
+/** Each level, as the picker shows it. */
+export const CABINET_LEVEL_WORDS: Record<
+  CabinetLevel,
+  { name: string; hint: string; example: string }
+> = {
+  topic: { name: 'Topic', hint: 'what it is about', example: 'Financial' },
+  person: { name: 'Person', hint: 'whose it is', example: 'Me' },
+  year: { name: 'Year', hint: 'issued, else added', example: '2026' },
+  kind: { name: 'Kind', hint: 'bank statement, payslip…', example: 'Bank statement' },
+};
+
+/** Levels the picker shows that are not offered yet. */
+export const LEVELS_COMING = [
+  { key: 'issuer', name: 'Who issued it', hint: 'the bank, the employer…' },
+] as const;
+
+/** One-tap shortcuts that fill the picker. */
+export const LEVEL_PRESETS: ReadonlyArray<readonly CabinetLevel[]> = [
+  ['person', 'topic', 'year'],
+  ['topic', 'year', 'person'],
+  ['person', 'kind'],
+];
+
+/** Levels in words: "Topic › Year › Person". */
+export function levelsWords(levels: readonly CabinetLevel[]): string {
+  return levels.map((l) => CABINET_LEVEL_WORDS[l].name).join(' › ');
+}
+
+const isLevel = (l: unknown): l is CabinetLevel =>
+  typeof l === 'string' && (CABINET_LEVELS as readonly string[]).includes(l);
+
+/** What is wrong with an arrangement's levels, in words, or null: 2 to 5 levels, each once. */
+export function levelsProblem(levels: readonly unknown[]): string | null {
+  if (levels.length < LEVEL_LIMITS.fewest || levels.length > LEVEL_LIMITS.most) {
+    return `Choose from ${LEVEL_LIMITS.fewest} to ${LEVEL_LIMITS.most} levels to arrange your cabinet by.`;
+  }
+  if (!levels.every(isLevel)) return 'That is not something a cabinet can be arranged by.';
+  if (new Set(levels).size !== levels.length) return 'Each level can be used only once.';
+  return null;
+}
+
+/**
+ * What is wrong with one cabinet's own arrangement, in words, or null: the
+ * 2 to 4 levels below the cabinet, each once, never the default's first
+ * level (the cabinet itself), and only while the default has three or more.
+ */
+export function ownLevelsProblem(
+  own: readonly unknown[],
+  defaults: readonly CabinetLevel[] | null,
+): string | null {
+  if (!defaults || defaults.length < LEVEL_LIMITS.nodes) {
+    return 'A cabinet can have its own arrangement only while your cabinet is arranged by three levels or more.';
+  }
+  if (own.length < LEVEL_LIMITS.fewest || own.length > LEVEL_LIMITS.most - 1) {
+    return `A cabinet’s own arrangement needs from ${LEVEL_LIMITS.fewest} to ${LEVEL_LIMITS.most - 1} levels below the cabinet.`;
+  }
+  if (!own.every(isLevel)) return 'That is not something a cabinet can be arranged by.';
+  if (new Set(own).size !== own.length) return 'Each level can be used only once.';
+  const first = defaults[0] as CabinetLevel;
+  if (own.includes(first)) {
+    return `${CABINET_LEVEL_WORDS[first].name} is the cabinet itself, so it can’t be a level inside it.`;
+  }
+  return null;
+}
+
+/**
+ * The ways an older vault drew a cabinet ("Arrange by").
+ * @deprecated Since 0.9.0-dev.90, levels (`CabinetLayout.levels`) replace
+ * them; kept for apps built against them, removed in 0.13.0.
+ */
 export const ARRANGE_BY = ['person_category_year', 'category_year_person', 'person_kind'] as const;
+/** @deprecated Since 0.9.0-dev.90: `CabinetLevel[]`. Removed in 0.13.0. */
 export type ArrangeBy = (typeof ARRANGE_BY)[number];
 
-/** Each way, as the picker offers it. */
+/**
+ * Each way, as an older picker offered it.
+ * @deprecated Since 0.9.0-dev.90: `levelsWords`. Removed in 0.13.0.
+ */
 export const ARRANGE_BY_WORDS: Record<ArrangeBy, { title: string; example: string }> = {
   person_category_year: {
     title: 'By person, then topic, then year',
@@ -42,6 +141,13 @@ export const ARRANGE_BY_WORDS: Record<ArrangeBy, { title: string; example: strin
     title: 'By person, then kind',
     example: 'Tariq › Passport · Olivia › Payslip',
   },
+};
+
+/** Each older way's levels: what POST /cabinet/preview's `arrange_by` (deprecated) still takes. */
+export const ARRANGE_BY_LEVELS: Readonly<Record<ArrangeBy, readonly CabinetLevel[]>> = {
+  person_category_year: ['person', 'topic', 'year'],
+  category_year_person: ['topic', 'year', 'person'],
+  person_kind: ['person', 'kind'],
 };
 
 /**
@@ -108,14 +214,39 @@ export interface CabinetDrawer extends Node {
   folders: CabinetFolder[];
 }
 
+/**
+ * What made a drawn cabinet: the value of the arrangement's first level it
+ * holds (`financial`, a person's id, `2026`, a kind), or null for the one
+ * "My cabinet" of two levels; and, optionally, its own levels below it.
+ */
+export interface DrawnFrom {
+  value: string | null;
+  /**
+   * Its own arrangement: the 2 to 4 levels below the cabinet, never the
+   * default's first. Absent: it follows the default.
+   */
+  levels?: CabinetLevel[] | undefined;
+}
+
 export interface Cabinet extends Node {
   drawers: CabinetDrawer[];
+  /**
+   * How it was drawn (0.9.0-dev.90). A cabinet without it was arranged by
+   * hand (a kept folder tree, say): never redrawn, never grown, kept beside
+   * the drawn ones.
+   */
+  drawn?: DrawnFrom | undefined;
 }
 
 /** A person's whole arrangement: their cabinets, in order. */
 export interface CabinetLayout {
-  /** The way it was drawn, if it was: what the page says it is arranged by. */
-  arranged_by: ArrangeBy | null;
+  /**
+   * The default levels every drawn cabinet follows (0.9.0-dev.90), 2 to 5;
+   * null for a cabinet arranged by hand, which is never redrawn or grown.
+   */
+  levels: CabinetLevel[] | null;
+  /** What older apps read (deprecated): the vault sends null, and ignores what it is sent. */
+  arranged_by?: null | undefined;
   cabinets: Cabinet[];
 }
 
@@ -141,11 +272,40 @@ export interface CabinetSave {
 /** POST /cabinet/preview: a layout drawn, not saved, and how many each folder holds. */
 export interface CabinetPreview {
   layout: CabinetLayout;
+  /** How many each folder drawn afresh holds; a folder kept as it was is not here. */
   counts: Record<string, number>;
   /** How many documents the caller can see, notes left out. */
   documents: number;
   /** How many of them no folder holds: no topic, or no kind, yet. */
   left_out: number;
+  /** How big the layout is, and whether it is past what a cabinet may hold (0.9.0-dev.90). */
+  size: CabinetSize;
+}
+
+/**
+ * POST /cabinet/preview (0.9.0-dev.90): the default levels, and, for one
+ * cabinet's own arrangement, which one and its levels below it (null: the
+ * default again), drawn over `layout` (the saved one when absent).
+ */
+export interface CabinetPreviewAsk {
+  levels: CabinetLevel[];
+  cabinet?: { id: string; levels: CabinetLevel[] | null } | undefined;
+  layout?: CabinetLayout | undefined;
+}
+
+/**
+ * How big a layout is (0.9.0-dev.90): its parts counted, the fullest drawer
+ * and the cabinet with most drawers, each named and with its cabinet's id,
+ * and what refuses it (past `CABINET_LIMITS`), or null.
+ */
+export interface CabinetSize {
+  cabinets: number;
+  drawers: number;
+  folders: number;
+  nodes: number;
+  biggest_drawer: { cabinet_id: string; path: [string, string]; folders: number } | null;
+  biggest_cabinet: { cabinet_id: string; name: string; drawers: number } | null;
+  over: CabinetProblemCode | null;
 }
 
 /**
@@ -273,6 +433,7 @@ export type CabinetProblemCode =
   | 'cabinet_node_id'
   | 'cabinet_name_missing'
   | 'cabinet_name_too_long'
+  | 'cabinet_levels'
   | DividerProblemCode;
 
 export const CABINET_TOO_MANY_STATUS = `A cabinet can have at most ${CABINET_LIMITS.status_folders} folders that ask for a status. Merge or remove some.`;
@@ -299,6 +460,23 @@ export function layoutProblemOf(
     .filter((f) => f.filter.status !== undefined).length;
   if (statusFolders > CABINET_LIMITS.status_folders) {
     return { code: 'cabinet_too_many_status_folders', message: CABINET_TOO_MANY_STATUS };
+  }
+  // The levels (0.9.0-dev.90): the default's, and each cabinet's own.
+  if (layout.levels !== null && layout.levels !== undefined) {
+    const wrong = Array.isArray(layout.levels)
+      ? levelsProblem(layout.levels)
+      : 'That is not something a cabinet can be arranged by.';
+    if (wrong) return { code: 'cabinet_levels', message: wrong };
+  }
+  for (const c of layout.cabinets) {
+    const own = c.drawn?.levels;
+    if (own === undefined) continue;
+    const wrong = Array.isArray(own)
+      ? ownLevelsProblem(own, layout.levels ?? null)
+      : 'That is not something a cabinet can be arranged by.';
+    if (wrong) {
+      return { code: 'cabinet_levels', message: `The cabinet “${c.name.trim()}”: ${wrong}` };
+    }
   }
   const ids = new Set<string>();
   const nodes = layout.cabinets.flatMap((c) => [c, ...c.drawers.flatMap((d) => [d, ...d.folders])]);

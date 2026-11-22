@@ -4567,7 +4567,7 @@ export const contractScenarios: Scenario[] = [
         filter: { category: 'bills' },
       });
       const layout = (name: string, folders = [folder('ctr-bills', name)]) => ({
-        arranged_by: null,
+        levels: null,
         cabinets: [
           {
             id: 'ctr-cab',
@@ -4741,12 +4741,154 @@ export const contractScenarios: Scenario[] = [
 
       // The cabinet as it was, and the papers in the Trash.
       await api.saveCabinet(token, {
-        layout: before.layout ?? { arranged_by: null, cabinets: [] },
+        layout: before.layout ?? { levels: null, cabinets: [] },
         version: kept.version,
       });
       await api.removeBatch(token, b.id);
       await api.deleteDocument(token, a.document_id);
       await api.deleteDocument(token, c.document_id);
+    },
+  },
+  {
+    name: 'my cabinet arranged by levels I choose, a cabinet its own, and a folder divided by kind then year as one flat list (0.9.0-dev.90)',
+    run: async (api, ctx) => {
+      const { access_token: token } = await signIn(api, ctx);
+      expect((await api.capabilities()).features.cabinet_levels).toBe(true);
+      const me = await api.me(token);
+      const paper = (type_key: string, day: string, title: string) =>
+        api.createDocument(token, {
+          type_key,
+          owner_member_id: me.member_id,
+          visibility: 'household',
+          sensitive: false,
+          title,
+          issued: { date: day, precision: 'day' },
+        });
+      const bank14 = await paper('bank_statement', '2014-03-01', 'Contract levels bank 2014');
+      const bank15 = await paper('bank_statement', '2015-03-01', 'Contract levels bank 2015');
+      const card15 = await paper('credit_card_statement', '2015-04-01', 'Contract levels card');
+      const before = await api.cabinet(token);
+
+      // Two to five levels, each once: anything else is refused, nothing drawn.
+      for (const levels of [
+        ['year'],
+        ['year', 'year'],
+        ['person', 'kind', 'year', 'topic', 'person'],
+      ]) {
+        const wrong = await refusal(api.previewCabinet(token, { levels: levels as never }));
+        expect([wrong.status, wrong.code]).toEqual([422, 'cabinet_levels']);
+      }
+      // Two levels: one cabinet, drawers by person and folders by kind, divided by year.
+      const two = await api.previewCabinet(token, {
+        levels: ['person', 'kind'],
+        layout: { levels: null, cabinets: [] },
+      });
+      expect(two.layout.levels).toEqual(['person', 'kind']);
+      expect(two.layout.cabinets.map((c) => [c.name, c.drawn])).toEqual([
+        ['My cabinet', { value: null }],
+      ]);
+      const folders = two.layout.cabinets.flatMap((c) => c.drawers.flatMap((d) => d.folders));
+      for (const f of folders) expect(f.dividers).toEqual({ levels: ['year'], ranges: [] });
+      expect(two.size).toMatchObject({ cabinets: 1, folders: folders.length, over: null });
+
+      // Four: a cabinet for each person, then topic, then year; kind divides each folder.
+      const four = await api.previewCabinet(token, {
+        levels: ['person', 'topic', 'year', 'kind'],
+        layout: { levels: null, cabinets: [] },
+      });
+      const mine = four.layout.cabinets.find((c) => c.drawn?.value === me.member_id);
+      expect(mine).toBeDefined();
+      for (const f of mine?.drawers.flatMap((d) => d.folders) ?? []) {
+        expect(f.filter.member_id).toBe(me.member_id);
+        expect(f.dividers).toEqual({ levels: ['kind'], ranges: [] });
+      }
+      // Kept, then that cabinet given its own order below it: by year, then kind.
+      const kept = await api.saveCabinet(token, { layout: four.layout, version: before.version });
+      expect(kept.layout?.levels).toEqual(['person', 'topic', 'year', 'kind']);
+      const own = await api.previewCabinet(token, {
+        levels: ['person', 'topic', 'year', 'kind'],
+        cabinet: { id: mine?.id ?? '', levels: ['year', 'kind'] },
+      });
+      const itsOwn = own.layout.cabinets.find((c) => c.id === mine?.id);
+      expect(itsOwn?.drawn).toEqual({ value: me.member_id, levels: ['year', 'kind'] });
+      // The cabinet level itself is never one of its own.
+      const below = await refusal(
+        api.previewCabinet(token, {
+          levels: ['person', 'topic', 'year', 'kind'],
+          cabinet: { id: mine?.id ?? '', levels: ['person', 'kind'] },
+        }),
+      );
+      expect([below.status, below.code]).toEqual([422, 'cabinet_levels']);
+      const ownKept = await api.saveCabinet(token, { layout: own.layout, version: kept.version });
+
+      // A folder of my own, divided by kind and then year: one flat list of
+      // leaves, each named by its steps, an older app's list as it is.
+      const layout = {
+        levels: null,
+        cabinets: [
+          {
+            id: 'ctr-levels',
+            name: 'Contract levels',
+            hidden: false,
+            drawers: [
+              {
+                id: 'ctr-levels-d',
+                name: 'Old years',
+                hidden: false,
+                folders: [
+                  {
+                    id: 'ctr-levels-f',
+                    name: '2014 and 2015',
+                    hidden: false,
+                    filter: {
+                      member_id: me.member_id,
+                      dated_from: '2014-01-01',
+                      dated_to: '2015-12-31',
+                      notes: 'exclude',
+                    },
+                    dividers: { levels: ['kind' as const, 'year' as const], ranges: [] },
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      };
+      await api.saveCabinet(token, { layout, version: ownKept.version });
+      const opened = await api.cabinetFolder(token, 'ctr-levels-f');
+      const leaf = opened.dividers.find((d) => d.key === 'kind:bank_statement/year:2015');
+      expect(leaf).toMatchObject({ kind: 'group', from: '2015-01-01', to: '2015-12-31' });
+      expect(leaf?.path?.map((s) => [s.level, s.key])).toEqual([
+        ['kind', 'kind:bank_statement'],
+        ['year', 'year:2015'],
+      ]);
+      expect(leaf?.name).toBe(`${leaf?.path?.[0]?.name ?? ''} · 2015`);
+      const behind = await api.cabinetFolderDocuments(token, 'ctr-levels-f', {
+        divider: 'kind:bank_statement/year:2015',
+      });
+      expect(behind.items.map((d) => d.id)).toContain(bank15.id);
+      expect(behind.items.map((d) => d.id)).not.toContain(bank14.id);
+      expect(behind.items.map((d) => d.id)).not.toContain(card15.id);
+      // A kind whose papers here are all of one year: that year passed over.
+      const card = opened.dividers.find((d) => d.path?.[0]?.key === 'kind:credit_card_statement');
+      expect(card).toBeDefined();
+      const cards = await api.cabinetFolderDocuments(token, 'ctr-levels-f', {
+        divider: card?.key ?? '',
+      });
+      expect(cards.items.map((d) => d.id)).toContain(card15.id);
+      // A step the folder is not divided by is no divider of it.
+      const stranger = await refusal(
+        api.cabinetFolderDocuments(token, 'ctr-levels-f', { divider: 'topic:financial' }),
+      );
+      expect(stranger.status).toBe(404);
+
+      // The cabinet as it was, and the papers in the Trash.
+      const now = await api.cabinet(token);
+      await api.saveCabinet(token, {
+        layout: before.layout ?? { levels: null, cabinets: [] },
+        version: now.version,
+      });
+      for (const d of [bank14, bank15, card15]) await api.deleteDocument(token, d.id);
     },
   },
   {

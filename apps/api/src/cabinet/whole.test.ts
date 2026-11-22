@@ -186,7 +186,10 @@ describe.skipIf(!testAdminUrl())('the whole cabinet', () => {
 
   it('holds papers of a topic added after it was drawn: the 19 Nov Financial cabinet', async () => {
     const drawn = await ok<CabinetPreview>(
-      call('owner', 'POST', '/api/v1/cabinet/preview', { arrange_by: 'category_year_person' }),
+      call('owner', 'POST', '/api/v1/cabinet/preview', {
+        levels: ['topic', 'year', 'person'],
+        layout: { levels: null, cabinets: [] },
+      }),
     );
     expect(drawn.layout.cabinets.map((c) => c.name)).not.toContain('Financial');
     const first = await saved('owner', drawn.layout);
@@ -237,7 +240,7 @@ describe.skipIf(!testAdminUrl())('the whole cabinet', () => {
 
   it('a cabinet arranged by hand is never changed: what it holds nowhere is counted, and listed', async () => {
     await saved('adult', {
-      arranged_by: null,
+      levels: null,
       cabinets: [
         {
           id: 'c',
@@ -272,7 +275,7 @@ describe.skipIf(!testAdminUrl())('the whole cabinet', () => {
 
   it('counts each paper once however many folders hold it, and says so', async () => {
     const twoFolders: CabinetLayout = {
-      arranged_by: null,
+      levels: null,
       cabinets: [
         {
           id: 'c',
@@ -314,7 +317,10 @@ describe.skipIf(!testAdminUrl())('the whole cabinet', () => {
     ids.scan = await file('owner', { title: 'A scan to sort', visibility: 'household' });
     for (const who of ['owner', 'adult', 'teen', 'viewer'] as Person[]) {
       const drawn = await ok<CabinetPreview>(
-        call(who, 'POST', '/api/v1/cabinet/preview', { arrange_by: 'person_category_year' }),
+        call(who, 'POST', '/api/v1/cabinet/preview', {
+          levels: ['person', 'topic', 'year'],
+          layout: { levels: null, cabinets: [] },
+        }),
       );
       await saved(who, drawn.layout);
       const got = await counts(who);

@@ -816,7 +816,7 @@ const RULES: Record<string, Rule> = {
       [0, 1, 2].map((version) => ({
         version,
         layout: {
-          arranged_by: null,
+          levels: null,
           cabinets: [
             {
               id: 'c',
@@ -854,8 +854,10 @@ const RULES: Record<string, Rule> = {
   'POST /api/v1/cabinet/preview': {
     who: 'signedIn',
     bodies: () => [
-      { arrange_by: 'person_category_year' },
-      { arrange_by: 'category_year_person' },
+      { levels: ['person', 'topic', 'year'] },
+      { levels: ['topic', 'year', 'person', 'kind'] },
+      { levels: ['person', 'kind'], layout: { levels: null, cabinets: [] } },
+      // What an older vault's way still asks (deprecated).
       { arrange_by: 'person_kind' },
     ],
   },
@@ -877,7 +879,15 @@ const RULES: Record<string, Rule> = {
   'GET /api/v1/cabinet/folders/:id': { who: 'signedIn' },
   'GET /api/v1/cabinet/folders/:id/documents': {
     who: 'signedIn',
-    queries: () => ['divider=year:2026', 'divider=all', 'divider=other', 'divider=range:0'],
+    queries: () => [
+      'divider=year:2026',
+      'divider=all',
+      'divider=other',
+      'divider=range:0',
+      // A step of a level (0.9.0-dev.90), and Everything else.
+      'divider=kind:tax_return',
+      'divider=rest',
+    ],
   },
   'POST /api/v1/cabinet/folders/:id/pins': {
     who: 'signedIn',
@@ -3824,7 +3834,7 @@ describe.skipIf(!testAdminUrl())('the release exit (Phase 5, and Phase 6 for 0.7
   it("somebody else's Only me document is in nobody else's cabinet: never counted, listed or said to be also in a folder (0.9.0, cabinets C1)", async () => {
     const priv = doc.ahmedPrivate as { id: string; version: string; title: string; marker: string };
     const layout = {
-      arranged_by: null,
+      levels: null,
       cabinets: [
         {
           id: 'c',
