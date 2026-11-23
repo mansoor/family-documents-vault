@@ -250,7 +250,9 @@ test('a filter takes two people: chips, the address, a chip taken off by the key
   // Someone already in the household: the page's list of people was read
   // when the app opened, and this test moves within it rather than
   // reloading (sign-ins are limited), so a person added now isn't offered.
-  const { items } = (await (await page.request.get('/api/v1/members', { headers: auth })).json()) as {
+  const { items } = (await (
+    await page.request.get('/api/v1/members', { headers: auth })
+  ).json()) as {
     items: { id: string; display_name: string }[];
   };
   const other = items.find((m) => m.id !== me.member_id && m.display_name === 'Aisha');
