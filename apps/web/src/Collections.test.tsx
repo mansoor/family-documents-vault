@@ -714,6 +714,9 @@ describe('collections on the web (5.15)', () => {
       collections: [{ ...HOLIDAY, items: ['doc-1', 'doc-3'] }],
     });
     expect(await screen.findByRole('heading', { name: 'Holiday', level: 1 })).toBeInTheDocument();
+    // Its rows come in a request of their own, after its heading: open means
+    // they have come, or a list asked after it went would rightly be empty.
+    expect(await screen.findByRole('button', { name: PASSPORT_MENU })).toBeInTheDocument();
 
     // Deleted somewhere else: said when it is loaded again, after a row's ⋯
     // changed something.
