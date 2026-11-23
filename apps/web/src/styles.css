@@ -9202,17 +9202,6 @@ button.arrange-scope {
   outline-offset: 2px;
 }
 
-.chip-coming,
-.chip-coming:disabled {
-  cursor: default;
-  color: var(--ink-muted);
-  border-style: dashed;
-}
-
-.chip-soon {
-  font-size: 12px;
-}
-
 .levels {
   list-style: none;
   margin: 0;
@@ -9315,6 +9304,54 @@ button.arrange-scope {
 .level-warn-over {
   border-color: var(--danger);
   background: var(--danger-soft);
+}
+
+/* Issuers that look like one (0.9.0-dev.91): beside the level picker, and in Settings. */
+.same-as {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-m);
+  background: var(--surface);
+}
+
+.same-as h3,
+.same-as p {
+  margin: 0;
+}
+
+.same-as-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.same-as-list li,
+.issuer-members li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.issuer-members {
+  list-style: none;
+  margin: 4px 0 0;
+  padding: 0 0 0 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.issuer-row > div {
+  min-width: 0;
 }
 
 .cab-divider-inside {

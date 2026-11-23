@@ -24,12 +24,21 @@ import { sql, type RawBuilder } from 'kysely';
 import type { Principal } from '../auth/service.js';
 import { seenCollection } from '../collections/seen.js';
 import { ApiError } from '../errors.js';
-import { asksStatus, datedSql, filterClauses, statusAllowed, visibilitySql } from './filters.js';
+import {
+  asksStatus,
+  datedSql,
+  filterClauses,
+  issuedBySql,
+  issuersSql,
+  statusAllowed,
+  visibilitySql,
+} from './filters.js';
 import { touchedSince } from './original-place.js';
 import {
   kindGiven,
   rowStatus,
   readDocument,
+  seenBy,
   tagFilter,
   tagLabelFilter,
   typeLookup,
@@ -371,6 +380,11 @@ export interface PlacedDocument {
   type_key: string | null;
   /** The year it is about: issued, else added (`datedSql`). */
   year: number;
+  /**
+   * Who issued it (0.9.0-dev.91): its own issuer key, where it was asked
+   * for; null for none given, or where it was not asked.
+   */
+  issuer: string | null;
   /** How many of the folders hold it, by their question or a pin: each folder once. */
   folders: number;
 }
@@ -396,6 +410,7 @@ type PlaceRow = Partial<StatusRow> & {
   category: string | null;
   type_key: string | null;
   year: number;
+  issuer: string | null;
   is_note: boolean;
 } & Record<string, unknown>;
 
@@ -416,6 +431,8 @@ export async function documentPlaces(
   trx: Db,
   p: Principal,
   folders: ReadonlyArray<{ q: ListQuery | null; pins: readonly string[] }>,
+  /** Whether each paper's issuer is read too (0.9.0-dev.91): only for a cabinet drawn by it. */
+  opts: { issuer?: boolean } = {},
 ): Promise<CabinetPlaces> {
   const asked = folders.flatMap(({ q }, i) =>
     q && !tableRefuses(p, q)
@@ -443,6 +460,7 @@ export async function documentPlaces(
       at === 0
         ? sql`${statusAsked ? STATUS_COLUMNS : sql`d.id, d.type_key, d.owner_member_id, d.household_owned`},
               d.category, extract(year from ${datedSql('d')})::int as year,
+              ${opts.issuer === true ? sql`d.issuer_key` : sql`null::text`} as issuer,
               d.type_key is not distinct from ${NOTE_KIND} as is_note`
         : sql`d.id`,
       ...some.map(({ q }, n) => sql`coalesce(${whereOf(p, q)}, false) as ${sql.ref(`m${n}`)}`),
@@ -454,7 +472,8 @@ export async function documentPlaces(
     ).rows;
     for (const r of read) {
       if (at === 0) {
-        const { id, owner_member_id, household_owned, category, type_key, year, is_note } = r;
+        const { id, owner_member_id, household_owned, category, type_key, year, issuer, is_note } =
+          r;
         papers.set(id, {
           ...(statusAsked ? r : {}),
           id,
@@ -463,6 +482,7 @@ export async function documentPlaces(
           category,
           type_key,
           year,
+          issuer,
           is_note,
         });
       }
@@ -510,6 +530,7 @@ export async function documentPlaces(
         category: r.category,
         type_key: r.type_key,
         year: r.year,
+        issuer: r.issuer,
         folders: holding.get(r.id)?.size ?? 0,
       })),
     counts: folders.map((f, i) => (counted.has(i) ? (besidePins[i] ?? 0) + f.pins.length : null)),
@@ -609,11 +630,12 @@ function whereOf(p: Principal, q: ListQuery): RawBuilder<boolean> {
   // A tag whatever its case, and a detail tag's label (0.9.0, T1, 0073).
   if (q.tag) parts.push(tagFilter(q.tag, 'd.'));
   if (q.tag_label) parts.push(tagLabelFilter(q.tag_label, 'd.'));
-  if (q.issued_by) parts.push(sql`lower(d.issued_by) = lower(${q.issued_by.trim()})`);
+  // As written, or as the household names the same issuer (0.9.0-dev.91).
+  if (q.issued_by) parts.push(issuedBySql(q.issued_by, seenBy(p)));
   // Or its place in a cabinet changed since (C3), as the older list asks it.
   if (q.updated_since) parts.push(touchedSince(q.updated_since, 'd'));
   // Any of several, and the days (V1, filters.ts).
-  parts.push(...filterClauses(q));
+  parts.push(...filterClauses(q, 'd', seenBy(p)));
   if (q.location !== undefined) {
     parts.push(sql`lower(btrim(d.physical_location)) = lower(btrim(${q.location}))`);
   }
@@ -626,7 +648,7 @@ function whereOf(p: Principal, q: ListQuery): RawBuilder<boolean> {
     parts.push(sql`lower(d.source_folder) = lower(${q.source_folder.trim()})`);
   }
   // A cabinet folder's pins and dividers (0.9.0, C2): only ever narrower.
-  if (q.cabinet) parts.push(...cabinetClauses(q.cabinet));
+  if (q.cabinet) parts.push(...cabinetClauses(q.cabinet, p));
   // A document in the Trash is in no collection until it is brought back,
   // as GET /documents/{id}/collections says of it: in the Trash, every one
   // is in none, and none is in one.
@@ -655,7 +677,7 @@ function spanSql(span: DaySpan): RawBuilder<boolean> {
  * them, or a kind, topic or person — read exactly as the grouped count
  * (`documentDividerCounts`) groups it, a value missing as none.
  */
-function atomSql(a: DividerAtom): RawBuilder<boolean> {
+function atomSql(a: DividerAtom, p: Principal): RawBuilder<boolean> {
   if ('within' in a) return spanSql(a.within);
   if ('outside' in a) {
     return a.outside.length === 0
@@ -677,26 +699,34 @@ function atomSql(a: DividerAtom): RawBuilder<boolean> {
         : a.value === NOBODY_MEMBER_FILTER
           ? sql<boolean>`(not d.household_owned and d.owner_member_id is null)`
           : sql<boolean>`(not d.household_owned and d.owner_member_id::text = ${a.value})`;
+    // Who issued it, as the household names it for the reader (0.9.0-dev.91).
+    case 'issuer':
+      return a.value === null
+        ? sql<boolean>`d.issuer_key is null`
+        : issuersSql([a.value], seenBy(p));
   }
 }
 
 /** Every step of a divider together. */
-function atomsSql(atoms: readonly DividerAtom[]): RawBuilder<boolean> {
+function atomsSql(atoms: readonly DividerAtom[], p: Principal): RawBuilder<boolean> {
   return atoms.length === 0
     ? sql<boolean>`true`
-    : sql<boolean>`(${sql.join(atoms.map(atomSql), sql` and `)})`;
+    : sql<boolean>`(${sql.join(
+        atoms.map((a) => atomSql(a, p)),
+        sql` and `,
+      )})`;
 }
 
 /** A cabinet folder's own conditions (C2), each narrowing what `whereOf` gives. */
-function cabinetClauses(c: CabinetConditions): RawBuilder<unknown>[] {
+function cabinetClauses(c: CabinetConditions, p: Principal): RawBuilder<unknown>[] {
   const parts: RawBuilder<unknown>[] = [];
   if (c.only !== undefined) parts.push(sql`d.id = any(${c.only}::uuid[])`);
   if (c.except !== undefined && c.except.length > 0) {
     parts.push(sql`not (d.id = any(${c.except}::uuid[]))`);
   }
   if (c.divider) {
-    parts.push(atomsSql(c.divider.atoms));
-    for (const leaf of c.divider.none_of ?? []) parts.push(sql`not ${atomsSql(leaf)}`);
+    parts.push(atomsSql(c.divider.atoms, p));
+    for (const leaf of c.divider.none_of ?? []) parts.push(sql`not ${atomsSql(leaf, p)}`);
   }
   return parts;
 }
@@ -726,6 +756,11 @@ function dimSql(dim: DividerDim, spans: readonly DaySpan[]): RawBuilder<string> 
       return sql<string>`'person:' || case when d.household_owned then ${HOUSEHOLD_MEMBER_FILTER}
                                         when d.owner_member_id is null then ${NOBODY_MEMBER_FILTER}
                                         else d.owner_member_id::text end`;
+    // Who issued it (0.9.0-dev.91), by the paper's own key — `issuer:` for
+    // none given — which the cabinet then gathers into the household's
+    // groups as the reader knows them.
+    case 'issuer':
+      return sql<string>`'issuer:' || coalesce(d.issuer_key, '')`;
   }
 }
 

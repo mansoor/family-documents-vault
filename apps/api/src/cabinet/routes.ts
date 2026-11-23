@@ -7,6 +7,7 @@ import {
   CABINET_TOO_BIG,
   DIVIDER_LIMITS,
   DOCUMENT_PAGE_MAX,
+  ISSUER_KEY_MAX,
   layoutSize,
   LEVEL_LIMITS,
   PIN_LIMITS,
@@ -15,7 +16,7 @@ import {
 } from '@fdv/shared';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
-import { parse } from '../auth/routes.js';
+import { metaOf, parse } from '../auth/routes.js';
 import type { Principal } from '../auth/service.js';
 import { ApiError } from '../errors.js';
 import type { CabinetService } from './service.js';
@@ -114,6 +115,19 @@ const dividerQuery = z
     divider: z.string().min(1).max(400),
     cursor: z.string().max(8192).optional(),
     limit: z.coerce.number().int().min(1).max(DOCUMENT_PAGE_MAX).optional(),
+  })
+  .strict();
+/** POST /issuers/same and /issuers/separate (0.9.0-dev.91): two issuer keys, checked again as keys. */
+const issuerChange = z
+  .object({
+    from: z
+      .string()
+      .min(1)
+      .max(ISSUER_KEY_MAX * 4),
+    to: z
+      .string()
+      .min(1)
+      .max(ISSUER_KEY_MAX * 4),
   })
   .strict();
 const pageQuery = z
@@ -244,5 +258,21 @@ export function registerCabinet(app: FastifyInstance, cabinet: CabinetService) {
       await cabinet.unpin(principal(req), req.params.id, req.params.documentId);
       return reply.status(204).send();
     },
+  );
+
+  // Who issued it, as the household names it (0.9.0-dev.91,
+  // `features.cabinet_issuer`): its issuers as the caller can read them,
+  // and the "Same as" list, which owners and adults keep.
+  app.get('/api/v1/issuers/groups', auth, async (req, reply) => {
+    void reply.header('cache-control', 'no-store');
+    return cabinet.issuerGroups(principal(req));
+  });
+
+  app.post('/api/v1/issuers/same', auth, async (req) =>
+    cabinet.sameIssuer(principal(req), parse(issuerChange, req.body ?? {}), metaOf(req)),
+  );
+
+  app.post('/api/v1/issuers/separate', auth, async (req) =>
+    cabinet.separateIssuer(principal(req), parse(issuerChange, req.body ?? {}), metaOf(req)),
   );
 }

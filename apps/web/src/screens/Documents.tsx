@@ -22,6 +22,8 @@ import {
   type VisibilityChange,
   documentName,
   NOTE_KIND,
+  NO_ISSUER,
+  NO_ISSUER_GIVEN,
   HOUSEHOLD_MEMBER_FILTER,
   NOBODY_MEMBER_FILTER,
   NOT_SURE_YET,
@@ -96,6 +98,7 @@ import {
   writeKeptWidths,
   type KeptWidths,
 } from '../column-widths.js';
+import { useIssuersVersion } from '../issuer-store.js';
 import { storedRole } from '../session.js';
 import { moveInMenu, useShellMode } from '../shell.js';
 import { plainClick, useChangesBeside, useFlyouts, useOpenDocument } from '../flyout-context.js';
@@ -792,6 +795,25 @@ export function FolderChips(props: { view: TableView; setView: (v: TableView) =>
   const { view, setView } = props;
   const f = view.folder;
   const k = f.keys;
+  // Who issued it, by the household's names (0.9.0-dev.91): read only where a folder asks it.
+  const { authVersion, caps } = useApp();
+  const asksIssuer = Boolean(k.issuer) && caps?.features.cabinet_issuer === true;
+  const issuerChanges = useIssuersVersion();
+  const { data: issuers } = useLoad(
+    async (t) => (asksIssuer ? (await api.issuerGroups(t)).items : []),
+    [authVersion, asksIssuer, issuerChanges],
+  );
+  const issuerChipWords = (asked: string) => {
+    const keys = asked.split(',').filter((x) => x !== '');
+    const named = keys
+      .filter((x) => x !== NO_ISSUER)
+      .map(
+        (x) => issuers?.find((g) => g.key === x || g.members.some((m) => m.key === x))?.name ?? x,
+      );
+    const none = keys.includes(NO_ISSUER);
+    if (named.length === 0) return NO_ISSUER_GIVEN;
+    return `From ${named.join(' or ')}${none ? ', or no issuer given' : ''}`;
+  };
   const without = (...drop: FolderKey[]) => {
     const keys = { ...k };
     for (const d of drop) delete keys[d];
@@ -817,6 +839,10 @@ export function FolderChips(props: { view: TableView; setView: (v: TableView) =>
     ...range('expires_from', 'expires_to', 'Expires'),
     ...(k.issued_by
       ? [{ key: 'issued_by', words: `From ${k.issued_by}`, clear: () => without('issued_by') }]
+      : []),
+    // Who issued it, by key, as the household names it (0.9.0-dev.91).
+    ...(k.issuer
+      ? [{ key: 'issuer', words: issuerChipWords(k.issuer), clear: () => without('issuer') }]
       : []),
     ...(k.location
       ? [{ key: 'location', words: `Kept at ${k.location}`, clear: () => without('location') }]

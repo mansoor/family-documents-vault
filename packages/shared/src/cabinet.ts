@@ -22,6 +22,7 @@ import {
   type FolderDividers,
   type PinsMoved,
 } from './cabinet-dividers.js';
+import { NO_ISSUER, type IssuerSameAs } from './issuer-groups.js';
 import { CATEGORY_LABELS } from './tokens.js';
 
 /**
@@ -36,8 +37,11 @@ import { CATEGORY_LABELS } from './tokens.js';
  *  - `person`: whose it is (a person, The household, or Not sure yet).
  *  - `year`: the year it is about (issued, else added).
  *  - `kind`: its kind ("Bank statement").
+ *  - `issuer` (0.9.0-dev.91): who issued it ("Barclays"), by the vault's
+ *    issuer key with the household's "Same as" list applied; papers with
+ *    none go behind "No issuer given" (`NO_ISSUER`).
  */
-export const CABINET_LEVELS = ['topic', 'person', 'year', 'kind'] as const;
+export const CABINET_LEVELS = ['topic', 'person', 'year', 'kind', 'issuer'] as const;
 export type CabinetLevel = (typeof CABINET_LEVELS)[number];
 
 /** How many levels an arrangement has, and how many of them make cabinets, drawers and folders. */
@@ -59,12 +63,14 @@ export const CABINET_LEVEL_WORDS: Record<
   person: { name: 'Person', hint: 'whose it is', example: 'Me' },
   year: { name: 'Year', hint: 'issued, else added', example: '2026' },
   kind: { name: 'Kind', hint: 'bank statement, payslip…', example: 'Bank statement' },
+  issuer: { name: 'Who issued it', hint: 'the bank, the employer…', example: 'Barclays' },
 };
 
-/** Levels the picker shows that are not offered yet. */
-export const LEVELS_COMING = [
-  { key: 'issuer', name: 'Who issued it', hint: 'the bank, the employer…' },
-] as const;
+/**
+ * Levels the picker shows that are not offered yet: none since
+ * 0.9.0-dev.91, when Who issued it became a level.
+ */
+export const LEVELS_COMING: ReadonlyArray<{ key: string; name: string; hint: string }> = [];
 
 /** One-tap shortcuts that fill the picker. */
 export const LEVEL_PRESETS: ReadonlyArray<readonly CabinetLevel[]> = [
@@ -159,6 +165,9 @@ export const CABINET_FILTER_KEYS = [
   'category',
   'type_key',
   'issued_by',
+  // Who issued it, by the vault's issuer key and the household's "Same as"
+  // list (0.9.0-dev.91): one or more keys, comma-separated, or `_none`.
+  'issuer',
   'tag',
   'tag_label',
   'notes',
@@ -280,6 +289,12 @@ export interface CabinetPreview {
   left_out: number;
   /** How big the layout is, and whether it is past what a cabinet may hold (0.9.0-dev.90). */
   size: CabinetSize;
+  /**
+   * Where Who issued it is among the levels asked (0.9.0-dev.91): issuers
+   * that look like one, for an owner or adult to say Same or Separate; none
+   * for anybody else. Absent where it is no level asked, and from older vaults.
+   */
+  same_as?: IssuerSameAs[] | undefined;
 }
 
 /**
@@ -534,6 +549,7 @@ const SEVERAL: readonly CabinetFilterKey[] = [
   'status',
   'visibility',
   'sensitive',
+  'issuer',
 ];
 const RANGES = ['added', 'issued', 'expires', 'dated'] as const;
 
@@ -660,7 +676,12 @@ export function categoriesWords(value: string): string {
  */
 export function folderQuestionWords(
   f: FolderFilter,
-  names: { person: (id: string) => string; kind: (key: string) => string },
+  names: {
+    person: (id: string) => string;
+    kind: (key: string) => string;
+    /** An issuer key's name, the household's spelling (0.9.0-dev.91). */
+    issuer?: ((key: string) => string) | undefined;
+  },
 ): string {
   const what: string[] = [];
   if (f.type_key) what.push(f.type_key.split(',').map(names.kind).join(' or '));
@@ -673,6 +694,16 @@ export function folderQuestionWords(
   if (issued) what.push(`issued ${issued}`);
   if (f.type_key && f.category) what.push(`in ${categoriesWords(f.category)}`);
   if (f.issued_by) what.push(`from ${f.issued_by}`);
+  // Who issued it, by the household's names (0.9.0-dev.91).
+  if (f.issuer) {
+    const keys = f.issuer.split(',').filter((k) => k !== '');
+    const given = keys.filter((k) => k !== NO_ISSUER);
+    const from = given.map((k) => names.issuer?.(k) ?? k).join(' or ');
+    if (given.length > 0) what.push(`from ${from}`);
+    if (keys.includes(NO_ISSUER)) {
+      what.push(given.length > 0 ? 'or with no issuer given' : 'with no issuer given');
+    }
+  }
   // The folder they came from (C4), as the vault keeps it.
   if (f.source_folder) what.push(`that came from the folder “${f.source_folder}”`);
   let out = what.join(' ');

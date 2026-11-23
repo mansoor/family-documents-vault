@@ -200,6 +200,8 @@ import type {
   CabinetFromFolders,
   CabinetPreview,
   CabinetPreviewAsk,
+  IssuerChange,
+  IssuerGroups,
   CabinetPinned,
   CabinetSave,
   CabinetView,
@@ -1185,6 +1187,28 @@ export function createApi(http: Http) {
      */
     cabinetFromFolders: (token: string) =>
       request<CabinetFromFolders>('/api/v1/cabinet/from-folders', { token }),
+    /**
+     * The household's issuers in groups (0.9.0-dev.91,
+     * `features.cabinet_issuer`), as the caller can read them: each by its
+     * key, the household's name for it, how many papers, and the keys said to
+     * be the same as it; and, for an owner or adult (`may_change`), those
+     * that look like one (`same_as`).
+     */
+    issuerGroups: (token: string) => request<IssuerGroups>('/api/v1/issuers/groups', { token }),
+    /**
+     * `from`'s issuer is the same as `to`'s (0.9.0-dev.91): its whole group
+     * joins `to`'s; no paper is changed. Owners and adults (`403` otherwise);
+     * both on a paper the caller can read (`404` otherwise). The groups after.
+     */
+    sameIssuer: (token: string, body: IssuerChange) =>
+      request<IssuerGroups>('/api/v1/issuers/same', { method: 'POST', body, token }),
+    /**
+     * `from` is not the same issuer as `to` (0.9.0-dev.91): joined, it
+     * leaves the group; never joined, the two are never suggested as one
+     * again. As `sameIssuer`, who may and of what. The groups after.
+     */
+    separateIssuer: (token: string, body: IssuerChange) =>
+      request<IssuerGroups>('/api/v1/issuers/separate', { method: 'POST', body, token }),
     /**
      * The folder a document came from, forgotten (0.9.0, C4,
      * `features.source_folders`): its `source_folder` is null after. A

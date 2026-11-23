@@ -4,6 +4,7 @@ import axe from 'axe-core';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { App } from './App.js';
 import { changeWords } from './cabinet.js';
+import { issuersChanged } from './issuer-store.js';
 import {
   AISHA,
   fresh,
@@ -818,6 +819,43 @@ describe('a folder in the table, whole (the review)', () => {
     await waitFor(() => expect(window.location.search).not.toContain('category'));
     expect(window.location.search).toContain('dated_from');
   });
+  it('carries a folder of an issuer into the table by the household’s name, the same issuer’s papers in it', async () => {
+    const state = fresh({
+      members: [ME, AISHA],
+      documents: [
+        { ...STATEMENT, id: 'doc-b1', etag: '"b1"', issued_by: 'Barclays' },
+        {
+          ...STATEMENT,
+          id: 'doc-b2',
+          etag: '"b2"',
+          title: 'Barclays Bank UK letter',
+          issued_by: 'BARCLAYS BANK UK PLC',
+        },
+        { ...STATEMENT, id: 'doc-h', etag: '"h"', title: 'HSBC letter', issued_by: 'HSBC' },
+      ],
+      cabinets: true,
+      issuerAliases: [{ from: 'barclays bank uk', to: 'barclays', path: [] }],
+    });
+    installFakeApi(state);
+    signedIn('owner');
+    window.history.replaceState({}, '', '/documents?issuer=barclays');
+    render(<App />);
+    const chips = await screen.findByRole('group', { name: 'Folder filters' });
+    expect(await within(chips).findByText('From Barclays')).toBeVisible();
+    expect(await screen.findByText('2 documents match these filters')).toBeVisible();
+    expect(screen.queryByText('HSBC letter')).toBeNull();
+    // The household's list changes in this tab: the chip says the new name at once.
+    act(() => {
+      state.issuerAliases = [
+        { from: 'barclays', to: 'hsbc', path: [] },
+        { from: 'barclays bank uk', to: 'hsbc', path: ['barclays'] },
+      ];
+      issuersChanged();
+    });
+    expect(await within(chips).findByText('From HSBC')).toBeVisible();
+    fireEvent.click(within(chips).getByRole('button', { name: 'Take off the filter From HSBC' }));
+    await waitFor(() => expect(window.location.search).not.toContain('issuer'));
+  });
 });
 
 describe('a save refused for one made elsewhere (the review)', () => {
@@ -1229,8 +1267,9 @@ describe('levels you choose (0.9.0-dev.90)', () => {
     await waitFor(() =>
       expect(state.cabinetPreviewAsks?.at(-1)?.levels).toEqual(['topic', 'person', 'year', 'kind']),
     );
-    // Who issued it is shown, coming next.
-    expect(screen.getByRole('button', { name: /Who issued it coming next/ })).toBeDisabled();
+    // Who issued it is a level to choose (0.9.0-dev.91), no longer coming next.
+    expect(screen.getByRole('button', { name: '+ Who issued it' })).toBeEnabled();
+    expect(screen.queryByText('coming next')).toBeNull();
     // Two levels at least: removing stops there.
     fireEvent.click(screen.getByRole('button', { name: 'Remove Kind' }));
     fireEvent.click(screen.getByRole('button', { name: 'Remove Year' }));
@@ -1667,5 +1706,172 @@ describe('levels you choose: focus, scope and words (the review)', () => {
     const open = await screen.findByRole('group', { name: `Dividers in ${thisYear}` });
     expect(within(open).queryByRole('radio', { name: /As arranged/ })).toBeNull();
     expect(within(open).getByRole('radio', { name: 'No dividers' })).toBeChecked();
+  });
+});
+
+describe('Who issued it as a level (0.9.0-dev.91)', () => {
+  /** Barclays twice, and once as Barclays Bank UK: the same bank, written two ways. */
+  const PAPERS = [
+    { ...STATEMENT, id: 'doc-b1', etag: '"b1"', issued_by: 'Barclays' },
+    { ...STATEMENT, id: 'doc-b2', etag: '"b2"', issued_by: 'Barclays' },
+    {
+      ...STATEMENT,
+      id: 'doc-b3',
+      etag: '"b3"',
+      title: 'Barclays Bank UK letter',
+      issued_by: 'Barclays Bank UK PLC',
+    },
+    { ...STATEMENT, id: 'doc-none', etag: '"none"', title: 'No issuer', issued_by: null },
+  ];
+  const arranging = () =>
+    at('/documents?show=cabinet&arrange=1', {
+      documents: PAPERS.map((d) => ({ ...d })),
+      cabinet: { layout: LAYOUT, version: 2, updated_at: new Date().toISOString() },
+    });
+
+  it('adds Who issued it as a level, suggests what looks like one, and says Same for everybody', async () => {
+    const state = arranging();
+    fireEvent.click(await screen.findByRole('button', { name: '+ Who issued it' }));
+    await waitFor(() =>
+      expect(state.cabinetPreviewAsks?.at(-1)?.levels).toEqual([
+        'person',
+        'topic',
+        'year',
+        'issuer',
+      ]),
+    );
+    const box = await screen.findByRole('region', { name: 'These issuers look like one' });
+    expect(box.textContent).toMatch(
+      /“Barclays” \(2 papers\) and “Barclays Bank UK PLC” \(1 paper\) look like one\./,
+    );
+    expect(within(box).getByRole('link', { name: 'Settings › Who issued it' })).toHaveAttribute(
+      'href',
+      '/settings/issuers',
+    );
+    await expectAccessible();
+    const asked = state.cabinetPreviewAsks?.length ?? 0;
+    fireEvent.click(
+      within(box).getByRole('button', { name: 'Same: “Barclays Bank UK PLC” is “Barclays”' }),
+    );
+    await waitFor(() =>
+      expect(state.issuerChanges).toEqual([
+        { how: 'same', from: 'barclays bank uk', to: 'barclays' },
+      ]),
+    );
+    expect(
+      await screen.findByText('“Barclays Bank UK PLC” is now the same issuer as “Barclays”.'),
+    ).toBeInTheDocument();
+    // Drawn again, the same levels, and nothing left to suggest.
+    await waitFor(() => expect(state.cabinetPreviewAsks?.length).toBe(asked + 1));
+    expect(state.cabinetPreviewAsks?.at(-1)?.levels).toEqual(['person', 'topic', 'year', 'issuer']);
+    await waitFor(() =>
+      expect(screen.queryByRole('region', { name: 'These issuers look like one' })).toBeNull(),
+    );
+    // None left: the focus on the Who issued it level, never lost.
+    await waitFor(() =>
+      expect(document.activeElement?.closest('[data-level="issuer"]')).not.toBeNull(),
+    );
+  });
+
+  it('keeps the focus beside the next suggestion when one is answered, and says so', async () => {
+    const state = at('/documents?show=cabinet&arrange=1', {
+      documents: [
+        ...PAPERS.map((d) => ({ ...d })),
+        { ...STATEMENT, id: 'doc-h1', etag: '"h1"', title: 'HSBC one', issued_by: 'HSBC' },
+        { ...STATEMENT, id: 'doc-h2', etag: '"h2"', title: 'HSBC two', issued_by: 'HSBC' },
+        { ...STATEMENT, id: 'doc-h3', etag: '"h3"', title: 'HSBC UK', issued_by: 'HSBC UK' },
+      ],
+      cabinet: { layout: LAYOUT, version: 2, updated_at: new Date().toISOString() },
+    });
+    fireEvent.click(await screen.findByRole('button', { name: '+ Who issued it' }));
+    const box = await screen.findByRole('region', { name: 'These issuers look like one' });
+    expect(within(box).getAllByRole('listitem')).toHaveLength(2);
+    fireEvent.click(
+      within(box).getByRole('button', {
+        name: 'Separate: keep “Barclays Bank UK PLC” and “Barclays” apart',
+      }),
+    );
+    await waitFor(() => expect(state.issuerChanges).toHaveLength(1));
+    // The one left in its place has the focus; what happened is said.
+    await waitFor(() =>
+      expect(document.activeElement).toBe(
+        screen.getByRole('button', { name: 'Same: “HSBC UK” is “HSBC”' }),
+      ),
+    );
+    expect(
+      screen.getByText('“Barclays Bank UK PLC” and “Barclays” are kept separate.'),
+    ).toBeInTheDocument();
+  });
+
+  it('keeps two apart with Separate, and suggests nothing where Who issued it is no level', async () => {
+    const state = arranging();
+    await screen.findByRole('list', { name: 'Levels, in order' });
+    expect(screen.queryByRole('region', { name: 'These issuers look like one' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: '+ Who issued it' }));
+    const box = await screen.findByRole('region', { name: 'These issuers look like one' });
+    fireEvent.click(
+      within(box).getByRole('button', {
+        name: 'Separate: keep “Barclays Bank UK PLC” and “Barclays” apart',
+      }),
+    );
+    await waitFor(() =>
+      expect(state.issuerChanges).toEqual([
+        { how: 'separate', from: 'barclays bank uk', to: 'barclays' },
+      ]),
+    );
+    expect(
+      await screen.findByText('“Barclays Bank UK PLC” and “Barclays” are kept separate.'),
+    ).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.queryByRole('region', { name: 'These issuers look like one' })).toBeNull(),
+    );
+  });
+
+  it('opens a folder divided by who issued it, the household’s names, No issuer given last', async () => {
+    const layout: CabinetLayout = {
+      levels: ['topic', 'person', 'year', 'issuer'],
+      cabinets: [
+        {
+          id: 'c-fin',
+          name: 'Financial',
+          hidden: false,
+          drawn: { value: 'financial' },
+          drawers: [
+            {
+              id: 'd-me',
+              name: 'Mansoor',
+              hidden: false,
+              folders: [
+                {
+                  id: 'f-now',
+                  name: '2026',
+                  hidden: false,
+                  filter: {
+                    notes: 'exclude',
+                    category: 'financial',
+                    member_id: ME.id,
+                    ...year(2026),
+                  },
+                  dividers: { levels: ['issuer'], ranges: [] },
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+    at(`/documents?show=cabinet&cabinet=c-fin&folder=f-now`, {
+      documents: PAPERS.map((d) => ({ ...d, owner_member_id: ME.id })),
+      cabinet: { layout, version: 2, updated_at: new Date().toISOString() },
+      issuerAliases: [{ from: 'barclays bank uk', to: 'barclays', path: [] }],
+    });
+    await waitFor(() => expect(document.querySelectorAll('.cab-divider-tab').length).toBe(2));
+    const tabs = [...document.querySelectorAll('.cab-divider-tab .cab-divider-name')].map(
+      (n) => n.textContent,
+    );
+    // Barclays Bank UK is Barclays to this household: one divider, its name theirs.
+    expect(tabs).toEqual(['Barclays', 'No issuer given']);
+    expect(document.querySelector('.cab-divider-tab')?.textContent).toMatch(/3/);
+    await expectAccessible();
   });
 });

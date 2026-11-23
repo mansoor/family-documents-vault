@@ -6,6 +6,24 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.9.0-dev.91] - 2026-11-22 — arrange your cabinet by who issued each paper
+
+### Added
+
+- **Who issued it is a level you can choose.** In Arrange my cabinet, add Who issued it beside Topic, Person, Year and Kind, and put it where you like. Choose Topic › Year › Person › Kind › Who issued it, say, and your Financial › 2026 › Me folder opens on a divider for each kind and, inside it, one for each bank: Bank statement · Barclays. Put it fourth or fifth, where it makes dividers instead of folders, because most families have many issuers.
+- **One bank, however it is written.** "BARCLAYS BANK UK PLC" and "Barclays Bank UK" are the same issuer to your cabinet: capitals, accents, punctuation, "Ltd" and "PLC" at the end, and a "The" at the start make no difference.
+- **Say which issuers are the same.** Where two look like one ("Barclays", 14 papers, and "Barclays Bank UK", 3), the level picker and the new Settings › Who issued it ask "Same?". Same puts them together, for everybody in the family; Separate keeps them apart and stops asking. Settings › Who issued it lists every issuer with how many papers it has and the other ways it is written, each with Separate, and Same as… to put one with another yourself. Nothing is ever put together without someone saying so, and no document is changed. Owners and adults decide, and each change appears in the household's activity: "Sam said “Barclays Bank UK” is the same issuer as “Barclays”", "Sam separated “Barclays Bank UK” from “Barclays”". An issuer you can't see any paper of is never named to you there: the line says "an issuer you can't see".
+- **Cabinets follow.** Say two issuers are the same and the folders, drawers or cabinets drawn for each become one, keeping the name, the pinned papers (up to the 200 a folder holds) and the dividers you gave them, and where you keep an original stays where it was. Separate them and each gets its own again. Separating an issuer that brought others with it, such as HSBC joined to Barclays with HSBC UK, brings them back with it.
+- **A paper whose issuer is only "Ltd" or a dash still counts as having one,** and is never filed behind "No issuer given".
+- **Papers with no issuer go behind "No issuer given"** where Who issued it makes cabinets, drawers, folders or dividers, last, so they are never left out. Papers without a topic or kind still wait for their details, as before.
+
+### Changed
+
+- **The Who issued it filter in Documents finds every way the issuer is written,** and every issuer said to be the same: filtering by Barclays finds Barclays Bank UK too, once someone has said they are one.
+- **A folder of an issuer opens in the table** with its filter said as "From Barclays", finding every way Barclays is written.
+- Every name, count and suggestion comes from the papers you can see: an issuer on somebody else's Only me paper is not shown to you, and is not suggested.
+- **The phone app keeps working.** A folder divided by who issued it shows its dividers as one list, named like "Bank statement · Barclays".
+
 ## [0.9.0-dev.90] - 2026-11-22 — choose how your cabinet is arranged, level by level
 
 ### Added

@@ -3,6 +3,7 @@ import {
   effectiveVisibility,
   householdDateOrder,
   issuerCandidates,
+  storedIssuerKey,
   mayChangeVisibilityAtAll,
   normaliseTags,
   NOTE_KIND,
@@ -160,6 +161,7 @@ import { documentTable } from './table.js';
 import {
   andFilters,
   filterClauses,
+  issuedBySql,
   statusAllowed,
   visibilitySql,
   type DocumentFilters,
@@ -741,7 +743,7 @@ export const seenDocument = (p: Principal) => sql<boolean>`(d.visibility = 'hous
  * `seenDocument`, and the database refuses a write through a grant too.
  * `alias` is the row's name in the query: `d`, or `document`.
  */
-export const readDocument = (p: Principal, alias: 'd' | 'document' = 'd') => {
+export const readDocument = (p: Principal, alias: 'd' | 'document' | 'seen' = 'd') => {
   const t = sql.raw(alias);
   return sql<boolean>`(${t}.visibility = 'household'
   or (${t}.visibility = 'adults' and ${p.seesAdults})
@@ -750,6 +752,12 @@ export const readDocument = (p: Principal, alias: 'd' | 'document' = 'd') => {
            or (${t}.deleted_at is null
                and caregiver_reads(${t}.owner_member_id, ${t}.type_key, ${t}.category)))))`;
 };
+
+/** `readDocument` for a paper the issuer filters ask about (0.9.0-dev.91), by its name in the query. */
+export const seenBy =
+  (p: Principal) =>
+  (alias: string): RawBuilder<boolean> =>
+    readDocument(p, alias as 'seen');
 
 /** Whether the caller is given this row only as its person's caregiver: somebody else's Only me. */
 export const byGrant = (
@@ -2496,13 +2504,16 @@ export class DocumentService {
       if (q.tag) query = query.where(tagFilter(q.tag));
       if (q.tag_label) query = query.where(tagLabelFilter(q.tag_label));
       if (q.issued_by) {
-        query = query.where(sql<boolean>`lower(issued_by) = lower(${q.issued_by.trim()})`);
+        // As written, or as the household names the same issuer (0.9.0-dev.91).
+        query = query.where(issuedBySql(q.issued_by, seenBy(p), 'document') as never);
       }
       // Changed since, or its place in a cabinet changed since (C3: a
       // folder renamed is nobody's edit, and a phone's copy still catches up).
       if (q.updated_since) query = query.where(touchedSince(q.updated_since));
       // Any of several, and the days (V1).
-      for (const clause of filterClauses(q, 'document')) query = query.where(clause as never);
+      for (const clause of filterClauses(q, 'document', seenBy(p))) {
+        query = query.where(clause as never);
+      }
 
       const sort = q.sort ?? 'recent';
       if (sort === 'alpha') query = query.orderBy('title').orderBy('id');
@@ -2680,7 +2691,9 @@ export class DocumentService {
    * previous issuers first" (0.4.10). An issuer is as telling as a title, so
    * the rule is exactly the one tags() keeps: an issuer seen only on
    * somebody else's Only me or Adults only document is not there, and does
-   * not count. One spelling per issuer, the one used most.
+   * not count. One spelling per issuer, the one used most: one issuer by its
+   * key and the household's "Same as" list since 0.9.0-dev.91, so a chip
+   * counts what its Who issued it filter lists.
    */
   async issuers(
     p: Principal,
@@ -2725,7 +2738,12 @@ export class DocumentService {
          ${f.member_id ? sql`and d.owner_member_id = ${f.member_id}::uuid` : sql``}
          ${f.category ? sql`and d.category = ${f.category}` : sql``}
          ${prefix ? sql`and d.issued_by ilike ${`${prefix}%`}` : sql``}
-       group by lower(btrim(d.issued_by))
+       -- One issuer by its key and the household's "Same as" list (0.9.0-dev.91),
+       -- so a chip counts what its filter lists; as written where it has no key.
+       group by coalesce(
+         (select ia.to_key from issuer_alias ia
+           where ia.household_id = d.household_id and ia.from_key = d.issuer_key),
+         d.issuer_key, lower(btrim(d.issued_by)))
        order by for_type desc, count desc, value
        limit 50`.execute(trx);
     return r.rows.map((row) => ({ value: row.value, count: row.count, typeKeys: row.type_keys }));
@@ -4041,8 +4059,8 @@ export class DocumentService {
                         or caregiver_reads(d.owner_member_id, d.type_key, d.category))))
           ${q.member_id ? sql`and d.owner_member_id = ${q.member_id}::uuid` : sql``}
           ${q.category ? sql`and d.category = ${q.category}` : sql``}
-          ${q.issued_by ? sql`and lower(d.issued_by) = lower(${q.issued_by.trim()})` : sql``}
-          ${andFilters(q.filters ?? {})}
+          ${q.issued_by ? sql`and ${issuedBySql(q.issued_by, seenBy(p))}` : sql``}
+          ${andFilters(q.filters ?? {}, 'd', seenBy(p))}
         order by h.rank desc, d.updated_at desc
         limit ${limit}`.execute(trx);
 
@@ -4907,6 +4925,10 @@ export class DocumentService {
     // As typed, spaces tidied: "Barclays", not "barclays" — it is shown.
     if (input.issued_by !== undefined) {
       out.issued_by = input.issued_by?.trim().replace(/\s+/g, ' ') || null;
+      // Its issuer key beside it (0.9.0-dev.91, 0129): what the cabinet, the
+      // dividers and the Who issued it filter compare, written here with it,
+      // so every create, edit, renewal, capture and filing keeps them in step.
+      out.issuer_key = storedIssuerKey(out.issued_by as string | null);
     }
     if (input.physical_location !== undefined)
       out.physical_location = input.physical_location?.trim() || null;

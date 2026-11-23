@@ -133,6 +133,8 @@ export interface TableView {
 export const FOLDER_KEYS = [
   'category',
   'issued_by',
+  // Who issued it, by key, as the household names it (0.9.0-dev.91).
+  'issuer',
   'location',
   // In a place in a cabinet (0.9.0, C3): the whole path, or its leading part.
   'original_place',
@@ -298,6 +300,7 @@ export function queryOf(
     sensitive: view.sensitive || undefined,
     category: k.category,
     issued_by: k.issued_by,
+    issuer: k.issuer,
     location: k.location,
     original_place: k.original_place,
     source_folder: k.source_folder,
@@ -324,7 +327,15 @@ export function folderChipCount(f: FolderPart): number {
   return (
     ranges +
     (
-      ['category', 'issued_by', 'location', 'original_place', 'source_folder', 'essential'] as const
+      [
+        'category',
+        'issued_by',
+        'issuer',
+        'location',
+        'original_place',
+        'source_folder',
+        'essential',
+      ] as const
     ).filter((x) => k[x]).length +
     f.tags.length
   );

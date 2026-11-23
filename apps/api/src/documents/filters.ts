@@ -1,4 +1,7 @@
 import {
+  isIssuerKey,
+  NO_ISSUER,
+  storedIssuerKey,
   sensitiveOf,
   SENSITIVE_FILTER_VALUES,
   HOUSEHOLD_MEMBER_FILTER,
@@ -53,6 +56,12 @@ export interface DocumentFilters {
   tags?: string[] | undefined;
   /** Notes left out (`notes=exclude`). */
   without_notes?: boolean | undefined;
+  /**
+   * Any of these issuers (0.9.0-dev.91): issuer keys, each with every key
+   * the household said is the same issuer; `_none` (`NO_ISSUER`) for papers
+   * with no issuer given.
+   */
+  issuers?: string[] | undefined;
   /**
    * Sensitive, all said, or not (0.9.0, AIR2: `sensitive=yes`, `no`,
    * or both, which is every document).
@@ -119,6 +128,8 @@ export interface RawFilters {
   notes?: 'exclude' | undefined;
   /** `yes`, `no`, or both comma-separated (0.9.0, AIR2). */
   sensitive?: string | undefined;
+  /** Issuer keys, or `_none`, comma-separated (0.9.0-dev.91). */
+  issuer?: string | undefined;
 }
 
 /**
@@ -206,6 +217,17 @@ export function filtersOf(raw: RawFilters): {
     }
     many.sensitive = sensitive.map((v) => v === 'yes');
   }
+  // Who issued it, by key (0.9.0-dev.91): new, so always a list.
+  const issuers = valuesOf(raw.issuer);
+  if (issuers) {
+    tooMany('issuer', issuers);
+    for (const v of issuers) {
+      if (v !== NO_ISSUER && !isIssuerKey(v)) {
+        refuse('issuer', 'That is not who issued a document, as the vault keys it.');
+      }
+    }
+    many.issuers = issuers;
+  }
   for (const d of ['added', 'issued', 'expires', 'dated'] as const) {
     const from = dayOf(`${d}_from`, raw[`${d}_from`]);
     const to = dayOf(`${d}_to`, raw[`${d}_to`]);
@@ -221,7 +243,12 @@ export function filtersOf(raw: RawFilters): {
  * the people (`none` for Not sure yet, `household` for the household's),
  * kinds, categories and who-can-see, and the date ranges. A status is worked out, not stored: `statusAllowed`.
  */
-export function filterClauses(f: DocumentFilters, table = 'd'): RawBuilder<unknown>[] {
+export function filterClauses(
+  f: DocumentFilters,
+  table = 'd',
+  /** Who reads: what the issuer filter (0.9.0-dev.91) expands keys by. */
+  seen?: IssuerReader,
+): RawBuilder<unknown>[] {
   const c = (column: string) => sql.ref(`${table}.${column}`);
   const parts: RawBuilder<unknown>[] = [];
   if (f.member_ids) {
@@ -246,6 +273,12 @@ export function filterClauses(f: DocumentFilters, table = 'd'): RawBuilder<unkno
     );
   }
   if (f.without_notes) parts.push(sql`${c('type_key')} is distinct from ${NOTE_KIND}`);
+  // Any of these issuers, each with those the household says are the same
+  // (0.9.0-dev.91); or none given.
+  if (f.issuers) {
+    if (!seen) throw new Error('The issuer filter is asked with its reader.');
+    parts.push(issuersSql(f.issuers, seen, table));
+  }
   // Sensitive or not, all said (0.9.0, AIR2); both is every document.
   const sensitive = [...new Set(f.sensitive ?? [])];
   if (sensitive.length === 1) {
@@ -279,6 +312,70 @@ export function datedSql(table = 'd'): RawBuilder<string> {
     (${c('created_at')} at time zone coalesce(
        (select h.timezone from household h where h.id = ${c('household_id')}),
        ${serverZone()}))::date)`;
+}
+
+/**
+ * "The reader may read document `alias`" (`readDocument` in service.ts), as
+ * the issuer filters ask it of a paper other than the one being listed.
+ */
+export type IssuerReader = (alias: string) => RawBuilder<boolean>;
+
+/**
+ * Issuer keys as one household names them, for this reader (0.9.0-dev.91):
+ * each key asked; and, for each the reader can read a paper of, every key of
+ * its group — the key the household's "Same as" list says it is the same
+ * as, and every key said to be the same as that. A key they can read no
+ * paper of is only itself, so what is listed is the same whether or not it
+ * is in the list: the filter never says what the reader may not know. One
+ * array, worked out once for the whole statement (it asks nothing of the
+ * paper listed), so the listing itself reads `document_issuer_key_idx`.
+ */
+export function issuerKeysSql(keys: readonly string[], seen: IssuerReader): RawBuilder<string[]> {
+  return sql<string[]>`array(
+    with asked(k) as (select unnest(${[...keys]}::text[])),
+         roots(r) as (
+           select coalesce(ia.to_key, a.k)
+             from asked a
+             left join issuer_alias ia on ia.household_id = app_household() and ia.from_key = a.k
+            where exists (select 1 from document seen
+                           where seen.issuer_key = a.k and seen.deleted_at is null
+                             and ${seen('seen')}))
+    select k from asked
+    union select r from roots
+    union select ib.from_key from issuer_alias ib
+           where ib.household_id = app_household() and ib.to_key in (select r from roots))`;
+}
+
+/** Any of these issuer keys, each as the household names it (`issuerKeysSql`), or `_none` for none given. */
+export function issuersSql(
+  keys: readonly string[],
+  seen: IssuerReader,
+  table = 'd',
+): RawBuilder<boolean> {
+  const column = sql.ref(`${table}.issuer_key`);
+  const given = keys.filter((k) => k !== NO_ISSUER);
+  const any = [
+    ...(given.length > 0 ? [sql`${column} = any(${issuerKeysSql(given, seen)})`] : []),
+    ...(keys.includes(NO_ISSUER) ? [sql`${column} is null`] : []),
+  ];
+  return sql<boolean>`(${sql.join(any, sql` or `)})`;
+}
+
+/**
+ * The Who issued it filter (`issued_by`), as SQL: the issuer as written,
+ * whatever its case, as it always was; and since 0.9.0-dev.91 every paper
+ * the household names the same, for this reader (`issuerKeysSql`) — by its
+ * issuer key, so "BARCLAYS BANK UK PLC" finds "Barclays Bank UK", and by the
+ * "Same as" list, so "Barclays" finds "Barclays Bank UK" once somebody said
+ * they are one.
+ */
+export function issuedBySql(value: string, seen: IssuerReader, table = 'd'): RawBuilder<boolean> {
+  const c = (column: string) => sql.ref(`${table}.${column}`);
+  const asWritten = sql`lower(${c('issued_by')}) = lower(${value.trim()})`;
+  const key = storedIssuerKey(value);
+  return key === null
+    ? sql<boolean>`${asWritten}`
+    : sql<boolean>`(${asWritten} or ${c('issuer_key')} = any(${issuerKeysSql([key], seen)}))`;
 }
 
 /**
@@ -317,8 +414,12 @@ export function visibilitySql(values: readonly string[], table = 'd'): RawBuilde
 }
 
 /** The conditions above as one, or none: for a statement that adds `and …`. */
-export function andFilters(f: DocumentFilters, table = 'd'): RawBuilder<unknown> {
-  const parts = filterClauses(f, table);
+export function andFilters(
+  f: DocumentFilters,
+  table = 'd',
+  seen?: IssuerReader,
+): RawBuilder<unknown> {
+  const parts = filterClauses(f, table, seen);
   return parts.length > 0 ? sql`and ${sql.join(parts, sql` and `)}` : sql``;
 }
 

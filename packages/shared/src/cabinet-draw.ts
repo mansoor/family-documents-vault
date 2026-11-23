@@ -17,6 +17,7 @@ import {
   levelsProblem,
   ownLevelsProblem,
 } from './cabinet.js';
+import { compareIssuerNames, NO_ISSUER, NO_ISSUER_GIVEN } from './issuer-groups.js';
 import { PLACE_SEPARATOR } from './original-place.js';
 import { CATEGORY_LABELS } from './tokens.js';
 
@@ -38,7 +39,9 @@ import { CATEGORY_LABELS } from './tokens.js';
  *
  * A paper with no topic (or no kind) where Topic (or Kind) makes a cabinet,
  * drawer or folder has no folder yet: it is counted as left out, and lands
- * in its folder once its details say where.
+ * in its folder once its details say where. A paper with no issuer where
+ * Who issued it makes one (0.9.0-dev.91) is in "No issuer given" instead:
+ * many papers have none, and would otherwise be in no folder at all.
  */
 
 /** How many documents share one person, topic, kind and year. */
@@ -49,6 +52,11 @@ export interface CabinetGroup {
   type_key: string | null;
   /** The year the paper is about: issued, else added. */
   year: number;
+  /**
+   * Who issued it (0.9.0-dev.91): its issuer key, the household's "Same as"
+   * list applied; null or absent for none given.
+   */
+  issuer?: string | null | undefined;
   n: number;
 }
 
@@ -56,6 +64,8 @@ export interface CabinetGroup {
 export interface CabinetNames {
   person: (id: string) => string;
   kind: (key: string) => string;
+  /** An issuer key's name, the household's spelling (0.9.0-dev.91); the key itself where absent. */
+  issuer?: ((key: string) => string) | undefined;
   /** People in the order their cabinets go: the caller first. */
   personOrder: (a: string, b: string) => number;
 }
@@ -146,6 +156,18 @@ function levelDefs(names: CabinetNames): Record<CabinetLevel, LevelDef> {
       filter: (v) => ({ type_key: v }),
       values: (f) => listOf(f.type_key),
     },
+    // Who issued it (0.9.0-dev.91): by name, "No issuer given" last.
+    issuer: {
+      key: (g) => g.issuer ?? NO_ISSUER,
+      name: (v) => (v === NO_ISSUER ? NO_ISSUER_GIVEN : (names.issuer?.(v) ?? v)),
+      order: (a, b) => {
+        if (a === NO_ISSUER || b === NO_ISSUER) return a === b ? 0 : a === NO_ISSUER ? 1 : -1;
+        const name = (v: string) => names.issuer?.(v) ?? v;
+        return compareIssuerNames(name(a), name(b)) || compareIssuerNames(a, b);
+      },
+      filter: (v) => ({ issuer: v }),
+      values: (f) => listOf(f.issuer),
+    },
   };
 }
 
@@ -205,6 +227,7 @@ function drawnNames(names: CabinetNames): CabinetNames {
     ...names,
     person: (id) => drawnName(names.person(id)),
     kind: (key) => drawnName(names.kind(key)),
+    issuer: (key) => drawnName(names.issuer?.(key) ?? key),
   };
 }
 
@@ -245,7 +268,13 @@ function drawersOf(
   const drawerLevel = pen.defs[eff[at] as CabinetLevel];
   const folderLevel = pen.defs[eff[at + 1] as CabinetLevel];
   const dividers = dividerLevelsOf(eff);
-  return split(groups, drawerLevel)
+  const drawers = split(groups, drawerLevel);
+  // Past the most drawers a cabinet holds: drawn no further, and said so.
+  if (drawers.length > CABINET_LIMITS.drawers + 1) {
+    pen.capped = true;
+    drawers.length = CABINET_LIMITS.drawers + 1;
+  }
+  return drawers
     .map(([b, gb]): CabinetDrawer => ({
       id: pen.newId(),
       name: drawerLevel.name(b),
@@ -335,7 +364,14 @@ export function drawCabinet(
     ];
   } else {
     const first = pen.defs[levels[0] as CabinetLevel];
-    cabinets = split(groups, first).map(([a, ga]) => cabinetOf(pen, levels, a, ga, own.get(a)));
+    const values = split(groups, first);
+    // Past the most cabinets a layout holds (a level of many values first,
+    // Who issued it say): drawn no further, and said so.
+    if (values.length > CABINET_LIMITS.cabinets + 1) {
+      pen.capped = true;
+      values.length = CABINET_LIMITS.cabinets + 1;
+    }
+    cabinets = values.map(([a, ga]) => cabinetOf(pen, levels, a, ga, own.get(a)));
   }
   // Nothing drawn where a level found nothing to sort by.
   cabinets = cabinets.filter((c) => c.drawers.length > 0);
@@ -374,6 +410,7 @@ const READER: Record<CabinetLevel, (f: FolderFilter) => string[]> = (() => {
     person: defs.person.values,
     year: defs.year.values,
     kind: defs.kind.values,
+    issuer: defs.issuer.values,
   };
 })();
 
@@ -905,4 +942,155 @@ export function addToDrawing(
     }
   }
   return { layout: added > 0 ? out : layout, added, left };
+}
+
+// ------------------------------------------------------------- issuers said to be one
+
+/**
+ * A drawn cabinet made one again where the household said two issuers are
+ * the same (0.9.0-dev.91): folders, drawers or cabinets drawn for each of
+ * them hold the same papers now, so each set of them is merged into one —
+ * `rootOf` says which group a key is in, `prefer` which of a set's keys the
+ * survivor should have (the one the reader knows the group by), else the
+ * first in order. The survivor keeps its id, name and place; a folder its
+ * dividers (taking the other's own ranges where it has none), shown if
+ * either was; each merged folder's pins go to it (`moved`). Only drawn
+ * cabinets, and only parts that differ by issuer alone: anything arranged
+ * by hand is left as it is. Separating them needs nothing here: the papers
+ * that leave a group are in no folder, and the drawing grows one for them.
+ */
+export function mergeSameIssuers(
+  layout: CabinetLayout,
+  rootOf: (key: string) => string,
+  prefer: (key: string) => boolean = () => false,
+): { layout: CabinetLayout; moved: Array<{ from: string; to: string }>; changed: boolean } {
+  const levels = layout.levels;
+  const moved: Array<{ from: string; to: string }> = [];
+  if (!Array.isArray(levels)) return { layout, moved, changed: false };
+  const out = clone(layout);
+  let changed = false;
+  /** A question with its issuers as their groups: the same papers, the same question. */
+  const canon = (f: FolderFilter): FolderFilter =>
+    f.issuer === undefined
+      ? f
+      : {
+          ...f,
+          issuer: [
+            ...new Set(
+              f.issuer
+                .split(',')
+                .filter((x) => x !== '')
+                .map(rootOf),
+            ),
+          ]
+            .sort()
+            .join(','),
+        };
+  const preferred = <T>(list: T[], keyOf: (x: T) => string | undefined): T =>
+    list.find((x) => {
+      const k = keyOf(x);
+      return k !== undefined && k.split(',').some(prefer);
+    }) ?? (list[0] as T);
+  /** Sets of `list` the same by `key` (and different as written), each merged into one. */
+  const mergeAll = <T>(
+    list: T[],
+    key: (x: T) => string | undefined,
+    written: (x: T) => string | undefined,
+    issuerOf: (x: T) => string | undefined,
+    into: (survivor: T, other: T) => void,
+  ): T[] => {
+    const sets = new Map<string, T[]>();
+    for (const x of list) {
+      const k = key(x);
+      if (k === undefined) continue;
+      sets.set(k, [...(sets.get(k) ?? []), x]);
+    }
+    const gone = new Set<T>();
+    for (const set of sets.values()) {
+      if (set.length < 2 || new Set(set.map(written)).size < 2) continue;
+      const survivor = preferred(set, issuerOf);
+      for (const other of set) {
+        if (other === survivor) continue;
+        into(survivor, other);
+        gone.add(other);
+        changed = true;
+      }
+    }
+    return gone.size === 0 ? list : list.filter((x) => !gone.has(x));
+  };
+  const mergeFolders = (folders: CabinetFolder[]) =>
+    mergeAll(
+      folders,
+      (f) => (f.filter.issuer === undefined ? undefined : questionKey(canon(f.filter))),
+      (f) => questionKey(f.filter),
+      (f) => f.filter.issuer,
+      (s, o) => {
+        moved.push({ from: o.id, to: s.id });
+        s.hidden = s.hidden && o.hidden;
+        if ((s.dividers?.ranges.length ?? 0) === 0 && (o.dividers?.ranges.length ?? 0) > 0) {
+          s.dividers = {
+            levels: s.dividers?.levels ?? [],
+            ranges: clone(o.dividers?.ranges ?? []),
+          };
+        }
+      },
+    );
+  const drawerIssuer = (d: CabinetDrawer) => {
+    const vs = d.folders.map((f) => f.filter.issuer);
+    return vs[0] !== undefined && vs.every((v) => v === vs[0]) ? vs[0] : undefined;
+  };
+  const drawn = out.cabinets.filter((c) => c.drawn);
+  /** Cabinets another was merged into: their drawers of one value are merged in turn. */
+  const joined = new Set<Cabinet>();
+  // Cabinets of one issuer's group, where Who issued it makes the cabinets.
+  if (levels[0] === 'issuer' && levels.length > LEVEL_LIMITS.fewest) {
+    const kept = mergeAll(
+      drawn,
+      (c) => (c.drawn?.value ? rootOf(c.drawn.value) : undefined),
+      (c) => c.drawn?.value ?? undefined,
+      (c) => c.drawn?.value ?? undefined,
+      (s, o) => {
+        s.hidden = s.hidden && o.hidden;
+        s.drawers.push(...o.drawers);
+        joined.add(s);
+      },
+    );
+    out.cabinets = out.cabinets.filter((c) => !c.drawn || kept.includes(c));
+  }
+  for (const c of out.cabinets) {
+    if (!c.drawn) continue;
+    const eff = cabinetLevels(out, c) ?? [];
+    const drawerLevel = eff[eff.length <= LEVEL_LIMITS.fewest ? 0 : 1];
+    // Drawers of one issuer's group, where Who issued it makes the drawers.
+    if (drawerLevel === 'issuer') {
+      c.drawers = mergeAll(
+        c.drawers,
+        (d) => {
+          const v = drawerIssuer(d);
+          return v === undefined ? undefined : canon({ issuer: v }).issuer;
+        },
+        drawerIssuer,
+        drawerIssuer,
+        (s, o) => {
+          s.hidden = s.hidden && o.hidden;
+          s.folders.push(...o.folders);
+        },
+      );
+    } else if (joined.has(c) && drawerLevel !== undefined) {
+      // Drawers by another level, merged by their value, once their cabinets were.
+      const level = drawerLevel as CabinetLevel;
+      c.drawers = mergeAll(
+        c.drawers,
+        (d) => drawerValue(d, level),
+        (d) => d.id,
+        () => undefined,
+        (s, o) => {
+          s.hidden = s.hidden && o.hidden;
+          s.folders.push(...o.folders);
+        },
+      );
+    }
+    for (const d of c.drawers) d.folders = mergeFolders(d.folders);
+  }
+  return changed ? { layout: out, moved, changed } : { layout, moved: [], changed: false };
 }

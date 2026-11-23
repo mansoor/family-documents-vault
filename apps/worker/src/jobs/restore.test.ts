@@ -3790,6 +3790,50 @@ describe.skipIf(!testAdminUrl())('checking a restored vault', { timeout: 60_000 
     expect(await checkRestored(target())).toMatchObject({ households: 1 });
   });
 
+  it('notices the guard on the issuers said to be the same gone, or who may write them (0129)', async () => {
+    await sql(
+      vault.adminUrl,
+      'alter table public.issuer_alias disable trigger issuer_alias_one_level',
+    );
+    try {
+      await expect(checkRestored(target())).rejects.toThrow(/guard the vault relies on is missing/);
+    } finally {
+      await sql(
+        vault.adminUrl,
+        'alter table public.issuer_alias enable trigger issuer_alias_one_level',
+      );
+    }
+    for (const table of ['issuer_alias', 'issuer_apart']) {
+      for (const [cmd, words] of [
+        ['insert', /who adds to the issuers said to be/],
+        ['update', /who changes the issuers said to be/],
+        ['delete', /who takes from the issuers said to be/],
+      ] as const) {
+        const name = `${table}_actor_${cmd}`;
+        const { rows } = await sql(
+          vault.adminUrl,
+          `select pg_get_expr(polqual, polrelid) as qual, pg_get_expr(polwithcheck, polrelid) as chk
+             from pg_policy where polname = '${name}'`,
+        );
+        const qual = rows[0]?.qual as string | null;
+        const chk = rows[0]?.chk as string | null;
+        expect(qual ?? chk, name).toBeTruthy();
+        await sql(vault.adminUrl, `drop policy ${name} on public.${table}`);
+        try {
+          await expect(checkRestored(target()), name).rejects.toThrow(words);
+        } finally {
+          await sql(
+            vault.adminUrl,
+            `create policy ${name} on public.${table} as restrictive for ${cmd}` +
+              (qual ? ` using (${qual})` : '') +
+              (chk ? ` with check (${chk})` : ''),
+          );
+        }
+      }
+    }
+    expect(await checkRestored(target())).toMatchObject({ households: 1 });
+  });
+
   it("notices the guard on the family's time zone gone: an owner's to change (0080, TZ)", async () => {
     await sql(
       vault.adminUrl,

@@ -152,6 +152,8 @@ describe('buildCapabilities', () => {
       cabinet_pins: true,
       // 0.9.0-dev.90: cabinet levels.
       cabinet_levels: true,
+      // 0.9.0-dev.91: Who issued it as a level.
+      cabinet_issuer: true,
       // 0.9.0 (H1b): caregivers, and turning 18.
       caregivers: true,
       // 0.9.0-dev.45: an Idempotency-Key on POST /documents.

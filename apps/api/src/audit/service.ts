@@ -31,6 +31,7 @@ import { requireCapability } from '../authz.js';
 import { ApiError, notFound } from '../errors.js';
 import { sensitiveSql } from '../documents/filters.js';
 import { madeWith } from '../documents/made-with.js';
+import { issuerNamesOf } from '../cabinet/issuers.js';
 
 /**
  * The household activity log (SHR-07).
@@ -598,6 +599,11 @@ const RULES: ReadonlyMap<string, Audience | typeof BY_TYPE> = new Map<
   // the family, and how many links that paused or turned back on: for the
   // owners and the adults, who may share. Never which links.
   ['household.only_me_sharing_changed', ownersAndAdults],
+  // 0.9.0-dev.91: issuers said to be the same, or separated, in the
+  // household's "Same as" list: for the owners and the adults, who keep it.
+  // The names are issuers', never a paper's.
+  ['issuer.joined', ownersAndAdults],
+  ['issuer.separated', ownersAndAdults],
   // 0.9.0 (TZ): the family's time zone, chosen or cleared by an owner: the
   // clock everybody's times are on, so for whoever reads the log.
   ['household.timezone_changed', everyone],
@@ -1202,6 +1208,14 @@ export class AuditService {
   /** The rows a reader is shown, as events to say. */
   private async shown(trx: Db, p: Principal, rows: Row[], zone: string): Promise<ActivityEvent[]> {
     const links = await this.collectionLinks(trx, p, rows);
+    // The "Same as" list's lines (0.9.0-dev.91) keep two issuer keys: each
+    // named to this reader as their own papers name it, else not named.
+    const keys = rows.flatMap((r) => {
+      if (r.action !== 'issuer.joined' && r.action !== 'issuer.separated') return [];
+      const d = (r.detail ?? {}) as Record<string, unknown>;
+      return [d.from_key, d.to_key].filter((k): k is string => typeof k === 'string');
+    });
+    const issuerNames = keys.length > 0 ? await issuerNamesOf(trx, p, [...new Set(keys)]) : null;
     const events: ActivityEvent[] = [];
     for (const r of rows) {
       // A private document belongs to one person, and so does every line
@@ -1227,7 +1241,9 @@ export class AuditService {
             : r.member_name),
         ...(r.document_sensitive === true ? { object_sensitive: true } : {}),
         collection_name: r.collection_name,
-        detail: (r.detail ?? {}) as Record<string, unknown>,
+        detail: issuerNames
+          ? namedIssuers(r.action, (r.detail ?? {}) as Record<string, unknown>, issuerNames)
+          : ((r.detail ?? {}) as Record<string, unknown>),
         timezone: zone,
       });
     }
@@ -1497,4 +1513,22 @@ function linkOf(r: Row, links: Map<string, LinkFacts>): Line['link'] {
   const link = named.id ? links.get(named.id) : undefined;
   if (link) return link;
   return named.collections ? null : undefined;
+}
+
+/**
+ * A "Same as" line's detail (0.9.0-dev.91) as one reader is told it: its two
+ * issuer keys named by that reader's own papers (`issuer`, `same_as`), and
+ * no name — never the key — for one they can read no paper of.
+ */
+function namedIssuers(
+  action: string,
+  detail: Record<string, unknown>,
+  names: ReadonlyMap<string, string>,
+): Record<string, unknown> {
+  if (action !== 'issuer.joined' && action !== 'issuer.separated') return detail;
+  const name = (k: unknown) => (typeof k === 'string' ? names.get(k) : undefined);
+  const { from_key, to_key, ...rest } = detail;
+  const from = name(from_key);
+  const to = name(to_key);
+  return { ...rest, ...(from ? { issuer: from } : {}), ...(to ? { same_as: to } : {}) };
 }

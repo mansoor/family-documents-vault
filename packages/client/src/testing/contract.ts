@@ -4892,6 +4892,76 @@ export const contractScenarios: Scenario[] = [
     },
   },
   {
+    name: 'who issued it as a level: one key whatever the spelling, the household’s Same as list suggested, joined and separated, and No issuer given (0.9.0-dev.91)',
+    run: async (api, ctx) => {
+      const { access_token: token } = await signIn(api, ctx);
+      expect((await api.capabilities()).features.cabinet_issuer).toBe(true);
+      const me = await api.me(token);
+      const paper = (title: string, issued_by: string | null) =>
+        api.createDocument(token, {
+          type_key: 'bank_statement',
+          owner_member_id: me.member_id,
+          visibility: 'household',
+          sensitive: false,
+          title,
+          issued: { date: '2016-03-01', precision: 'day' },
+          ...(issued_by ? { issued_by } : {}),
+        });
+      const a = await paper('Contract issuer A', 'Wrenfold Bank');
+      const b = await paper('Contract issuer B', 'WRENFOLD BANK PLC');
+      const c = await paper('Contract issuer C', 'Wrenfold Bank Savings');
+      const none = await paper('Contract issuer none', null);
+
+      // One key whatever the spelling; the longer one only suggested.
+      const groups = await api.issuerGroups(token);
+      expect(groups.may_change).toBe(true);
+      expect(groups.items.find((g) => g.key === 'wrenfold bank')?.count).toBe(2);
+      expect(groups.same_as).toContainEqual({
+        from: { key: 'wrenfold bank savings', name: 'Wrenfold Bank Savings', count: 1 },
+        to: { key: 'wrenfold bank', name: expect.any(String) as string, count: 2 },
+      });
+      const ids = async (params: Record<string, string>) =>
+        (await api.documents(token, { sort: 'title', limit: 200, ...params })).items.map(
+          (d) => d.id,
+        );
+      expect(await ids({ issuer: 'wrenfold bank' })).toEqual([a.id, b.id]);
+      expect(await ids({ issuer: '_none' })).toContain(none.id);
+      const wrong = await refusal(api.documents(token, { sort: 'title', issuer: 'Not A Key' }));
+      expect([wrong.status, wrong.code]).toEqual([422, 'validation_failed']);
+
+      // Said to be the same: the filter and the cabinet follow; no paper changes.
+      const joined = await api.sameIssuer(token, {
+        from: 'wrenfold bank savings',
+        to: 'wrenfold bank',
+      });
+      expect(
+        joined.items.find((g) => g.key === 'wrenfold bank')?.members.map((m) => m.key),
+      ).toEqual(['wrenfold bank savings']);
+      expect(await ids({ issued_by: 'Wrenfold Bank' })).toEqual([a.id, b.id, c.id]);
+      expect((await api.document(token, c.id)).issued_by).toBe('Wrenfold Bank Savings');
+      const drawn = await api.previewCabinet(token, {
+        levels: ['issuer', 'kind'],
+        layout: { levels: null, cabinets: [] },
+      });
+      const drawers = drawn.layout.cabinets[0]?.drawers ?? [];
+      const wrenfold = drawers.find((d) =>
+        d.folders.some((f) => f.filter.issuer === 'wrenfold bank'),
+      );
+      expect(wrenfold?.folders.map((f) => drawn.counts[f.id])).toEqual([3]);
+      expect(drawers[drawers.length - 1]?.name).toBe('No issuer given');
+      expect(Array.isArray(drawn.same_as)).toBe(true);
+
+      // Separated again: never suggested as one again.
+      const apart = await api.separateIssuer(token, {
+        from: 'wrenfold bank savings',
+        to: 'wrenfold bank',
+      });
+      expect(apart.items.find((g) => g.key === 'wrenfold bank')?.members).toEqual([]);
+      expect(apart.same_as.some((s) => s.from.key === 'wrenfold bank savings')).toBe(false);
+      for (const d of [a, b, c, none]) await api.deleteDocument(token, d.id);
+    },
+  },
+  {
     name: 'a health record kept as it is, downloaded only; who opened a link, when (0.9.0, H5)',
     run: async (api, ctx) => {
       const { access_token: token } = await signIn(api, ctx);

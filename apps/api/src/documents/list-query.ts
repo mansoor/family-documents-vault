@@ -43,6 +43,9 @@ export const listQuery = z.object({
   member_id: values,
   category: values,
   issued_by: z.string().trim().min(1).max(200).optional(),
+  // Who issued it, by the vault's issuer key and the household's "Same as"
+  // list (0.9.0-dev.91): keys, comma-separated, or `_none` for none given.
+  issuer: values,
   type_key: values,
   tag: tagValues,
   notes: notesFilter,

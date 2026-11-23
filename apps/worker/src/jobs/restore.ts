@@ -1469,6 +1469,13 @@ const GUARDS = [
     table: 'document',
     fn: 'document_source_folder_rule',
   },
+  // The household's "Same as" list of issuers stays one level deep, one
+  // change at a time (0129, 0.9.0-dev.91).
+  {
+    name: 'issuer_alias_one_level',
+    table: 'issuer_alias',
+    fn: 'issuer_alias_one_level',
+  },
 ];
 
 /**
@@ -2032,6 +2039,11 @@ const ACTOR_GUARDED = [
   'connected_app_token',
   'connected_app_key_network',
   'connected_app_day',
+  // The household's "Same as" list of issuers, and those said to be
+  // separate (0129, 0.9.0-dev.91): the family's who are signed in, written
+  // by owners and adults, and the vault's.
+  'issuer_alias',
+  'issuer_apart',
 ];
 
 /**
@@ -2748,6 +2760,19 @@ const REQUIRED_RULES = [
     cmd: '*',
     what: "who sees the links to somebody's emergency information",
   },
+  // The household's "Same as" list of issuers, and those said to be separate
+  // (0129, 0.9.0-dev.91): written by owners and adults, and the vault.
+  ...(['issuer_alias', 'issuer_apart'] as const).flatMap((table) => {
+    const what =
+      table === 'issuer_alias'
+        ? 'the issuers said to be the same'
+        : 'the issuers said to be separate';
+    return [
+      { table, name: `${table}_actor_insert`, cmd: 'a', what: `who adds to ${what}` },
+      { table, name: `${table}_actor_update`, cmd: 'w', what: `who changes ${what}` },
+      { table, name: `${table}_actor_delete`, cmd: 'd', what: `who takes from ${what}` },
+    ];
+  }),
 ];
 
 /** The rows of a guarded table that are a household's: the built-ins are everybody's. */
