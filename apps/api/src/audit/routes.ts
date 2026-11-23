@@ -1,4 +1,9 @@
-import { ACTIVITY_ANYBODY_ELSE, ACTIVITY_KINDS, attachmentDisposition } from '@fdv/shared';
+import {
+  ACTIVITY_ANYBODY_ELSE,
+  ACTIVITY_KINDS,
+  attachmentDisposition,
+  FILTER_VALUES_MAX,
+} from '@fdv/shared';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { metaOf, parse } from '../auth/routes.js';
@@ -25,11 +30,30 @@ const day = z
   }, 'That is not a day on the calendar.')
   .refine((d) => d >= '1900-01-01', 'Choose a day from 1900 on.');
 
+/**
+ * A filter of several (0.9.0-dev.92, `features.multi_filters`): each value
+ * given once, or several comma-separated, or both, as GET /documents takes
+ * its filters of keys; each checked; none given, or only empty, is any
+ * (`who=` alone, as `collection_id=` on the list). At most
+ * `FILTER_VALUES_MAX` (422).
+ */
+const several = <T extends z.ZodTypeAny>(one: T) =>
+  z.preprocess((raw) => {
+    if (raw === undefined) return undefined;
+    const all = (Array.isArray(raw) ? (raw as unknown[]) : [raw]).flatMap((v): unknown[] =>
+      typeof v === 'string' ? v.split(',').map((x) => x.trim()) : [v],
+    );
+    const kept = [...new Set(all.filter((v) => v !== ''))];
+    return kept.length > 0 ? kept : undefined;
+  }, z.array(one).max(FILTER_VALUES_MAX).optional());
+
 /** The Activity page's filters, as its address has them (each left out for any). */
 const exportQuery = z
   .object({
-    who: z.union([z.literal(ACTIVITY_ANYBODY_ELSE), z.string().uuid()]).optional(),
-    kind: z.enum(ACTIVITY_KINDS.map((k) => k.value) as [string, ...string[]]).optional(),
+    // Members' ids, or anybody else: any of them.
+    who: several(z.union([z.literal(ACTIVITY_ANYBODY_ELSE), z.string().uuid()])),
+    // Sorts of thing: any of them.
+    kind: several(z.enum(ACTIVITY_KINDS.map((k) => k.value) as [string, ...string[]])),
     from: day.optional(),
     to: day.optional(),
     document: z.string().uuid().optional(),
@@ -43,7 +67,8 @@ export function registerAudit(app: FastifyInstance, audit: AuditService): void {
   );
   /**
    * The activity log as CSV (0.9.0-dev.82; `features.activity_export`):
-   * the lines the Activity page's filters keep — who, what sort of thing,
+   * the lines the Activity page's filters keep — who, what sort of thing
+   * (each any of several since 0.9.0-dev.92),
    * From and To days on the household's calendar, one document's lines —
    * as the log shows them to the caller, and nothing it does not; whoever
    * reads the log (`audit.read`). Streamed, at most

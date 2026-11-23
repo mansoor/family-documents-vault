@@ -34,7 +34,7 @@ import {
   type TableView,
   NO_FOLDER,
 } from './documents-table.js';
-import { FILTER_LABELS, filterChoices, type Known } from './screens/Documents.js';
+import { FILTER_ANY, FILTER_LABELS, filterChoices, type Known } from './screens/Documents.js';
 import { useShellMode } from './shell.js';
 import { FilterSelect, None, PickAll, useGrid } from './table-grid.js';
 import { ConfirmDialog, ErrorNote, Sheet } from './ui.js';
@@ -119,14 +119,14 @@ function viewOf(a: Asked): TableView {
   return {
     sort: 'title',
     dir: 'asc',
-    person: a.person,
-    kind: a.kind,
-    status: a.status,
-    visibility: '',
-    collection: '',
-    tag: a.tag,
-    label: '',
-    sensitive: '',
+    person: a.person ? [a.person] : [],
+    kind: a.kind ? [a.kind] : [],
+    status: a.status ? [a.status] : [],
+    visibility: [],
+    collection: [],
+    tag: a.tag ? [a.tag] : [],
+    label: [],
+    sensitive: [],
     folder: NO_FOLDER,
   };
 }
@@ -584,7 +584,7 @@ export function AddDocumentsPicker(props: {
               id={`add-docs-${k}`}
               label={FILTER_LABELS[k]}
               value={asked[k]}
-              options={filterChoices(k, known, view)}
+              options={[{ value: '', label: FILTER_ANY[k] }, ...filterChoices(k, known, view)]}
               onChange={(v) => setFilter(k, v)}
             />
           ))}
@@ -594,7 +594,7 @@ export function AddDocumentsPicker(props: {
               className="btn btn-quiet btn-small"
               onClick={() => setAsked((a) => ({ ...a, person: '', kind: '', status: '', tag: '' }))}
             >
-              Clear filters
+              Clear all
             </button>
           )}
         </div>

@@ -6,6 +6,21 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.9.0-dev.92] - 2026-11-23 — filters that take more than one choice
+
+### Added
+
+- **Pick several in one filter.** On Documents, each filter opens a list to tick: two people, Passport and Driving licence, two collections, several statuses or tags. On Activity, Who and What happened work the same way. Within one filter, the choices widen the list (any of them); across filters they narrow it (all of them apply), as before.
+- **Your choices are shown as chips** under the filters, each with a × to take it off, and **Clear all**. A filter's button says what it holds: "All people", "Sam", or "Person · 2". Everything works from the keyboard and with a screen reader: the filters are lists of tick boxes, Escape closes one, and the focus never gets lost when a chip goes.
+- **Long lists stay easy.** Where a filter has many choices, such as a family's tags, a Find box narrows the list and the list scrolls; Show all at the top clears that filter. You can choose up to 50 in one filter.
+- **Bookmark it.** The address keeps every choice, so a filtered view can be bookmarked, shared with someone in the family or reloaded, and Back goes to the view before.
+- **Activity's spreadsheet and print follow** the same filters: Download CSV holds the lines for every choice, and Print says them at the top ("Who: Sara or Sam").
+
+### Changed
+
+- **A cabinet folder opened in the table** shows its people, kinds and statuses ticked in the table's own filters, and its topics and issuers as a chip each, so you can take one away and keep the rest.
+- **The phone app keeps working** exactly as before; its filters are unchanged. Connected apps sending one value per filter see no difference.
+
 ## [0.9.0-dev.91] - 2026-11-22 — arrange your cabinet by who issued each paper
 
 ### Added

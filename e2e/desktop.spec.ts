@@ -241,6 +241,84 @@ test('the Documents table sorts by a column, and moves two chosen to the Trash',
   await expect(titles).toHaveCount(0);
 });
 
+test('a filter takes two people: chips, the address, a chip taken off by the keyboard, and the view again from its address (0.9.0-dev.92)', async () => {
+  const auth = { authorization: `Bearer ${token}` };
+  const tag = `mf${run}`;
+  const me = (await (await page.request.get('/api/v1/me', { headers: auth })).json()) as {
+    member_id: string;
+  };
+  const name = `Filter person ${run}`;
+  const added = await page.request.post('/api/v1/members', {
+    headers: auth,
+    data: { display_name: name, relationship: 'Cousin' },
+  });
+  expect(added.ok()).toBe(true);
+  const them = ((await added.json()) as { id: string }).id;
+  const made: string[] = [];
+  for (const [title, owner] of [
+    [`MF mine ${run}`, me.member_id],
+    [`MF theirs ${run}`, them],
+    [`MF nobody's ${run}`, null],
+  ] as const) {
+    const r = await page.request.post('/api/v1/documents', {
+      headers: auth,
+      data: { title, visibility: 'household', tags: [tag], owner_member_id: owner },
+    });
+    expect(r.ok()).toBe(true);
+    made.push(((await r.json()) as { id: string }).id);
+  }
+  await visit(page, `/documents?tag=${tag}`);
+  const grid = page.getByRole('grid', { name: /^Documents, sorted by Title/ });
+  const titles = grid.locator('tbody .cell-title');
+  await expect(titles).toHaveCount(3);
+
+  // Two people ticked in the Person filter: any of them.
+  const filters = page.getByRole('group', { name: 'Filters', exact: true });
+  await filters.getByRole('button', { name: /^Person: / }).click();
+  const people = page.getByRole('group', { name: 'Person: any of these' });
+  await people.getByRole('checkbox', { name: 'Mansoor', exact: true }).check();
+  await people.getByRole('checkbox', { name, exact: true }).check();
+  await expect(titles).toHaveText([`MF mine ${run}`, `MF theirs ${run}`]);
+  await expect(filters.getByRole('button', { name: /^Person: Person · 2/ })).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(filters.getByRole('button', { name: /^Person: / })).toBeFocused();
+  const address = new URL(page.url());
+  expect(address.searchParams.getAll('person').sort()).toEqual([me.member_id, them].sort());
+  expect(address.searchParams.getAll('tag')).toEqual([tag]);
+
+  // Each a chip, with Clear all.
+  const chips = page.getByRole('group', { name: 'Filters chosen' });
+  await expect(
+    chips.getByRole('button', { name: 'Take off the filter Person: Mansoor', exact: true }),
+  ).toBeVisible();
+  await expect(
+    chips.getByRole('button', { name: `Take off the filter Person: ${name}`, exact: true }),
+  ).toBeVisible();
+  await expect(chips.getByRole('button', { name: 'Clear all' })).toBeVisible();
+
+  // One taken off by the keyboard: the focus on the chip after it.
+  const xs = chips.locator('button.chip-x');
+  const first = (await xs.first().getAttribute('aria-label')) ?? '';
+  const second = (await xs.nth(1).getAttribute('aria-label')) ?? '';
+  await xs.first().focus();
+  await page.keyboard.press('Enter');
+  await expect(chips.getByRole('button', { name: first, exact: true })).toHaveCount(0);
+  await expect(chips.getByRole('button', { name: second, exact: true })).toBeFocused();
+  await expect(titles).toHaveCount(1);
+  const kept = page.url();
+
+  // The same view again from its address alone.
+  await visit(page, '/');
+  const path = new URL(kept);
+  await visit(page, `${path.pathname}${path.search}`);
+  await expect(titles).toHaveCount(1);
+  await expect(
+    page.getByRole('group', { name: 'Filters chosen' }).locator('button.chip-x'),
+  ).toHaveCount(2);
+
+  for (const id of made) await page.request.delete(`/api/v1/documents/${id}`, { headers: auth });
+});
+
 test("a collection's own page finds two documents by search and adds them", async () => {
   const auth = { authorization: `Bearer ${token}` };
   const word = `picker${run}`;

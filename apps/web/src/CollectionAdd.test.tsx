@@ -296,7 +296,7 @@ describe("a collection's Add documents (Phase 6)", () => {
     select(dialog, 'Status', '');
     select(dialog, 'Tag', 'house');
     await waitFor(() => expect(shown(dialog)).toEqual(['Council tax bill']));
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Clear filters' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Clear all' }));
     await waitFor(() => expect(shown(dialog)).toHaveLength(5));
 
     // By words: the app's own search.

@@ -3,6 +3,7 @@ import type { BatchItemView } from '@fdv/shared';
 import axe from 'axe-core';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { App } from './App.js';
+import { filterButton, filterSays, tick, ticked } from './filter-testing.js';
 import {
   AISHA,
   fresh,
@@ -646,7 +647,9 @@ describe('Activity from 768 px: a table, with filters kept in the address (R4)',
     atWidth(WIDE);
     open('/activity', ACTIVITY);
     await screen.findByText('Zain Seikh signed in');
-    fireEvent.change(screen.getByLabelText('Who'), { target: { value: 'm-2' } });
+    const page = document.body;
+    expect(filterSays(page, 'Who')).toBe('Everybody');
+    tick(page, 'Who', 'Sara Seikh');
     await waitFor(() =>
       expect(rowsOf()).toEqual([
         'Sara Seikh downloaded “Home insurance”',
@@ -654,20 +657,21 @@ describe('Activity from 768 px: a table, with filters kept in the address (R4)',
       ]),
     );
     expect(window.location.search).toBe('?who=m-2');
+    expect(filterSays(page, 'Who')).toBe('Sara Seikh');
     expect(screen.getByText('2 of the 6 loaded match')).toBeInTheDocument();
-    fireEvent.change(screen.getByLabelText('What happened'), { target: { value: 'shared' } });
+    tick(page, 'What happened', 'Shared and sent');
     await waitFor(() => expect(rowsOf()).toEqual(['Sara Seikh made a link to “Home insurance”']));
     expect(new URLSearchParams(window.location.search).get('kind')).toBe('shared');
     // Anybody else: a link, or somebody the reader is not given.
-    fireEvent.change(screen.getByLabelText('What happened'), { target: { value: '' } });
-    fireEvent.change(screen.getByLabelText('Who'), { target: { value: 'else' } });
+    tick(page, 'What happened', 'Shared and sent');
+    tick(page, 'Who', 'Sara Seikh', 'Anybody else');
     await waitFor(() =>
       expect(rowsOf()).toEqual([
         'Shared link (the visa agent) opened “Home insurance”',
         'Jane Smith, attorney signed in',
       ]),
     );
-    fireEvent.change(screen.getByLabelText('Who'), { target: { value: '' } });
+    tick(page, 'Who', 'Anybody else');
     // Between two days, both kept.
     fireEvent.change(screen.getByLabelText('From'), { target: { value: '2026-10-03' } });
     fireEvent.change(screen.getByLabelText('To'), { target: { value: '2026-10-05' } });
@@ -680,9 +684,86 @@ describe('Activity from 768 px: a table, with filters kept in the address (R4)',
     );
     expect(window.location.search).toBe('?from=2026-10-03&to=2026-10-05');
     await expectAccessible();
-    fireEvent.click(screen.getByRole('button', { name: 'Clear filters' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Clear all' }));
     await waitFor(() => expect(rowsOf()).toHaveLength(6));
     expect(window.location.search).toBe('');
+  });
+
+  it('takes several of who and of what happened: any of each, both together (0.9.0-dev.92)', async () => {
+    atWidth(WIDE);
+    open('/activity', ACTIVITY);
+    await screen.findByText('Zain Seikh signed in');
+    const page = document.body;
+    tick(page, 'Who', 'Sara Seikh', 'Zain Seikh');
+    await waitFor(() =>
+      expect(rowsOf()).toEqual([
+        'Sara Seikh downloaded “Home insurance”',
+        'Sara Seikh made a link to “Home insurance”',
+        'Zain Seikh signed in',
+      ]),
+    );
+    expect(window.location.search).toBe('?who=m-2&who=m-3');
+    expect(filterSays(page, 'Who')).toBe('Who · 2');
+    tick(page, 'What happened', 'Shared and sent', 'Signing in');
+    await waitFor(() =>
+      expect(rowsOf()).toEqual([
+        'Sara Seikh made a link to “Home insurance”',
+        'Zain Seikh signed in',
+      ]),
+    );
+    expect(ticked(page, 'What happened')).toEqual(['Shared and sent', 'Signing in']);
+    // Escape shuts the boxes, the focus back on the filter.
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(filterButton(page, 'What happened')).toHaveFocus();
+    expect(filterButton(page, 'What happened')).toHaveAttribute('aria-expanded', 'false');
+    // Each choice a chip; taking one off keeps the others, the focus on the next.
+    const chips = screen.getByRole('group', { name: 'Filters chosen' });
+    expect(
+      within(chips)
+        .getAllByRole('button', { name: /^Take off the filter/ })
+        .map((b) => b.getAttribute('aria-label')),
+    ).toEqual([
+      'Take off the filter Who: Sara Seikh',
+      'Take off the filter Who: Zain Seikh',
+      'Take off the filter What happened: Shared and sent',
+      'Take off the filter What happened: Signing in',
+    ]);
+    await expectAccessible();
+    fireEvent.click(
+      within(chips).getByRole('button', { name: 'Take off the filter Who: Sara Seikh' }),
+    );
+    await waitFor(() => expect(rowsOf()).toEqual(['Zain Seikh signed in']));
+    const left = new URLSearchParams(window.location.search);
+    expect(left.getAll('who')).toEqual(['m-3']);
+    expect(left.getAll('kind')).toEqual(['shared', 'sign_in']);
+    await waitFor(() =>
+      expect(
+        screen.getByRole('button', { name: 'Take off the filter Who: Zain Seikh' }),
+      ).toHaveFocus(),
+    );
+  });
+
+  it('reads an older link of several, comma-separated, and names somebody not given in words (0.9.0-dev.92)', async () => {
+    atWidth(WIDE);
+    open('/activity?who=m-2,m-3&kind=shared,sign_in', ACTIVITY);
+    await waitFor(() =>
+      expect(rowsOf()).toEqual([
+        'Sara Seikh made a link to “Home insurance”',
+        'Zain Seikh signed in',
+      ]),
+    );
+    const page = document.body;
+    expect(ticked(page, 'Who')).toEqual(['Sara Seikh', 'Zain Seikh']);
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(ticked(page, 'What happened')).toEqual(['Shared and sent', 'Signing in']);
+    cleanup();
+    // Somebody the reader is not given: never their id.
+    const stranger = '0b2d4f60-3c9e-4a1f-8c2d-2e3f4a5b6c7d';
+    open(`/activity?who=${stranger}`, ACTIVITY);
+    await screen.findByText(/Nothing loaded matches these filters|Nothing matches these filters/);
+    expect(filterSays(page, 'Who')).toBe('Somebody');
+    expect(screen.getByText('Who: Somebody')).toBeVisible();
+    expect(document.body.textContent).not.toContain(stranger);
   });
 
   it('From and To are the household’s days, not this device’s', async () => {
@@ -743,7 +824,7 @@ describe('Activity from 768 px: a table, with filters kept in the address (R4)',
         'Nothing loaded matches these filters. Show older to look further back.',
       ),
     ).toBeInTheDocument();
-    expect(screen.getByLabelText('Who')).toHaveValue('m-3');
+    expect(filterSays(document.body, 'Who')).toBe('Zain Seikh');
     fireEvent.click(screen.getByRole('button', { name: 'Show older' }));
     await waitFor(() => expect(rowsOf()).toEqual(['Zain Seikh signed in']));
   });

@@ -8492,6 +8492,12 @@ function documentTable(
           .filter((c) => c.items.includes(String(d.id)))
           .map((c) => ({ id: c.id, name: c.name }));
   const want = (k: string) => query.get(k);
+  // Each value given (0.9.0-dev.92), each split at its commas (V1): any of them.
+  const several = (k: string) =>
+    query
+      .getAll(k)
+      .flatMap((v) => v.split(','))
+      .filter((v) => v !== '');
   const rows = state.documents
     .filter((d) => Boolean(d.deleted_at) === inTrash)
     // What any list gives the reader, as the vault's one rule does
@@ -8506,11 +8512,11 @@ function documentTable(
       ),
     )
     .filter((d) => {
-      const asked = want('member_id');
+      const asked = several('member_id');
       // Several, any of them (V1; a merged cabinet folder, C1).
       return (
-        !asked ||
-        asked.split(',').some((person) =>
+        asked.length === 0 ||
+        asked.some((person) =>
           // Not sure yet, and the household's (0.9.0).
           person === 'none'
             ? !d.owner_member_id && d.household_owned !== true
@@ -8521,28 +8527,26 @@ function documentTable(
       );
     })
     .filter(
-      (d) => !want('type_key') || (want('type_key') ?? '').split(',').includes(String(d.type_key)),
+      (d) => several('type_key').length === 0 || several('type_key').includes(String(d.type_key)),
     )
     // Who issued it, by key, as the household names it (0.9.0-dev.91).
     .filter((d) => {
-      const asked = want('issuer');
-      if (!asked) return true;
+      const asked = several('issuer');
+      if (asked.length === 0) return true;
       const mine = issuerOf(state, d.issued_by);
       const aliases = aliasMap(state.issuerAliases ?? []);
-      return asked
-        .split(',')
-        .some((k) => (k === NO_ISSUER ? mine === null : mine === issuerRoot(k, aliases)));
+      return asked.some((k) => (k === NO_ISSUER ? mine === null : mine === issuerRoot(k, aliases)));
     })
     // A topic, or several (0.9.0, C1): its own, else its kind's.
     .filter((d) => {
-      const asked = want('category');
-      if (!asked) return true;
+      const asked = several('category');
+      if (asked.length === 0) return true;
       const topic =
         (d.category as string | null | undefined) ??
         (state.types.find((t) => t.key === d.type_key) as { category?: string } | undefined)
           ?.category ??
         '';
-      return asked.split(',').includes(topic);
+      return asked.includes(topic);
     })
     // The date a paper is about: issued, else added (0.9.0, C1).
     .filter((d) => {
@@ -8556,16 +8560,16 @@ function documentTable(
     })
     .filter(
       (d) =>
-        !want('status') ||
-        (want('status') ?? '').split(',').includes((d.status as { value: string }).value),
+        several('status').length === 0 ||
+        several('status').includes((d.status as { value: string }).value),
     )
     .filter(
       (d) =>
-        !want('visibility') || (want('visibility') ?? '').split(',').includes(String(d.visibility)),
+        several('visibility').length === 0 || several('visibility').includes(String(d.visibility)),
     )
     // Sensitive, all said (0.9.0, AIR2): yes, no, or both.
     .filter((d) => {
-      const asked = new Set((want('sensitive') ?? '').split(',').filter(Boolean));
+      const asked = new Set(several('sensitive'));
       if (asked.size !== 1) return true;
       const kind = state.types.find((t) => t.key === d.type_key) as
         { sensitive_default?: boolean } | undefined;
@@ -8584,19 +8588,22 @@ function documentTable(
           query.getAll('tag').some((asked) => tagKey(t) === tagKey(asked)),
         ),
     )
+    // Several labels (0.9.0-dev.92), each given once: any of them.
     .filter(
       (d) =>
         !want('tag_label') ||
-        ((d.tags as string[] | undefined) ?? []).some(
-          (t) => tagDetail(t)?.label.toLowerCase() === (want('tag_label') ?? '').toLowerCase(),
+        ((d.tags as string[] | undefined) ?? []).some((t) =>
+          query
+            .getAll('tag_label')
+            .some((asked) => tagDetail(t)?.label.toLowerCase() === asked.toLowerCase()),
         ),
     )
     .filter((d) => location === null || low(d.physical_location) === low(location))
     .filter((d) => {
-      const c = want('collection_id');
-      if (!c) return true;
+      const asked = several('collection_id');
+      if (asked.length === 0) return true;
       const ids = collectionsOf(d).map((x) => x.id);
-      return c === 'none' ? ids.length === 0 : ids.includes(c);
+      return asked.some((c) => (c === 'none' ? ids.length === 0 : ids.includes(c)));
     })
     .map((d) => {
       const date = (v: unknown) => (v as { date?: string } | null)?.date ?? null;

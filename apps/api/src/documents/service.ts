@@ -2469,7 +2469,7 @@ export class DocumentService {
     // sort or none, they are refused rather than quietly left out.
     const tableOnly = [
       q.direction !== undefined && 'direction',
-      q.collection_id !== undefined && 'collection_id',
+      (q.collection_id !== undefined || q.collection_ids !== undefined) && 'collection_id',
       q.location !== undefined && 'location',
       q.original_place !== undefined && 'original_place',
       q.source_folder !== undefined && 'source_folder',

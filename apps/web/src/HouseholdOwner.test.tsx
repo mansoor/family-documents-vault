@@ -235,7 +235,6 @@ describe('the Documents table’s person filter (0.9.0)', () => {
     };
     const choices = filterChoices('person', known, {} as Parameters<typeof filterChoices>[2]);
     expect(choices).toEqual([
-      { value: '', label: 'All people' },
       { value: 'household', label: 'The household' },
       { value: 'me', label: 'Mansoor Seikh' },
       { value: 'sara', label: 'Sara Seikh' },

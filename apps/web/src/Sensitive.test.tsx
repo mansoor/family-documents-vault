@@ -128,15 +128,14 @@ describe('the Documents table’s Sensitive filter (0.9.0, AIR2)', () => {
       sensitive: true,
     };
     expect(filterChoices('sensitive', known, {} as Parameters<typeof filterChoices>[2])).toEqual([
-      { value: '', label: 'Sensitive or not' },
       { value: 'yes', label: 'Sensitive' },
       { value: 'no', label: 'Not sensitive' },
     ]);
     const view = viewFrom(new URLSearchParams('sensitive=yes'), 'owner');
-    expect(view.sensitive).toBe('yes');
+    expect(view.sensitive).toEqual(['yes']);
     expect(queryOf(view).sensitive).toBe('yes');
     // A value it does not know is no filter.
-    expect(viewFrom(new URLSearchParams('sensitive=maybe'), 'owner').sensitive).toBe('');
+    expect(viewFrom(new URLSearchParams('sensitive=maybe'), 'owner').sensitive).toEqual([]);
   });
 });
 

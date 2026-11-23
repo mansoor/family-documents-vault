@@ -21,7 +21,6 @@ import {
   SENSITIVE_IN_WORDS,
   type ActivityCsvLine,
   type ActivityEvent,
-  type ActivityExportAsk,
   type ActivityFilters,
   type ActivityLine,
 } from '@fdv/shared';
@@ -63,8 +62,17 @@ export const EXPORT_BATCH = 500;
 export const EXPORT_MAX_ROWS = 250_000;
 export const EXPORT_MAX_MS = 60_000;
 
-/** What an export is asked, its filters checked: as `GET /audit/export`'s query. */
-export type ExportAsk = ActivityExportAsk;
+/**
+ * What an export is asked, its filters checked: as `GET /audit/export`'s
+ * query, who and what sort of thing each any of several (0.9.0-dev.92).
+ */
+export interface ExportAsk {
+  who?: readonly string[] | undefined;
+  kind?: readonly string[] | undefined;
+  from?: string | undefined;
+  to?: string | undefined;
+  document?: string | undefined;
+}
 
 /** How much an export may read: rows a batch, rows in all, and milliseconds. */
 export interface ExportLimits {
@@ -99,17 +107,18 @@ export interface ExportStart {
  *
  *  - moments past the To day by more than a fold can reach (an app's files
  *    an hour apart are one line, whose moment is its newest);
- *  - actions of another sort of thing, for a sort none of whose lines fold
- *    (not Opened and downloaded, not Added: a line between two looks keeps
- *    them two lines on the page);
- *  - rows by anybody but the person asked for: a line names its doer only
- *    when it is theirs. (Two of their sittings parted only by somebody
- *    else's line are one line here, two on the page.)
+ *  - actions of other sorts of thing, when none of the sorts asked has
+ *    lines that fold (not Opened and downloaded, not Added: a line between
+ *    two looks keeps them two lines on the page);
+ *  - rows by anybody but the people asked for, when anybody else is not
+ *    asked: a line names its doer only when it is theirs. (Two of their
+ *    sittings parted only by somebody else's line are one line here, two
+ *    on the page.)
  */
 interface Narrow {
   until: Date | null;
   actions: readonly string[] | null;
-  who: string | null;
+  who: readonly string[] | null;
 }
 
 /** A read narrowed, as SQL on the audit row's columns (`e.` or none). */
@@ -126,7 +135,7 @@ function narrowed(
       n.who
         ? sql`and ${col('actor_account_id')} in (
             select account_id from account_household
-             where household_id = ${householdId} and member_id = ${n.who}::uuid)`
+             where household_id = ${householdId} and member_id = any(${[...n.who]}::uuid[]))`
         : sql``
     }`;
 }
@@ -175,12 +184,12 @@ async function stillReading(trx: Db, p: Principal): Promise<void> {
 }
 
 /**
- * Each sort of thing's actions, from the actions the log has a rule for —
- * no other line is ever shown — for a sort none of whose lines fold.
+ * The sorts of thing's actions, from the actions the log has a rule for —
+ * no other line is ever shown — when none of the sorts has lines that fold.
  */
-function actionsOfKind(kind: string): string[] | null {
-  if (kind === 'opened' || kind === 'added') return null;
-  return [...RULES.keys()].filter((a) => activityKind(a) === kind);
+function actionsOfKinds(kinds: readonly string[]): string[] | null {
+  if (kinds.some((kind) => kind === 'opened' || kind === 'added')) return null;
+  return [...RULES.keys()].filter((a) => kinds.includes(activityKind(a)));
 }
 
 /**
@@ -965,12 +974,12 @@ export class AuditService {
     const began = Date.now();
     const narrow: Narrow = {
       until: start.toEnd ? new Date(start.toEnd.getTime() + APP_SENT_FOLD_MS) : null,
-      actions: ask.kind ? actionsOfKind(ask.kind) : null,
-      who: ask.who && ask.who !== ACTIVITY_ANYBODY_ELSE ? ask.who : null,
+      actions: ask.kind?.length ? actionsOfKinds(ask.kind) : null,
+      who: ask.who?.length && !ask.who.includes(ACTIVITY_ANYBODY_ELSE) ? ask.who : null,
     };
     const filters: ActivityFilters = {
-      who: ask.who ?? '',
-      kind: ask.kind ?? '',
+      who: ask.who ?? [],
+      kind: ask.kind ?? [],
       // Kept by moment below, as the days' bounds are moments.
       from: '',
       to: '',
@@ -1054,8 +1063,11 @@ export class AuditService {
         objectId: ask.document ?? null,
         detail: {
           format: 'csv',
-          ...(ask.who ? { who: ask.who } : {}),
-          ...(ask.kind ? { kind: ask.kind } : {}),
+          // One as it always was; several (0.9.0-dev.92) as a list.
+          ...(ask.who?.length ? { who: ask.who.length === 1 ? ask.who[0] : [...ask.who] } : {}),
+          ...(ask.kind?.length
+            ? { kind: ask.kind.length === 1 ? ask.kind[0] : [...ask.kind] }
+            : {}),
           ...(ask.from ? { from: ask.from } : {}),
           ...(ask.to ? { to: ask.to } : {}),
           lines: done.lines,

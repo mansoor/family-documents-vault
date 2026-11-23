@@ -2,6 +2,7 @@ import { COLLECTION_HINT_PRIVATE, COLLECTION_HINT_TEENS } from '@fdv/shared';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import axe from 'axe-core';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { filterButton, tick } from './filter-testing.js';
 import { App } from './App.js';
 import {
   AISHA,
@@ -205,8 +206,8 @@ describe('a collection’s documents as the Documents table (0.9.0)', () => {
     ).toBeInTheDocument();
     // Its own filters, never which collection: that is the page's.
     const filters = screen.getByRole('group', { name: 'Filters' });
-    expect(within(filters).queryByRole('combobox', { name: 'Collection' })).toBeNull();
-    expect(within(filters).getByRole('combobox', { name: 'Person' })).toBeInTheDocument();
+    expect(within(filters).queryByRole('button', { name: /^Collection: / })).toBeNull();
+    expect(filterButton(filters, 'Person')).toBeInTheDocument();
     await expectAccessible();
 
     // Sorted by a column, as the table is: the other way, in the address.
@@ -226,9 +227,7 @@ describe('a collection’s documents as the Documents table (0.9.0)', () => {
       'descending',
     );
     // Filtered within it: only the collection's, still.
-    fireEvent.change(within(filters).getByRole('combobox', { name: 'Person' }), {
-      target: { value: 'm-0' },
-    });
+    tick(filters, 'Person', 'Aisha');
     await waitFor(() => expect(titles(t)).toEqual(['Council tax bill']));
     expect(screen.getByText('1 document match these filters')).toBeInTheDocument();
   });

@@ -4544,6 +4544,127 @@ a.menu-item {
   outline-offset: 2px;
 }
 
+/* A filter of several choices (0.9.0-dev.92): a button as the select was,
+   opening boxes to tick; what is chosen said below as chips. */
+.multi-filter {
+  position: relative;
+}
+
+.multi-filter-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  min-height: var(--tap);
+  max-width: 220px;
+  padding: 0 12px;
+  border-radius: 999px;
+  border: 1px solid var(--border-input);
+  background: var(--surface);
+  color: var(--ink-soft);
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.multi-filter-btn.on {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.multi-filter-btn:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
+}
+
+.multi-filter-caret {
+  font-size: 11px;
+}
+
+.multi-filter-menu {
+  position: absolute;
+  left: 0;
+  top: calc(100% + 6px);
+  z-index: 40;
+  min-width: 240px;
+  max-width: min(360px, 90vw);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 14px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-m);
+  box-shadow: 0 8px 24px var(--scrim);
+}
+
+/* The find box and Show all on top, the boxes scrolling under them: a
+   household's hundreds of tags never make a menu or a sheet too tall. */
+.multi-filter-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.multi-filter-find {
+  flex: 1 1 140px;
+  min-width: 0;
+  min-height: var(--tap);
+  font: inherit;
+  font-size: 14px;
+  padding: 0 10px;
+  border: 1px solid var(--border-input);
+  border-radius: var(--radius-m);
+  background: var(--surface);
+  color: var(--ink);
+}
+
+.multi-filter-cap {
+  margin: 0;
+  font-size: 13px;
+}
+
+.multi-filter-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: min(50vh, 320px);
+  overflow-y: auto;
+}
+
+.multi-filter-inline .multi-filter-list {
+  max-height: 240px;
+}
+
+.multi-filter-inline .multi-filter-head {
+  margin-bottom: 6px;
+}
+
+.multi-filter-inline {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+}
+
+.multi-filter-inline legend {
+  font-weight: 700;
+  margin-bottom: 4px;
+}
+
+.filter-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-top: 8px;
+}
+
 .columns-wrap {
   position: relative;
 }

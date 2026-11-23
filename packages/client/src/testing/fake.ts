@@ -4045,6 +4045,7 @@ export function createFakeVault(): {
           cabinet_pins: true,
           cabinet_levels: true,
           cabinet_issuer: true,
+          multi_filters: true,
           caregivers: true,
           // An Idempotency-Key on POST /documents (0.9.0-dev.45), as the vault keeps it.
           idempotent_create: true,
@@ -4446,9 +4447,14 @@ export function createFakeVault(): {
       const typeKeys = listParam(url, 'type_key');
       const categories = listParam(url, 'category');
       const apart = notesAndTags(url);
-      const tagLabel = param(url, 'tag_label');
+      // Several details' labels and collections (0.9.0-dev.92), any of them.
+      const tagLabels = wordParams(url, 'tag_label');
       const visibilities = listParam(url, 'visibility');
-      const collectionId = param(url, 'collection_id');
+      const collectionIds = listParam(url, 'collection_id');
+      // Each a collection's id (the fake's own, or the vault's form), or none.
+      if (collectionIds?.some((c) => c !== 'none' && !/^collection-\d+$/.test(c) && !isUuid(c))) {
+        return fail(422, 'validation_failed', 'That is not a collection here.', 'collection_id');
+      }
       const by = param(url, 'issued_by');
       const asked = param(url, 'purge_requested');
       // Who issued it, by key, as the household names it (0.9.0-dev.91).
@@ -4512,10 +4518,13 @@ export function createFakeVault(): {
         .filter(sensitiveAsked(url, state.types))
         .filter(
           (d) =>
-            tagLabel === undefined ||
+            tagLabels === undefined ||
             (d.tags ?? []).some((t) => {
               const detail = tagDetail(t);
-              return detail !== null && tagLabelKey(detail.label) === tagLabelKey(tagLabel);
+              return (
+                detail !== null &&
+                tagLabels.some((l) => tagLabelKey(detail.label) === tagLabelKey(l))
+              );
             }),
         )
         .filter(
@@ -4536,9 +4545,9 @@ export function createFakeVault(): {
         )
         .filter((d) => v1.within(listedOf(d)))
         .filter((d) => {
-          if (collectionId === undefined) return true;
+          if (collectionIds === undefined) return true;
           const ids = collectionsOf(d).map((c) => c.id);
-          return collectionId === 'none' ? ids.length === 0 : ids.includes(collectionId);
+          return collectionIds.some((c) => (c === 'none' ? ids.length === 0 : ids.includes(c)));
         })
         .map((d) => {
           const view = listedOf(d);
@@ -9046,9 +9055,10 @@ export function createFakeVault(): {
       if (!('id' in s)) return s;
       const who = whoOf(s);
       if (!can(who.role, 'audit.read')) return fail(403, 'forbidden', refusalFor('audit.read'));
+      // Who and what may each be several (0.9.0-dev.92): given once each, or comma-separated.
       const ask = {
-        who: param(url, 'who') ?? '',
-        kind: param(url, 'kind') ?? '',
+        who: listParam(url, 'who') ?? [],
+        kind: listParam(url, 'kind') ?? [],
         from: param(url, 'from') ?? '',
         to: param(url, 'to') ?? '',
       };
@@ -9062,8 +9072,11 @@ export function createFakeVault(): {
       const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
       const about = param(url, 'document');
       if (
-        (ask.who && ask.who !== ACTIVITY_ANYBODY_ELSE && !uuid.test(ask.who)) ||
-        (ask.kind && !ACTIVITY_KINDS.some((k) => k.value === ask.kind)) ||
+        ask.who.some(
+          (w) =>
+            w !== ACTIVITY_ANYBODY_ELSE && !uuid.test(w) && !state.members.some((m) => m.id === w),
+        ) ||
+        ask.kind.some((kind) => !ACTIVITY_KINDS.some((k) => k.value === kind)) ||
         (ask.from && !isDay(ask.from)) ||
         (ask.to && !isDay(ask.to)) ||
         (ask.from && ask.to && ask.from > ask.to)
@@ -11220,17 +11233,27 @@ function tagsOf(tags: ReadonlyArray<string> | null | undefined): string[] {
 
 /** One query parameter, decoded; the client's library has no URLSearchParams. */
 /** A filter's values, comma-separated (V1): one, several, or none asked for. */
+const isUuid = (v: string) =>
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v);
+
 function listParam(url: string, name: string): string[] | undefined {
-  const raw = param(url, name);
-  if (raw === undefined) return undefined;
+  // Each value given (0.9.0-dev.92), each split at its commas (V1).
+  const raw = params(url, name);
+  if (raw.length === 0) return undefined;
   const v = [
     ...new Set(
       raw
-        .split(',')
+        .flatMap((one) => one.split(','))
         .map((x) => x.trim())
         .filter((x) => x !== ''),
     ),
   ];
+  return v.length > 0 ? v : undefined;
+}
+
+/** A filter of words, each given once and never split (a tag, a detail's label). */
+function wordParams(url: string, name: string): string[] | undefined {
+  const v = [...new Set(params(url, name).map((x) => x.trim()))].filter((x) => x !== '');
   return v.length > 0 ? v : undefined;
 }
 

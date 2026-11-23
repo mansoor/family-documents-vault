@@ -1,6 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { activityCsvCappedRow, activityCsvHeader } from '@fdv/shared';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { tick } from './filter-testing.js';
 import { App } from './App.js';
 import { fresh, installFakeApi, signedIn, type FakeState } from './test-api.js';
 
@@ -88,6 +89,13 @@ describe('Download CSV on the Activity page', () => {
     expect(screen.queryByText(/Only the newest/)).toBeNull();
   });
 
+  it('asks for several who and kinds, each once, as the page has them (0.9.0-dev.92)', async () => {
+    const state = open('/activity?who=else&who=m-2&kind=opened,sign_in');
+    fireEvent.click(await screen.findByRole('button', { name: 'Download CSV' }));
+    await waitFor(() => expect(saved).toHaveLength(1));
+    expect(state.activityCsvAsks).toEqual(['who=else&who=m-2&kind=opened&kind=sign_in']);
+  });
+
   it('asks for every line with no filter, and for the chip’s document with one', async () => {
     const whole = open('/activity');
     fireEvent.click(await screen.findByRole('button', { name: 'Download CSV' }));
@@ -108,7 +116,7 @@ describe('Download CSV on the Activity page', () => {
     ).toHaveAttribute('role', 'status');
     expect(saved).toEqual(['activity-vault-2026-11-21.csv']);
     // Another filter: the note was about another file.
-    fireEvent.change(screen.getByLabelText('What happened'), { target: { value: 'sign_in' } });
+    tick(document.body, 'What happened', 'Signing in');
     await waitFor(() => expect(screen.queryByText(/Only the newest lines/)).toBeNull());
   });
 

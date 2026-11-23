@@ -227,8 +227,8 @@ describe('the Activity page for one document', () => {
         name: "What has been happening, about ‘Mansoor's passport’, newest first",
       }),
     ).toBeInTheDocument();
-    // Clear filters keeps the document: it has its own ×.
-    fireEvent.click(screen.getByRole('button', { name: 'Clear filters' }));
+    // Clear all keeps the document: it has its own ×.
+    fireEvent.click(screen.getByRole('button', { name: 'Clear all' }));
     await waitFor(() => expect(window.location.search).toBe('?document=doc-1'));
     expect(screen.getByText(CHIP)).toBeVisible();
 
