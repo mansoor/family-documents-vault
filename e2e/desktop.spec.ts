@@ -247,13 +247,16 @@ test('a filter takes two people: chips, the address, a chip taken off by the key
   const me = (await (await page.request.get('/api/v1/me', { headers: auth })).json()) as {
     member_id: string;
   };
-  const name = `Filter person ${run}`;
-  const added = await page.request.post('/api/v1/members', {
-    headers: auth,
-    data: { display_name: name, relationship: 'Cousin' },
-  });
-  expect(added.ok()).toBe(true);
-  const them = ((await added.json()) as { id: string }).id;
+  // Someone already in the household: the page's list of people was read
+  // when the app opened, and this test moves within it rather than
+  // reloading (sign-ins are limited), so a person added now isn't offered.
+  const { items } = (await (await page.request.get('/api/v1/members', { headers: auth })).json()) as {
+    items: { id: string; display_name: string }[];
+  };
+  const other = items.find((m) => m.id !== me.member_id && m.display_name === 'Aisha');
+  expect(other).toBeTruthy();
+  const name = other!.display_name;
+  const them = other!.id;
   const made: string[] = [];
   for (const [title, owner] of [
     [`MF mine ${run}`, me.member_id],
