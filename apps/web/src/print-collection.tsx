@@ -23,7 +23,7 @@ import { NOTHING, PrintOut } from './print.js';
 import {
   directionWords,
   FILTER_LABELS,
-  filterChoices,
+  choiceWords,
   SORT_LABELS,
   titleOf,
   type Known,
@@ -78,12 +78,14 @@ export function cellWords(column: Column, doc: DocumentView, known: Known): stri
   }
 }
 
-/** The filters on, in the table's words: "Person: Mansoor · Kind: Passport". */
+/**
+ * The filters on, in the table's words: "Person: Mansoor or Sara · Kind:
+ * Passport" — several choices of one filter any of them (0.9.0-dev.92).
+ */
 export function filterWords(view: TableView, known: Known): string {
-  const said = FILTER_KEYS.filter((k) => k !== 'collection' && view[k]).flatMap((k) => {
-    const label = filterChoices(k, known, view).find((c) => c.value === view[k])?.label;
-    return label ? [`${FILTER_LABELS[k]}: ${label}`] : [];
-  });
+  const said = FILTER_KEYS.filter((k) => k !== 'collection' && view[k].length > 0).map(
+    (k) => `${FILTER_LABELS[k]}: ${view[k].map((v) => choiceWords(k, v, known)).join(' or ')}`,
+  );
   const more = folderChipCount(view.folder);
   if (more > 0) said.push(more === 1 ? 'and 1 more condition' : `and ${more} more conditions`);
   return said.join(' · ');
@@ -117,7 +119,7 @@ export function PrintCollection(props: {
   const { withToken, caps } = useApp();
   const [params] = useSearchParams();
   // Its sort and filters as its table has them (the address), in this collection.
-  const view: TableView = { ...viewFrom(params, storedRole()), collection: collection.id };
+  const view: TableView = { ...viewFrom(params, storedRole()), collection: [collection.id] };
   const { known } = props;
   const columns = shownColumns(known, caps?.features.original_place === true);
   const [ticks, setTicks] = useState(false);

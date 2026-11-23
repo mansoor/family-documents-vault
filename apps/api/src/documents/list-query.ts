@@ -16,12 +16,31 @@ import type { ListQuery } from './service.js';
  * for more than the list allows.
  */
 
-/** A filter of one value, or of several comma-separated (V1, filters.ts): checked as it is read. */
-export const values = z.string().max(4000).optional();
+/**
+ * A filter of keys: one value, or several — each given once (0.9.0-dev.92,
+ * `features.multi_filters`), or comma-separated as since V1, or both —
+ * checked as it is read (filters.ts).
+ */
+export const values = z
+  .union([z.string().max(4000), z.array(z.string().max(4000)).max(FILTER_VALUES_MAX)])
+  .optional();
+/** One value, or several comma-separated, never given twice: what a folder's question holds. */
+const oneString = z.string().max(4000).optional();
 /** A tag, or several: the field given once for each (11 Nov 2026), any of them. */
 export const tagValues = z
   .union([z.string().max(400), z.array(z.string().max(400)).max(FILTER_VALUES_MAX)])
   .optional();
+/**
+ * Words of one value each, where a comma is a part of them: the field given
+ * once for each. An empty one is left out, as every filter's is
+ * (0.9.0-dev.92): `tag_label=` alone is any.
+ */
+const textValue = z.string().trim().min(1).max(200);
+const textValues = z
+  .union([z.string().max(200), z.array(z.string().max(200)).max(FILTER_VALUES_MAX)])
+  .optional();
+/** A collection, or none of them, as a folder asks it: one. */
+const oneCollection = z.union([z.string().uuid(), z.literal('none')]).optional();
 /** Notes left out (11 Nov 2026): what the Documents tab and table keep to. */
 export const notesFilter = z.enum(['exclude']).optional();
 /** A day, `YYYY-MM-DD` (V1): checked as it is read. */
@@ -51,8 +70,9 @@ export const listQuery = z.object({
   notes: notesFilter,
   // Sensitive, all said: yes, no, or both (0.9.0, AIR2).
   sensitive: values,
-  // A detail tag's label, any value (0.9.0, T1): every document with a locker.
-  tag_label: z.string().trim().min(1).max(200).optional(),
+  // A detail tag's label, any value (0.9.0, T1): every document with a
+  // locker. Several since 0.9.0-dev.92, each given once: a label may hold a comma.
+  tag_label: textValues,
   visibility: values,
   essential: z
     .enum(['true', 'false'])
@@ -73,8 +93,9 @@ export const listQuery = z.object({
   // @fdv/shared); the table's additions below go with a column sort only.
   sort: z.enum([...OLDER_DOCUMENT_SORTS, ...DOCUMENT_SORTS]).optional(),
   direction: z.enum(SORT_DIRECTIONS).optional(),
-  // In this collection (one the caller may see), or in none of theirs.
-  collection_id: z.union([z.string().uuid(), z.literal('none')]).optional(),
+  // In this collection (one the caller may see), or in none of theirs; any
+  // of several since 0.9.0-dev.92 (filters.ts).
+  collection_id: values,
   // Kept there, whatever the case: only for whoever sees locations (5.41).
   location: z.string().trim().min(1).max(500).optional(),
   // In a place in a cabinet, whatever the case (0.9.0, C3): its names joined
@@ -97,7 +118,9 @@ export const listQuery = z.object({
  * A cabinet folder's saved question (0.9.0, C1): the list's own filters,
  * each read by the list's own rule, and nothing else — nothing that sorts,
  * pages, or reaches the Trash or what an owner asked to remove. A key the
- * list does not take, or one of those, is refused.
+ * list does not take, or one of those, is refused. Each filter is one
+ * string, as a folder has always kept it (several keys comma-separated; a
+ * tag, several), never a list: every app reads a folder's question so.
  */
 export const folderQuery = listQuery
   .pick(
@@ -105,6 +128,17 @@ export const folderQuery = listQuery
       [K in (typeof CABINET_FILTER_KEYS)[number]]: true;
     },
   )
+  .extend({
+    member_id: oneString,
+    category: oneString,
+    issuer: oneString,
+    type_key: oneString,
+    sensitive: oneString,
+    visibility: oneString,
+    status: oneString,
+    tag_label: textValue.optional(),
+    collection_id: oneCollection,
+  })
   .strict();
 
 /**
@@ -125,6 +159,8 @@ export function listQueryOf(raw: z.infer<typeof listQuery>): ListQuery {
     status: single.status,
     visibility: single.visibility,
     tag: single.tag,
+    tag_label: single.tag_label,
+    collection_id: single.collection_id,
     ...many,
   };
 }

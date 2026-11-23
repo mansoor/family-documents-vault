@@ -2,8 +2,10 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testi
 import { ONLY_ME_KEEP_REFUSED, type OwnLinkToEnd } from '@fdv/shared';
 import axe from 'axe-core';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { filterButton, filterSays, openFilter, tick, ticked } from './filter-testing.js';
+import { CAP_WORDS } from './multi-filter.js';
 import { App } from './App.js';
-import { HIDDEN_COLUMNS_KEY } from './documents-table.js';
+import { HIDDEN_COLUMNS_KEY, viewFrom } from './documents-table.js';
 import {
   AISHA,
   fresh,
@@ -287,40 +289,160 @@ describe('the Documents table, from 768 px (R2)', () => {
     expect(lastQuery(state).get('member_id')).toBe('m-2');
     expect(lastQuery(state).get('status')).toBe('expired');
     const filters = screen.getByRole('group', { name: 'Filters' });
-    expect(within(filters).getByRole('combobox', { name: 'Person' })).toHaveValue('m-2');
-    expect(within(filters).getByRole('combobox', { name: 'Status' })).toHaveValue('expired');
+    await waitFor(() => expect(filterSays(filters, 'Person')).toBe('Sara Seikh'));
+    expect(filterSays(filters, 'Status')).toBe('Expired');
 
-    // A filter more: the address says so, and a new entry in history.
-    fireEvent.change(within(filters).getByRole('combobox', { name: 'Status' }), {
-      target: { value: '' },
-    });
+    // A filter less: the address says so, and a new entry in history.
+    tick(filters, 'Status', 'Expired');
     await waitFor(() => expect(window.location.search).toBe('?person=m-2'));
-    fireEvent.change(within(filters).getByRole('combobox', { name: 'Collection' }), {
-      target: { value: 'collection-t' },
-    });
+    fireEvent.keyDown(document, { key: 'Escape' });
+    tick(filters, 'Collection', 'Travel');
     await waitFor(() => expect(window.location.search).toBe('?person=m-2&collection=collection-t'));
     await waitFor(() => expect(lastQuery(state).get('collection_id')).toBe('collection-t'));
     await waitFor(() => expect(titles(t)).toEqual(["Sara's visa"]));
     // Back: the view before.
     act(() => window.history.back());
     await waitFor(() => expect(window.location.search).toBe('?person=m-2'));
-    await waitFor(() =>
-      expect(within(filters).getByRole('combobox', { name: 'Collection' })).toHaveValue(''),
-    );
+    await waitFor(() => expect(filterSays(filters, 'Collection')).toBe('All collections'));
     // Nobody's; and in no collection.
-    fireEvent.change(within(filters).getByRole('combobox', { name: 'Person' }), {
-      target: { value: 'none' },
-    });
+    tick(filters, 'Person', 'Sara Seikh', 'Not sure yet');
     await waitFor(() => expect(titles(t)).toEqual(['House deed']));
     expect(lastQuery(state).get('member_id')).toBe('none');
-    // Nothing that matches says so; Clear filters is every document again.
-    fireEvent.change(within(filters).getByRole('combobox', { name: 'Kind' }), {
-      target: { value: 'passport' },
-    });
+    // Nothing that matches says so; Clear all is every document again.
+    tick(filters, 'Kind', 'Passport');
     await screen.findByText('Nothing matches these filters.');
-    fireEvent.click(within(filters).getByRole('button', { name: 'Clear filters' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Clear all' }));
     await waitFor(() => expect(titles(t)).toHaveLength(4));
     expect(window.location.search).toBe('');
+    // The focus where the chips were: among the filters, never nowhere.
+    await waitFor(() => expect(filters).toHaveFocus());
+  });
+
+  it('takes several choices in a filter: any of them, every filter together, each a chip (0.9.0-dev.92)', async () => {
+    const state = at('/documents');
+    const t = await table();
+    await waitFor(() => expect(titles(t)).toHaveLength(4));
+    const filters = screen.getByRole('group', { name: 'Filters' });
+    expect(filterSays(filters, 'Person')).toBe('All people');
+    tick(filters, 'Person', 'Mansoor Seikh', 'Sara Seikh');
+    await waitFor(() =>
+      expect(titles(t)).toEqual([
+        'Barclays statement, September 2026',
+        "Mansoor's passport",
+        "Sara's visa",
+      ]),
+    );
+    expect(window.location.search).toBe('?person=me&person=m-2');
+    expect(lastQuery(state).getAll('member_id')).toEqual(['me', 'm-2']);
+    expect(filterSays(filters, 'Person')).toBe('Person · 2');
+    expect(filterButton(filters, 'Person')).toHaveAttribute('aria-expanded', 'true');
+    // Across filters: all of them.
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(filterButton(filters, 'Person')).toHaveFocus();
+    tick(filters, 'Kind', 'Passport');
+    await waitFor(() => expect(titles(t)).toEqual(["Mansoor's passport", "Sara's visa"]));
+    expect(screen.getByText('2 documents match these filters')).toBeInTheDocument();
+    // Each choice a chip, named in words, with Clear all.
+    const chips = screen.getByRole('group', { name: 'Filters chosen' });
+    expect(
+      within(chips)
+        .getAllByRole('button', { name: /^Take off the filter/ })
+        .map((b) => b.getAttribute('aria-label')),
+    ).toEqual([
+      'Take off the filter Person: Mansoor Seikh',
+      'Take off the filter Person: Sara Seikh',
+      'Take off the filter Kind: Passport',
+    ]);
+    expect(within(chips).getByRole('button', { name: 'Clear all' })).toBeInTheDocument();
+    // Never a native multiple select.
+    expect(document.querySelector('select[multiple]')).toBeNull();
+    await expectAccessible();
+    // One taken off: the rest kept, the focus on the next chip.
+    fireEvent.click(
+      within(chips).getByRole('button', { name: 'Take off the filter Person: Sara Seikh' }),
+    );
+    await waitFor(() => expect(titles(t)).toEqual(["Mansoor's passport"]));
+    expect(window.location.search).toBe('?person=me&kind=passport');
+    await waitFor(() =>
+      expect(
+        screen.getByRole('button', { name: 'Take off the filter Kind: Passport' }),
+      ).toHaveFocus(),
+    );
+    expect(ticked(filters, 'Person')).toEqual(['Mansoor Seikh']);
+  });
+
+  it('reads a link of several choices, given once each or comma-separated (0.9.0-dev.92)', async () => {
+    const state = at('/documents?person=me,m-2&status=expired&status=lost');
+    const t = await table();
+    await waitFor(() => expect(titles(t)).toEqual(["Sara's visa"]));
+    const filters = screen.getByRole('group', { name: 'Filters' });
+    expect(ticked(filters, 'Person')).toEqual(['Mansoor Seikh', 'Sara Seikh']);
+    // A status there is not is left out; the rest kept.
+    expect(lastQuery(state).getAll('status')).toEqual(['expired']);
+    expect(filterSays(filters, 'Status')).toBe('Expired');
+    expect(lastQuery(state).getAll('member_id')).toEqual(['me', 'm-2']);
+  });
+
+  it('names a choice it cannot, never by its id: a collection gone, somebody not given (0.9.0-dev.92)', async () => {
+    const gone = '7a1c3f52-2a8e-4f0e-9b1e-1d2f3a4b5c6d';
+    const nobody = '0b2d4f60-3c9e-4a1f-8c2d-2e3f4a5b6c7d';
+    at(`/documents?collection=${gone}&person=${nobody}`);
+    await table();
+    const filters = screen.getByRole('group', { name: 'Filters' });
+    await waitFor(() => expect(filterSays(filters, 'Collection')).toBe('a collection'));
+    expect(filterSays(filters, 'Person')).toBe('someone in the family');
+    expect(ticked(filters, 'Person')).toEqual(['someone in the family']);
+    const chips = screen.getByRole('group', { name: 'Filters chosen' });
+    expect(within(chips).getByText('Collection: a collection')).toBeVisible();
+    expect(document.body.textContent).not.toContain(gone);
+    expect(document.body.textContent).not.toContain(nobody);
+  });
+
+  it('Back and Forward go through each tick, the boxes following (0.9.0-dev.92)', async () => {
+    at('/documents');
+    const t = await table();
+    await waitFor(() => expect(titles(t)).toHaveLength(4));
+    const filters = screen.getByRole('group', { name: 'Filters' });
+    tick(filters, 'Person', 'Mansoor Seikh');
+    await waitFor(() => expect(window.location.search).toBe('?person=me'));
+    tick(filters, 'Person', 'Sara Seikh');
+    await waitFor(() => expect(window.location.search).toBe('?person=me&person=m-2'));
+    fireEvent.keyDown(document, { key: 'Escape' });
+    tick(filters, 'Kind', 'Passport');
+    await waitFor(() => expect(titles(t)).toEqual(["Mansoor's passport", "Sara's visa"]));
+    act(() => window.history.back());
+    await waitFor(() => expect(window.location.search).toBe('?person=me&person=m-2'));
+    await waitFor(() => expect(titles(t)).toHaveLength(3));
+    expect(filterSays(filters, 'Kind')).toBe('All kinds');
+    act(() => window.history.back());
+    await waitFor(() => expect(filterSays(filters, 'Person')).toBe('Mansoor Seikh'));
+    act(() => window.history.forward());
+    await waitFor(() => expect(filterSays(filters, 'Person')).toBe('Person · 2'));
+    expect(ticked(filters, 'Person')).toEqual(['Mansoor Seikh', 'Sara Seikh']);
+  });
+
+  it('a tag or a detail asked in another case ticks the box there is (0.9.0-dev.92)', async () => {
+    const state = at('/documents?tag=TRAVEL&tag=travel');
+    const t = await table();
+    await waitFor(() => expect(titles(t)).toEqual(["Mansoor's passport"]));
+    const filters = screen.getByRole('group', { name: 'Filters' });
+    await waitFor(() => expect(ticked(filters, 'Tag')).toEqual(['travel']));
+    expect(lastQuery(state).getAll('tag')).toEqual(['travel']);
+    // A detail's label by its key, however a link spells it.
+    expect(viewFrom(new URLSearchParams('label=Locker&label=locker:'), 'owner').label).toEqual([
+      'locker',
+    ]);
+  });
+
+  it('offers no more than the vault takes at once, and says why (0.9.0-dev.92)', async () => {
+    const fifty = Array.from({ length: 50 }, (_, i) => `t${i}`);
+    at(`/documents?${fifty.map((x) => `tag=${x}`).join('&')}`);
+    await table();
+    const filters = screen.getByRole('group', { name: 'Filters' });
+    await waitFor(() => expect(filterSays(filters, 'Tag')).toBe('Tag · 50'));
+    const travel = within(openFilter(filters, 'Tag')).getByRole('checkbox', { name: 'travel' });
+    expect(travel).toBeDisabled();
+    expect(travel).toHaveAccessibleDescription(CAP_WORDS);
   });
 
   it('hides a column from the Columns menu, and remembers it on this device', async () => {
@@ -1312,7 +1434,7 @@ describe('the Documents table, from 768 px (R2)', () => {
     // Within it, it stays.
     act(() => screen.getByRole('checkbox', { name: 'Person' }).focus());
     expect(screen.getByRole('group', { name: 'Columns shown' })).toBeInTheDocument();
-    act(() => screen.getByRole('combobox', { name: 'Person' }).focus());
+    act(() => filterButton(screen.getByRole('group', { name: 'Filters' }), 'Person').focus());
     expect(screen.queryByRole('group', { name: 'Columns shown' })).not.toBeInTheDocument();
   });
 
@@ -1529,7 +1651,7 @@ describe('the Documents table, from 768 px (R2)', () => {
     expect(screen.getByText('100 of 130 shown')).toBeInTheDocument();
     // No collections: no column and no filter for them.
     expect(headers(t)).not.toContain('Collections');
-    expect(screen.queryByRole('combobox', { name: 'Collection' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^Collection: / })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Show more' }));
     await waitFor(() => expect(titles(t)).toHaveLength(130));
     expect(lastQuery(state).get('cursor')).toBe('100');
@@ -2052,9 +2174,9 @@ describe('Documents on a phone (under 768 px)', () => {
     const open = screen.getByRole('button', { name: 'Filters' });
     fireEvent.click(open);
     const sheet = screen.getByRole('dialog', { name: 'Filters' });
-    fireEvent.change(within(sheet).getByRole('combobox', { name: 'Status' }), {
-      target: { value: 'expired' },
-    });
+    // Each filter's choices to tick, there at once (0.9.0-dev.92).
+    const status = within(sheet).getByRole('group', { name: 'Status' });
+    fireEvent.click(within(status).getByRole('checkbox', { name: 'Expired' }));
     await waitFor(() => expect(window.location.search).toBe('?status=expired'));
     await waitFor(() => expect(lastQuery(state).get('status')).toBe('expired'));
     fireEvent.change(within(sheet).getByRole('combobox', { name: 'Sort by' }), {
@@ -2063,6 +2185,8 @@ describe('Documents on a phone (under 768 px)', () => {
     await waitFor(() =>
       expect(window.location.search).toBe('?sort=expires&dir=desc&status=expired'),
     );
+    // The sheet's boxes, each filter a fieldset of its own: accessible.
+    expect(within(status).getByRole('checkbox', { name: 'Expired' })).toBeChecked();
     await expectAccessible();
     fireEvent.click(within(sheet).getByRole('button', { name: 'Done' }));
     await waitFor(() => expect(screen.getByRole('button', { name: 'Filters (1)' })).toHaveFocus());

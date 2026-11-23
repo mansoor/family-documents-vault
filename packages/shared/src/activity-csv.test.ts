@@ -191,22 +191,44 @@ describe('the activity log as CSV', () => {
     ).toBe('who=else&kind=opened&from=2026-11-01');
   });
 
+  it('asks for several who and kinds, the field once for each (0.9.0-dev.92)', () => {
+    expect(activityExportQuery({ who: ['m-sara', 'else'], kind: ['opened', 'shared'] })).toBe(
+      'who=m-sara&who=else&kind=opened&kind=shared',
+    );
+    expect(activityExportQuery({ who: [], kind: [''] })).toBe('');
+  });
+
   it('keeps a line by who, what sort and which day, as the page does', () => {
     const family = (id: string) => id === 'm-sara';
     const day = (iso: string) => iso.slice(0, 10);
-    const none = { who: '', kind: '', from: '', to: '' };
+    const none = { who: [], kind: [], from: '', to: '' };
     expect(activityLineKept(line(), none, family, day)).toBe(true);
-    expect(activityLineKept(line(), { ...none, who: 'm-sara' }, family, day)).toBe(true);
-    expect(activityLineKept(line(), { ...none, who: 'm-sam' }, family, day)).toBe(false);
-    expect(activityLineKept(line(), { ...none, who: 'else' }, family, day)).toBe(false);
+    expect(activityLineKept(line(), { ...none, who: ['m-sara'] }, family, day)).toBe(true);
+    expect(activityLineKept(line(), { ...none, who: ['m-sam'] }, family, day)).toBe(false);
+    expect(activityLineKept(line(), { ...none, who: ['else'] }, family, day)).toBe(false);
     expect(
-      activityLineKept(line({ actor_member_id: null }), { ...none, who: 'else' }, family, day),
+      activityLineKept(line({ actor_member_id: null }), { ...none, who: ['else'] }, family, day),
     ).toBe(true);
-    expect(activityLineKept(line(), { ...none, kind: 'shared' }, family, day)).toBe(false);
+    expect(activityLineKept(line(), { ...none, kind: ['shared'] }, family, day)).toBe(false);
     expect(
       activityLineKept(line(), { ...none, from: '2026-11-21', to: '2026-11-21' }, family, day),
     ).toBe(true);
     expect(activityLineKept(line(), { ...none, from: '2026-11-22' }, family, day)).toBe(false);
     expect(activityLineKept(line(), { ...none, to: '2026-11-20' }, family, day)).toBe(false);
+  });
+
+  it('keeps a line any of several who or kinds asked for, and only those (0.9.0-dev.92)', () => {
+    const family = (id: string) => id === 'm-sara' || id === 'm-sam';
+    const day = (iso: string) => iso.slice(0, 10);
+    const kept = (f: { who?: string[]; kind?: string[] }, l = line()) =>
+      activityLineKept(l, { who: [], kind: [], from: '', to: '', ...f }, family, day);
+    expect(kept({ who: ['m-sam', 'm-sara'] })).toBe(true);
+    expect(kept({ who: ['m-sam', 'else'] })).toBe(false);
+    expect(kept({ who: ['m-sam', 'else'] }, line({ actor_member_id: null }))).toBe(true);
+    expect(kept({ kind: ['shared', 'opened'] })).toBe(true);
+    expect(kept({ kind: ['shared', 'added'] })).toBe(false);
+    // Across filters, all of them.
+    expect(kept({ who: ['m-sara'], kind: ['shared', 'added'] })).toBe(false);
+    expect(kept({ who: ['m-sam', 'm-sara'], kind: ['opened'] })).toBe(true);
   });
 });

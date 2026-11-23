@@ -2,6 +2,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testi
 import { cabinetSize, type CabinetLayout, type CabinetPreview } from '@fdv/shared';
 import axe from 'axe-core';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { filterSays, ticked } from './filter-testing.js';
 import { App } from './App.js';
 import { changeWords } from './cabinet.js';
 import { issuersChanged } from './issuer-store.js';
@@ -769,19 +770,25 @@ describe('a folder in the table, whole (the review)', () => {
       expect(
         await screen.findByText(`${want} document${want === 1 ? '' : 's'} match these filters`),
       ).toBeVisible();
+      // Its choices the table's own (0.9.0-dev.92): ticked, and a chip each,
+      // named in words, never by an id or a key.
+      const filters = screen.getByRole('group', { name: 'Filters' });
+      const chips = screen.getByRole('group', { name: 'Filters chosen' });
       if (folder === 'merged') {
-        // Named in words, never by an id or a key.
-        const person = screen.getByRole('combobox', { name: 'Person' });
-        expect(within(person).getByRole('option', { selected: true })).toHaveTextContent(
-          'Mansoor Seikh or Aisha',
+        expect(ticked(filters, 'Person')).toEqual(['Mansoor Seikh', 'Aisha']);
+        expect(within(chips).getByText('Person: Aisha')).toBeVisible();
+        expect(ticked(filters, 'Kind')).toHaveLength(2);
+        expect(chips.textContent).not.toMatch(/passport|bank_statement/);
+        // One of them taken off: the other kept.
+        fireEvent.click(
+          within(chips).getByRole('button', { name: 'Take off the filter Person: Aisha' }),
         );
-        const kind = screen.getByRole('combobox', { name: 'Kind' });
-        expect(within(kind).getByRole('option', { selected: true }).textContent).not.toMatch(
-          /passport|bank_statement/,
+        await waitFor(() =>
+          expect(new URLSearchParams(window.location.search).getAll('person')).toEqual(['me']),
         );
       } else {
-        const status = screen.getByRole('combobox', { name: 'Status' });
-        expect(within(status).getByRole('option', { selected: true }).textContent).toMatch(/ or /);
+        expect(ticked(filters, 'Status')).toHaveLength(2);
+        expect(filterSays(filters, 'Status')).toBe('Status · 2');
       }
     });
   }
@@ -810,7 +817,7 @@ describe('a folder in the table, whole (the review)', () => {
       `/documents?category=identity&dated_from=${thisYear}-01-01&dated_to=${thisYear}-12-31`,
     );
     render(<App />);
-    const chips = await screen.findByRole('group', { name: 'Folder filters' });
+    const chips = await screen.findByRole('group', { name: 'Filters chosen' });
     expect(within(chips).getByText('Topic: Identity')).toBeVisible();
     expect(within(chips).getByText(`Dated ${thisYear}`)).toBeVisible();
     fireEvent.click(
@@ -840,7 +847,7 @@ describe('a folder in the table, whole (the review)', () => {
     signedIn('owner');
     window.history.replaceState({}, '', '/documents?issuer=barclays');
     render(<App />);
-    const chips = await screen.findByRole('group', { name: 'Folder filters' });
+    const chips = await screen.findByRole('group', { name: 'Filters chosen' });
     expect(await within(chips).findByText('From Barclays')).toBeVisible();
     expect(await screen.findByText('2 documents match these filters')).toBeVisible();
     expect(screen.queryByText('HSBC letter')).toBeNull();

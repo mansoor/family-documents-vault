@@ -661,6 +661,24 @@ function whereOf(p: Principal, q: ListQuery): RawBuilder<boolean> {
         : sql`exists (${inSeenCollection(p)} and l.id = ${q.collection_id}::uuid)`,
     );
   }
+  // In any of several (0.9.0-dev.92), each one the caller may see, or in
+  // none of theirs: one condition, the ids an array.
+  if (q.collection_ids) {
+    const ids = q.collection_ids.filter((c) => c !== 'none');
+    const any = [
+      ...(q.collection_ids.includes('none')
+        ? [q.deleted ? sql`true` : sql`not exists (${inSeenCollection(p)})`]
+        : []),
+      ...(ids.length > 0
+        ? [
+            q.deleted
+              ? sql`false`
+              : sql`exists (${inSeenCollection(p)} and l.id = any(${ids}::uuid[]))`,
+          ]
+        : []),
+    ];
+    parts.push(sql`(${sql.join(any, sql` or `)})`);
+  }
   return sql<boolean>`${sql.join(parts, sql` and `)}`;
 }
 

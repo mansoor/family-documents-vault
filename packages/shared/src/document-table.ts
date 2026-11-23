@@ -94,8 +94,23 @@ export interface DocumentCollectionRef {
 }
 
 /**
+ * The most values one filter takes at once (V1; on every filter since
+ * 0.9.0-dev.92): more is refused (422), and the web offers no more.
+ */
+export const FILTER_VALUES_MAX = 50;
+
+/**
+ * A filter's value, or several (0.9.0-dev.92, `features.multi_filters`):
+ * a list is sent with the field once for each value, any of them. An older
+ * vault takes one value each (or, for the filters of keys, several
+ * comma-separated: `member_id: 'a,b'`).
+ */
+export type OneOrMany = string | readonly string[];
+
+/**
  * What GET /documents takes (the table's additions marked). Each filter
- * narrows what the reader may see already; none widens it.
+ * narrows what the reader may see already; none widens it. Across filters,
+ * all of them; within one, any of its values.
  */
 export type DocumentListParams = {
   /** A column (`DOCUMENT_SORTS`, R2), or an older sort. */
@@ -107,16 +122,16 @@ export type DocumentListParams = {
    * Not sure yet since 0.9.0 — or `household` (0.9.0, `features.household_owner`)
    * for the household's.
    */
-  member_id?: string | undefined;
-  type_key?: string | undefined;
-  category?: string | undefined;
+  member_id?: OneOrMany | undefined;
+  type_key?: OneOrMany | undefined;
+  category?: OneOrMany | undefined;
   issued_by?: string | undefined;
   /**
    * Who issued it, by issuer key (0.9.0-dev.91, `features.cabinet_issuer`):
    * keys comma-separated, any of them, each with every key the household
    * says is the same; or `_none` for no issuer given.
    */
-  issuer?: string | undefined;
+  issuer?: OneOrMany | undefined;
   /**
    * A tag, whatever its case since 0.9.0 (`features.tag_details`); several,
    * any of them, since `features.tag_filters`.
@@ -125,17 +140,20 @@ export type DocumentListParams = {
   /** Notes left out (`features.notes_apart`). */
   notes?: 'exclude' | undefined;
   /** A detail tag's label, any value: "locker" (0.9.0, `features.tag_details`). */
-  tag_label?: string | undefined;
-  visibility?: Visibility | undefined;
+  tag_label?: OneOrMany | undefined;
+  visibility?: Visibility | readonly Visibility[] | undefined;
   /**
    * Sensitive, all said (0.9.0, AIR2, `features.sensitive_documents`): `yes`,
    * `no`, or both comma-separated. As V1's filters, on GET /search too.
    */
-  sensitive?: string | undefined;
+  sensitive?: OneOrMany | undefined;
   /** With a column sort, every page holds only this status, and `total` counts them. */
-  status?: StatusValue | undefined;
-  /** R2, with a column sort: in this collection (one the reader may see), or `none`. */
-  collection_id?: string | undefined;
+  status?: StatusValue | readonly StatusValue[] | undefined;
+  /**
+   * R2, with a column sort: in this collection (one the reader may see), or
+   * `none`; several, any of them, since `features.multi_filters`.
+   */
+  collection_id?: OneOrMany | undefined;
   /** R2, with a column sort, for whoever sees locations: kept there, whatever the case. */
   location?: string | undefined;
   /**

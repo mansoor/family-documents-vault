@@ -15,7 +15,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { Principal, Tokens } from '../auth/service.js';
 import { createHarness, type Harness } from '../test-harness.js';
 import { activityCsv, type ExportSource } from './csv.js';
-import { AuditService } from './service.js';
+import { AuditService, type ExportAsk } from './service.js';
 
 const PDF = Buffer.from('%PDF-1.4\n1 0 obj<</Type/Catalog>>endobj\n%%EOF\n');
 
@@ -320,6 +320,56 @@ describe.skipIf(!testAdminUrl())('the activity log as CSV', () => {
     expect(await rowsOf(owner, 'to=2000-01-01')).toEqual([]);
   });
 
+  it('keeps the lines any of several who or sorts asked for keep, and all filters together (0.9.0-dev.92)', async () => {
+    const whats = (rows: string[][]) => rows.map((r) => r[col('What happened')]);
+    const opened = whats(await rowsOf(owner, 'kind=opened'));
+    const signIns = whats(await rowsOf(owner, 'kind=sign_in'));
+    // Within one filter, any of them: as the page's lines, newest first.
+    const both = await rowsOf(owner, 'kind=opened&kind=sign_in');
+    expect(both.length).toBe(opened.length + signIns.length);
+    expect(
+      both.every((r) => ['Opened and downloaded', 'Signing in'].includes(r[col('Kind')] as string)),
+    ).toBe(true);
+    // Comma-separated is the same, as the list's filters of keys take it.
+    expect(whats(await rowsOf(owner, 'kind=opened,sign_in'))).toEqual(whats(both));
+    // One value is the filter as it always was.
+    expect(whats(await rowsOf(owner, 'kind=opened&kind=opened'))).toEqual(opened);
+
+    const bySam = whats(await rowsOf(owner, `who=${sam.member_id}`));
+    const others = whats(await rowsOf(owner, 'who=else'));
+    const samOrElse = await rowsOf(owner, `who=${sam.member_id}&who=else`);
+    expect(samOrElse.length).toBe(bySam.length + others.length);
+    expect(samOrElse.every((r) => ['Sam', ''].includes(r[col('Who')] as string))).toBe(true);
+    // Across filters, all of them.
+    const samOpened = await rowsOf(owner, `who=${sam.member_id}&who=else&kind=opened`);
+    expect(samOpened.length).toBeGreaterThan(0);
+    expect(samOpened.every((r) => r[col('Kind')] === 'Opened and downloaded')).toBe(true);
+    expect(samOpened.every((r) => ['Sam', ''].includes(r[col('Who')] as string))).toBe(true);
+    // Never wider than the reader's own copy: Sam asking for the owner's
+    // lines too is not shown the owner's Only me document.
+    const samAsks = whats(await rowsOf(sam, `who=${owner.member_id}&who=${sam.member_id}`));
+    expect(samAsks.join(' ')).not.toContain('Therapy');
+    // An empty value is any (0.9.0-dev.92): `who=` and `kind=` alone are no filter.
+    const all = (await rowsOf(owner)).length;
+    expect((await rowsOf(owner, 'who=&kind=')).length).toBe(all + 1);
+    // More than fifty: refused, given once each or comma-separated.
+    const many = Array.from({ length: 51 }, () => randomUUID());
+    for (const q of [many.map((m) => `who=${m}`).join('&'), `who=${many.join(',')}`]) {
+      expect((await exported(owner, q)).statusCode).toBe(422);
+    }
+    // Each value checked: one that is not a filter refuses the whole ask.
+    for (const q of [`who=${sam.member_id}&who=sam`, 'kind=opened&kind=everything']) {
+      expect((await exported(owner, q)).statusCode, q).toBe(422);
+    }
+    // Several written in the log as a list; one as it always was.
+    const written = (await exportsWritten()).find((e) =>
+      Array.isArray((e.detail as { who?: unknown }).who),
+    );
+    expect((written?.detail as { who?: unknown }).who).toEqual(
+      expect.arrayContaining([sam.member_id, 'else']),
+    );
+  });
+
   it('keeps one document’s lines, as its own activity does, and none of one the reader cannot see', async () => {
     const page = (
       await h.app.inject({ url: `/api/v1/documents/${bill}/activity`, headers: h.as(sam) })
@@ -451,7 +501,7 @@ describe.skipIf(!testAdminUrl())('the activity log as CSV', () => {
       }
     });
     const audit = new AuditService(h.db);
-    const linesOf = async (ask: Record<string, string>, batch?: number) => {
+    const linesOf = async (ask: ExportAsk, batch?: number) => {
       const start = await audit.exportStart(p, ask);
       const out: string[] = [];
       for await (const r of audit.exportLines(p, ask, start, batch ? { batch } : {})) {
@@ -465,10 +515,20 @@ describe.skipIf(!testAdminUrl())('the activity log as CSV', () => {
     const one = await linesOf({ document: bill });
     expect(one).toContain('Sam looked at “Water bill”');
     expect(await linesOf({ document: bill }, 2)).toEqual(one);
-    expect(await linesOf({ kind: 'opened' }, 3)).toEqual(await linesOf({ kind: 'opened' }));
-    expect(await linesOf({ kind: 'sign_in' }, 2)).toEqual(await linesOf({ kind: 'sign_in' }));
-    const bySam = await linesOf({ who: sam.member_id }, 2);
-    expect(bySam).toEqual(await linesOf({ who: sam.member_id }));
+    expect(await linesOf({ kind: ['opened'] }, 3)).toEqual(await linesOf({ kind: ['opened'] }));
+    expect(await linesOf({ kind: ['sign_in'] }, 2)).toEqual(await linesOf({ kind: ['sign_in'] }));
+    // Several sorts, one of which folds: read whole, as the page keeps them.
+    expect(await linesOf({ kind: ['sign_in', 'opened'] }, 2)).toEqual(
+      await linesOf({ kind: ['sign_in', 'opened'] }),
+    );
+    // Two people and a sort that folds: read a batch at a time as whole.
+    const twoWho = { who: [sam.member_id, owner.member_id], kind: ['opened', 'sign_in'] };
+    expect(await linesOf(twoWho, 2)).toEqual(await linesOf(twoWho));
+    expect((await linesOf(twoWho)).filter((t) => t === 'Sam looked at “Water bill”')).toHaveLength(
+      1,
+    );
+    const bySam = await linesOf({ who: [sam.member_id] }, 2);
+    expect(bySam).toEqual(await linesOf({ who: [sam.member_id] }));
     expect(bySam).toContain('Sam looked at “Water bill”');
   });
 

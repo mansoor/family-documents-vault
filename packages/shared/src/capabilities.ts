@@ -606,6 +606,18 @@ export interface CapabilityFeatures {
    */
   cabinet_issuer?: boolean;
   /**
+   * Filters of several values (0.9.0-dev.92): every filter of GET /documents
+   * and GET /search that takes values — `member_id`, `type_key`, `category`,
+   * `status`, `visibility`, `sensitive`, `issuer`, `tag`, and on the list
+   * `collection_id` and `tag_label` — takes several, each given once
+   * (`member_id=a&member_id=b`), any of them; the filters that take keys
+   * also still take them comma-separated, as since V1. GET /audit/export
+   * takes several `who` and `kind` the same way. One value is the filter as
+   * it always was. Absent from older vaults, which take `collection_id`,
+   * `tag_label`, `who` and `kind` once, and the rest comma-separated.
+   */
+  multi_filters?: boolean;
+  /**
    * Caregivers and turning 18 (0.9.0, H1b): GET /caregivers, GET and POST
    * /members/{id}/caregivers, POST /members/{id}/caregivers/{caregiverId}/
    * keep and /revoke, GET /members/{id}/caregiver-views; GET

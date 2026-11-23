@@ -23,6 +23,7 @@ import {
   type AppScope,
   type Role,
   type Tokens,
+  type DocumentListParams,
 } from '@fdv/shared';
 import { expect } from 'vitest';
 import { deviceHeaders, type Api } from '../api.js';
@@ -3814,6 +3815,69 @@ export const contractScenarios: Scenario[] = [
       expect([missing.status, missing.code]).toEqual([404, 'not_found']);
       const odd = await refusal(api.activityCsv(token, { kind: 'everything' }));
       expect([odd.status, odd.code]).toEqual([422, 'validation_failed']);
+    },
+  },
+  {
+    name: 'filters of several choices: any within one, all across them, each given once or comma-separated; collections, details and the activity export too (0.9.0-dev.92)',
+    run: async (api, ctx) => {
+      const { access_token: token } = await signIn(api, ctx);
+      expect((await api.capabilities()).features.multi_filters).toBe(true);
+      const me = await api.me(token);
+      const paper = (title: string, type_key: string, tags: string[]) =>
+        api.createDocument(token, {
+          type_key,
+          owner_member_id: me.member_id,
+          visibility: 'household',
+          sensitive: false,
+          title,
+          tags,
+        });
+      const passport = await paper('Contract multi passport', 'passport', ['Shelf, top: 1']);
+      const licence = await paper('Contract multi certificate', 'birth_certificate', ['Drawer: 2']);
+      const will = await paper('Contract multi bill', 'utility_bill', []);
+      const box = await api.createCollection(token, {
+        name: 'Contract multi box',
+        audience: 'everyone',
+      });
+      await api.addToCollection(token, box.id, [passport.id]);
+      const ids = async (params: DocumentListParams) =>
+        (await api.documents(token, { sort: 'title', limit: 200, ...params })).items
+          .map((d) => d.id)
+          .filter((id) => [passport.id, licence.id, will.id].includes(id))
+          .sort();
+      const sorted = (...docs: Array<{ id: string }>) => docs.map((d) => d.id).sort();
+      // Within one filter, any of them: given once each, or comma-separated.
+      expect(await ids({ type_key: ['passport', 'birth_certificate'] })).toEqual(
+        sorted(passport, licence),
+      );
+      expect(await ids({ type_key: 'passport,birth_certificate' })).toEqual(
+        sorted(passport, licence),
+      );
+      // One value, as it always was.
+      expect(await ids({ type_key: 'utility_bill' })).toEqual(sorted(will));
+      // Across filters, all of them.
+      expect(
+        await ids({ type_key: ['passport', 'birth_certificate'], member_id: [me.member_id] }),
+      ).toEqual(sorted(passport, licence));
+      expect(
+        await ids({ type_key: ['passport', 'utility_bill'], collection_id: [box.id, 'none'] }),
+      ).toEqual(sorted(passport, will));
+      // A detail's label holding a comma, given once: never split.
+      expect(await ids({ tag_label: ['Shelf, top', 'drawer'] })).toEqual(sorted(passport, licence));
+      const wrong = await refusal(
+        api.documents(token, { sort: 'title', collection_id: [box.id, 'holiday'] }),
+      );
+      expect([wrong.status, wrong.code]).toEqual([422, 'validation_failed']);
+      // The activity export takes several who and kinds.
+      const csv = await api.activityCsv(token, {
+        who: [me.member_id, 'else'],
+        kind: ['added', 'changed'],
+      });
+      expect(csv.status).toBe(200);
+      const odd = await refusal(api.activityCsv(token, { kind: ['added', 'everything'] }));
+      expect([odd.status, odd.code]).toEqual([422, 'validation_failed']);
+      await api.deleteCollection(token, box.id);
+      for (const d of [passport, licence, will]) await api.deleteDocument(token, d.id);
     },
   },
   {

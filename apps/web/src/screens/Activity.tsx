@@ -16,7 +16,7 @@ import { Link, useSearchParams } from 'react-router';
 import { api, type Member } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
 import { useShellMode } from '../shell.js';
-import { FilterSelect } from '../table-grid.js';
+import { ChipRow, MultiFilter, useAtOnce, type Chip } from '../multi-filter.js';
 import { Button, ErrorNote, TopBar } from '../ui.js';
 import { exactWords, relativeWords, useFamilyZone } from '../family-time.js';
 import { NOTHING, PrintOut } from '../print.js';
@@ -33,8 +33,11 @@ import { saveFile } from '../save-file.js';
  * controls are links: who to their page, a line about a document to the
  * document. Filters for who, what sort of thing and between which days,
  * kept in the address, sift the lines loaded; "Show older" loads more, as
- * before. Which lines anybody is given is the vault's to say, as ever: a
- * filter only leaves some of them out.
+ * before. Who and what sort of thing each take several (0.9.0-dev.92):
+ * any of them, said as chips below, each taken off by its ×, with Clear
+ * all; the days and every filter together, all of them. Which lines
+ * anybody is given is the vault's to say, as ever: a filter only leaves
+ * some of them out.
  *
  * One document's activity (0.9.0, DA): `?document=<id>`, from "See all
  * activity" in the Activity panel on its page (0.9.0-dev.67), asks the vault for the lines about that document and
@@ -146,13 +149,21 @@ export function ActivityScreen() {
   const filters = filtersFrom(params);
   const askedNow = JSON.stringify([filters, about]);
   const capped = cappedFor === askedNow;
-  const setFilter = (key: keyof Filters, value: string) => {
+  const setFilter = (key: 'from' | 'to', value: string) => {
     const next = new URLSearchParams(params);
     if (value) next.set(key, value);
     else next.delete(key);
     setParams(next);
   };
-  const anyFilter = Object.values(filters).some(Boolean);
+  /** Who or what sort of thing: each choice given once in the address. */
+  const setChoices = (key: 'who' | 'kind', values: readonly string[]) => {
+    const next = new URLSearchParams(params);
+    next.delete(key);
+    for (const v of values) next.append(key, v);
+    setParams(next);
+  };
+  const anyFilter =
+    filters.who.length > 0 || filters.kind.length > 0 || filters.from !== '' || filters.to !== '';
   /** Back to the whole log: the chip's ×. The focus stays among the filters. */
   const showEverything = () => {
     const next = new URLSearchParams(params);
@@ -167,6 +178,38 @@ export function ActivityScreen() {
   const lines = [...(data?.items ?? []), ...older];
   const next = cursor === undefined ? (data?.next ?? null) : cursor;
   const family = members ?? [];
+  const whoChoices = [
+    ...family.map((m) => ({ value: m.id, label: m.display_name })),
+    { value: ELSE, label: 'Anybody else' },
+  ];
+  // The choices made, a chip each (0.9.0-dev.92); the days, a chip each too.
+  const day = (d: string) => formatDate({ date: d, precision: 'day' });
+  const chips: Chip[] = [
+    ...filters.who.map((w) => ({
+      key: `who:${w}`,
+      words: `Who: ${whoWords(w, family)}`,
+      clear: () =>
+        setChoices(
+          'who',
+          filters.who.filter((x) => x !== w),
+        ),
+    })),
+    ...filters.kind.map((k) => ({
+      key: `kind:${k}`,
+      words: `What happened: ${kindWords(k)}`,
+      clear: () =>
+        setChoices(
+          'kind',
+          filters.kind.filter((x) => x !== k),
+        ),
+    })),
+    ...(filters.from
+      ? [{ key: 'from', words: `From ${day(filters.from)}`, clear: () => setFilter('from', '') }]
+      : []),
+    ...(filters.to
+      ? [{ key: 'to', words: `To ${day(filters.to)}`, clear: () => setFilter('to', '') }]
+      : []),
+  ];
   const shown = lines.filter((l) => matches(l, filters, family, timezone ?? null));
 
   /** Older lines, after those there: each line once, whatever asked for it. */
@@ -383,23 +426,23 @@ export function ActivityScreen() {
             </button>
           </span>
         )}
-        <FilterSelect
+        <MultiFilter
           id={`${ids}-who`}
           label="Who"
-          value={filters.who}
-          options={[
-            { value: '', label: 'Everybody' },
-            ...family.map((m) => ({ value: m.id, label: m.display_name })),
-            { value: ELSE, label: 'Anybody else' },
-          ]}
-          onChange={(v) => setFilter('who', v)}
+          any="Everybody"
+          values={filters.who}
+          options={whoChoices}
+          unknown={(v) => whoWords(v, family)}
+          find="Find a person"
+          onChange={(v) => setChoices('who', v)}
         />
-        <FilterSelect
+        <MultiFilter
           id={`${ids}-kind`}
           label="What happened"
-          value={filters.kind}
-          options={[{ value: '', label: 'Everything' }, ...ACTIVITY_KINDS]}
-          onChange={(v) => setFilter('kind', v)}
+          any="Everything"
+          values={filters.kind}
+          options={ACTIVITY_KINDS}
+          onChange={(v) => setChoices('kind', v)}
         />
         <DayFilter
           id={`${ids}-from`}
@@ -415,18 +458,6 @@ export function ActivityScreen() {
           min={filters.from || undefined}
           onChange={(v) => setFilter('to', v)}
         />
-        {anyFilter && (
-          <button
-            type="button"
-            className="btn btn-quiet btn-small"
-            onClick={() =>
-              // The document's chip stays: it has its own ×.
-              setParams(about ? new URLSearchParams({ document: asked }) : new URLSearchParams())
-            }
-          >
-            Clear filters
-          </button>
-        )}
         <p className="muted table-count" role="status">
           {waiting
             ? ''
@@ -435,6 +466,16 @@ export function ActivityScreen() {
               : `${lines.length} loaded`}
         </p>
       </div>
+      {/* Always there, so the focus has somewhere to go when the last chip does. */}
+      <ChipRow
+        label="Filters chosen"
+        chips={chips}
+        onClearAll={() =>
+          // The document's chip stays: it has its own ×.
+          setParams(about ? new URLSearchParams({ document: asked }) : new URLSearchParams())
+        }
+        fallback={filtersRef}
+      />
       {wide ? (
         <div className="tbl-wrap tbl-static">
           <table className="tbl tbl-plain activity-tbl">
@@ -541,13 +582,10 @@ export function ActivityPrintAbout(props: {
   timezone: string | null;
 }) {
   const { filters: f } = props;
+  // Several of one filter, any of them (0.9.0-dev.92): "Sara or Sam".
   const who =
-    f.who === ''
-      ? 'Everybody'
-      : f.who === ELSE
-        ? 'Anybody else'
-        : (props.family.find((m) => m.id === f.who)?.display_name ?? 'Somebody');
-  const what = ACTIVITY_KINDS.find((k) => k.value === f.kind)?.label ?? 'Everything';
+    f.who.length === 0 ? 'Everybody' : f.who.map((w) => whoWords(w, props.family)).join(' or ');
+  const what = f.kind.length === 0 ? 'Everything' : f.kind.map(kindWords).join(' or ');
   const day = (d: string) => formatDate({ date: d, precision: 'day' });
   const days =
     f.from && f.to
@@ -579,15 +617,39 @@ type Filters = ActivityFilters;
 const DAY = /^\d{4}-\d{2}-\d{2}$/;
 const KINDS: readonly string[] = ACTIVITY_KINDS.map((k) => k.value);
 
+/** Who a Who filter's value names: one of the family, anybody else, or somebody not given. */
+function whoWords(value: string, family: readonly Member[]): string {
+  if (value === ELSE) return 'Anybody else';
+  return family.find((m) => m.id === value)?.display_name ?? 'Somebody';
+}
+
+/** A sort of thing, in words. */
+function kindWords(value: string): string {
+  return ACTIVITY_KINDS.find((k) => k.value === value)?.label ?? value;
+}
+
+/**
+ * The filters as the address has them: who and what sort of thing each
+ * given once a choice (0.9.0-dev.92) — or, from an older link, one, or
+ * several comma-separated — and a sort of thing there is not left out.
+ */
 function filtersFrom(params: URLSearchParams): Filters {
   const day = (k: string) => {
     const v = params.get(k) ?? '';
     return DAY.test(v) ? v : '';
   };
-  const kind = params.get('kind') ?? '';
+  const several = (k: string) => [
+    ...new Set(
+      params
+        .getAll(k)
+        .flatMap((v) => v.split(','))
+        .map((v) => v.trim())
+        .filter((v) => v !== ''),
+    ),
+  ];
   return {
-    who: params.get('who') ?? '',
-    kind: KINDS.includes(kind) ? kind : '',
+    who: several('who'),
+    kind: several('kind').filter((k) => KINDS.includes(k)),
     from: day('from'),
     to: day('to'),
   };
@@ -686,17 +748,19 @@ function DayFilter(props: {
   max?: string | undefined;
   onChange: (v: string) => void;
 }) {
+  // Shown as chosen at once, while the address catches up (0.9.0-dev.92).
+  const [value, setValue] = useAtOnce(props.value, props.onChange);
   return (
     <span className="filter filter-day">
       <label htmlFor={props.id}>{props.label}</label>
       <input
         id={props.id}
         type="date"
-        className={props.value ? 'on' : undefined}
-        value={props.value}
+        className={value ? 'on' : undefined}
+        value={value}
         min={props.min}
         max={props.max}
-        onChange={(e) => props.onChange(e.target.value)}
+        onChange={(e) => setValue(e.target.value)}
       />
     </span>
   );

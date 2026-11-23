@@ -1,4 +1,5 @@
 import {
+  FILTER_VALUES_MAX,
   isIssuerKey,
   NO_ISSUER,
   storedIssuerKey,
@@ -31,6 +32,17 @@ import { ApiError } from '../errors.js';
  * `notes=exclude`, documents without the notes, which the phone's
  * Documents tab and the web's Documents table keep to (notes have their
  * own place on both).
+ *
+ * Since 0.9.0-dev.92 (`features.multi_filters`, the web's Documents filters
+ * of several choices): every filter that takes values takes several, each
+ * given once (`member_id=a&member_id=b`) — the one way that holds for every
+ * value, a comma in a tag or a label too. The filters of keys (ids, kinds,
+ * statuses, `yes`/`no`, issuer keys) still take them comma-separated as
+ * well, as since V1, and the two together; words (a tag, a detail's label)
+ * are never split. A collection (`collection_id`) and a detail's label
+ * (`tag_label`) take several too. Each value is one that filter takes, and
+ * each only narrows what the reader may read already: the readability rule
+ * is the same `and` on every statement, whatever the filters ask.
  */
 
 /** Any of these, and within these dates: what a list or a search is narrowed by. */
@@ -67,10 +79,17 @@ export interface DocumentFilters {
    * or both, which is every document).
    */
   sensitive?: boolean[] | undefined;
+  /** Any of these details' labels, whatever their case (0.9.0-dev.92). */
+  tag_labels?: string[] | undefined;
+  /**
+   * In any of these collections the reader may see, or (`none`) in none of
+   * theirs (0.9.0-dev.92): the table's, which asks it with the reader (table.ts).
+   */
+  collection_ids?: string[] | undefined;
 }
 
-/** How many values one filter may hold. */
-export const FILTER_VALUES_MAX = 50;
+/** How many values one filter may hold (`@fdv/shared`, so the web offers no more). */
+export { FILTER_VALUES_MAX };
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const DAY = /^\d{4}-\d{2}-\d{2}$/;
@@ -83,18 +102,29 @@ const refuse = (detail: string, message: string): never => {
   throw new ApiError(422, 'validation_failed', message, { detail });
 };
 
-/** A comma-separated filter as its values; none when it was not asked for. */
-export function valuesOf(raw: string | undefined): string[] | undefined {
+/**
+ * A filter of keys as its values: each given, each split at its commas;
+ * none when it was not asked for.
+ */
+export function valuesOf(raw: string | readonly string[] | undefined): string[] | undefined {
   if (raw === undefined) return undefined;
   const values = [
     ...new Set(
-      raw
-        .split(',')
+      (typeof raw === 'string' ? [raw] : raw)
+        .flatMap((one) => one.split(','))
         .map((v) => v.trim())
         .filter((v) => v !== ''),
     ),
   ];
   return values.length > 0 ? values : undefined;
+}
+
+/** A filter of words as its values: each given once, never split (a comma is a part of it). */
+function wordsOf(raw: string | readonly string[] | undefined): string[] {
+  if (raw === undefined) return [];
+  return [
+    ...new Set((typeof raw === 'string' ? [raw] : raw).map((x) => x.trim()).filter((x) => x)),
+  ];
 }
 
 /** A day as the filter takes it, or a refusal that names the filter. */
@@ -108,13 +138,16 @@ function dayOf(name: string, raw: string | undefined): string | undefined {
   return raw;
 }
 
+/** Given once, or several times (0.9.0-dev.92). */
+type Given = string | readonly string[];
+
 /** The raw query's filters, as their values: each checked as the filter of one value always was. */
 export interface RawFilters {
-  member_id?: string | undefined;
-  type_key?: string | undefined;
-  category?: string | undefined;
-  status?: string | undefined;
-  visibility?: string | undefined;
+  member_id?: Given | undefined;
+  type_key?: Given | undefined;
+  category?: Given | undefined;
+  status?: Given | undefined;
+  visibility?: Given | undefined;
   added_from?: string | undefined;
   added_to?: string | undefined;
   issued_from?: string | undefined;
@@ -124,12 +157,16 @@ export interface RawFilters {
   dated_from?: string | undefined;
   dated_to?: string | undefined;
   /** A tag, or several: the field given once for each. */
-  tag?: string | string[] | undefined;
+  tag?: Given | undefined;
   notes?: 'exclude' | undefined;
   /** `yes`, `no`, or both comma-separated (0.9.0, AIR2). */
-  sensitive?: string | undefined;
+  sensitive?: Given | undefined;
   /** Issuer keys, or `_none`, comma-separated (0.9.0-dev.91). */
-  issuer?: string | undefined;
+  issuer?: Given | undefined;
+  /** A detail's label, or several, each given once (0.9.0-dev.92): the list's. */
+  tag_label?: Given | undefined;
+  /** A collection's id or `none`, or several (0.9.0-dev.92): the table's. */
+  collection_id?: Given | undefined;
 }
 
 /**
@@ -146,6 +183,8 @@ export function filtersOf(raw: RawFilters): {
     status?: string | undefined;
     visibility?: Visibility | undefined;
     tag?: string | undefined;
+    tag_label?: string | undefined;
+    collection_id?: string | undefined;
   };
   many: DocumentFilters;
 } {
@@ -192,20 +231,28 @@ export function filtersOf(raw: RawFilters): {
     else many.visibilities = visibilities as Visibility[];
   }
   // Tags are never split: a tag may hold a comma. One is the filter as it always was.
-  const tags =
-    raw.tag === undefined
-      ? []
-      : [
-          ...new Set(
-            (Array.isArray(raw.tag) ? raw.tag : [raw.tag])
-              .map((x) => x.trim())
-              .filter((x) => x !== ''),
-          ),
-        ];
+  const tags = wordsOf(raw.tag);
   if (tags.length > 0) {
     tooMany('tag', tags);
     if (tags.length === 1) single.tag = tags[0];
     else many.tags = tags;
+  }
+  // Nor a detail's label (0.9.0-dev.92): one is the filter as it always was.
+  const labels = wordsOf(raw.tag_label);
+  if (labels.length > 0) {
+    tooMany('tag_label', labels);
+    if (labels.length === 1) single.tag_label = labels[0];
+    else many.tag_labels = labels;
+  }
+  // A collection's id, or none of the reader's (0.9.0-dev.92: several).
+  const collections = valuesOf(raw.collection_id);
+  if (collections) {
+    tooMany('collection_id', collections);
+    for (const c of collections) {
+      if (c !== 'none' && !UUID.test(c)) refuse('collection_id', 'That is not a collection here.');
+    }
+    if (collections.length === 1) single.collection_id = collections[0];
+    else many.collection_ids = collections;
   }
   if (raw.notes === 'exclude') many.without_notes = true;
   // Sensitive, all said (0.9.0, AIR2): new, so always a list.
@@ -270,6 +317,12 @@ export function filterClauses(
   if (f.tags) {
     parts.push(
       sql`${c('tag_keys')} && array(select fdv_tag_key(x) from unnest(${f.tags}::text[]) as x)::text[]`,
+    );
+  }
+  // Any of the details' labels, keyed as one label is (tagLabelFilter, 0073).
+  if (f.tag_labels) {
+    parts.push(
+      sql`${c('tag_labels')} && array(select fdv_tag_label_key(x) from unnest(${f.tag_labels}::text[]) as x)::text[]`,
     );
   }
   if (f.without_notes) parts.push(sql`${c('type_key')} is distinct from ${NOTE_KIND}`);

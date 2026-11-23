@@ -1,6 +1,7 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import axe from 'axe-core';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { filterSays, openFilter, tick } from './filter-testing.js';
 import { App } from './App.js';
 import {
   AISHA,
@@ -308,19 +309,22 @@ describe('Documents: by a detail’s label, and a tag to many at once (0.9.0, T1
     const state = at('/documents');
     const t = await table();
     await waitFor(() => expect(rows(t)).toHaveLength(3));
-    const detail = await screen.findByRole('combobox', { name: 'Detail' });
+    const filters = screen.getByRole('group', { name: 'Filters' });
+    await waitFor(() => expect(filterSays(filters, 'Detail')).toBe('Any detail'));
     expect(
-      within(detail)
-        .getAllByRole('option')
-        .map((o) => o.textContent),
-    ).toEqual(['Any detail', 'Locker', 'Policy holder']);
-    fireEvent.change(detail, { target: { value: 'locker' } });
+      within(openFilter(filters, 'Detail'))
+        .getAllByRole('checkbox')
+        .map((o) => o.closest('.check')?.textContent),
+    ).toEqual(['Locker', 'Policy holder']);
+    tick(filters, 'Detail', 'Locker');
     await waitFor(() => expect(window.location.search).toBe('?label=locker'));
     await waitFor(() => expect(rows(t)).toEqual(['Gym membership', 'Pool pass']));
     expect(state.calls.some((c) => c.url.includes('tag_label=locker'))).toBe(true);
-    const tag = screen.getByRole('combobox', { name: 'Tag' });
-    expect(within(tag).getByRole('option', { name: 'Locker · 7' })).toBeInTheDocument();
-    fireEvent.change(tag, { target: { value: 'locker: 7' } });
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(
+      within(openFilter(filters, 'Tag')).getByRole('checkbox', { name: 'Locker · 7' }),
+    ).toBeInTheDocument();
+    tick(filters, 'Tag', 'Locker · 7');
     await waitFor(() => expect(rows(t)).toEqual(['Pool pass']));
     await expectAccessible();
   });

@@ -59,7 +59,6 @@ import {
   documentsCount,
   FILTER_KEYS,
   filtersOn,
-  folderChipCount,
   MOST_AT_ONCE,
   PAGE_SIZE,
   paramsOf,
@@ -83,7 +82,9 @@ import {
   type FilterKey,
   type FolderKey,
   type TableView,
-  NO_FOLDER,
+  keysOf,
+  spelledAsKnown,
+  withoutFilters,
 } from '../documents-table.js';
 import {
   ColumnHandle,
@@ -102,7 +103,8 @@ import { useIssuersVersion } from '../issuer-store.js';
 import { storedRole } from '../session.js';
 import { moveInMenu, useShellMode } from '../shell.js';
 import { plainClick, useChangesBeside, useFlyouts, useOpenDocument } from '../flyout-context.js';
-import { FilterSelect, None, OutcomeNote, PickAll, useGrid, type Outcome } from '../table-grid.js';
+import { None, OutcomeNote, PickAll, useGrid, type Outcome } from '../table-grid.js';
+import { ADDRESS_ROOM, ChipRow, MultiFilter, useAtOnce, type Chip } from '../multi-filter.js';
 import {
   Button,
   Check,
@@ -170,7 +172,9 @@ function TableScreen() {
   const { caps, session } = useApp();
   const role = storedRole();
   const [params, setParams] = useSearchParams();
-  const view = viewFrom(params, role);
+  const known = useKnown();
+  // A tag a link asks in another case is the household's own (0.9.0-dev.92).
+  const view = spelledAsKnown(viewFrom(params, role), known.tags);
   const setView = (next: TableView) => setParams(paramsOf(next));
   const info = session.info;
   const holder: Holder | null = info
@@ -178,7 +182,6 @@ function TableScreen() {
     : null;
   // Documents, without the notes: they have their own page (the owner's tidy-up of 11 Nov 2026).
   const pages = usePages(view, holder, true);
-  const known = useKnown();
   const who: Chooser = {
     role,
     memberId: session.info?.member_id ?? null,
@@ -285,14 +288,17 @@ export function CollectionDocuments(props: {
   const [params, setParams] = useSearchParams();
   // Its sort and filters in the address, as Documents' are; never which
   // collection, which is the page's own.
-  const view: TableView = { ...viewFrom(params, role), collection: '' };
+  const view: TableView = {
+    ...spelledAsKnown(viewFrom(params, role), props.known.tags),
+    collection: [],
+  };
   const setView = (next: TableView) =>
-    setParams(paramsOf({ ...next, collection: '' }), { replace: true });
+    setParams(paramsOf({ ...next, collection: [] }), { replace: true });
   const info = session.info;
   const holder: Holder | null = info
     ? { household: info.household_id, member: info.member_id }
     : null;
-  const pages = usePages({ ...view, collection: scope.collection.id }, holder);
+  const pages = usePages({ ...view, collection: [scope.collection.id] }, holder);
   const { reload } = pages;
   const seen = useRef(refresh);
   useEffect(() => {
@@ -637,56 +643,33 @@ function countWords(pages: Pages, view: TableView): string {
   return filtersOn(view) > 0 ? `${n} match these filters` : n;
 }
 
-/** Each filter's choices, as its select offers them: "All …" first. */
+/** What each filter with nothing chosen means: its button's words then. */
+export const FILTER_ANY: Record<FilterKey, string> = {
+  person: 'All people',
+  kind: 'All kinds',
+  status: 'Any status',
+  visibility: 'Anyone can see',
+  collection: 'All collections',
+  tag: 'All tags',
+  label: 'Any detail',
+  sensitive: 'Sensitive or not',
+};
+
+/**
+ * Each filter's choices, any of which may be ticked (0.9.0-dev.92): each
+ * named in words, never an id or a key. One chosen that is not among them
+ * (a hidden kind, a tag a link asked for) is still offered, by its name.
+ */
 export function filterChoices(
   key: FilterKey,
   known: Known,
-  view: TableView,
+  view: Pick<TableView, FilterKey>,
   /** Documents' own table has no notes, so no Note among its kinds. */
   withNotes = true,
-): Array<{ value: string; label: string }> {
-  const choices = singleChoices(key, known, view, withNotes);
-  // Several at once, as a merged cabinet folder asks (0.9.0, C1): one
-  // choice for them all, named in words — never ids or keys.
-  // A caller may give a view of only some filters (a test, a sheet's draft).
-  const value: string | undefined = view[key];
-  if (!value?.includes(',') || choices.some((c) => c.value === value) || key === 'tag') {
-    return choices;
-  }
-  const one = (v: string): string => {
-    switch (key) {
-      case 'person':
-        return v === HOUSEHOLD_MEMBER_FILTER
-          ? THE_HOUSEHOLD
-          : v === NOBODY_MEMBER_FILTER
-            ? NOT_SURE_YET
-            : (known.members.find((m) => m.id === v)?.display_name ?? 'someone in the family');
-      case 'kind':
-        return known.types.find((t) => t.key === v)?.label ?? 'another kind';
-      case 'status':
-        return STATUS_WORDS[v] ?? 'another status';
-      case 'visibility':
-        return VISIBILITY_WORDS[v as Visibility] ?? 'another audience';
-      case 'sensitive':
-        return v === 'yes' ? SENSITIVE_LABEL : 'Not sensitive';
-      default:
-        return choices.find((c) => c.value === v)?.label ?? v;
-    }
-  };
-  return [...choices, { value, label: value.split(',').map(one).join(' or ') }];
-}
-
-/** Each filter's choices of one value each. */
-function singleChoices(
-  key: FilterKey,
-  known: Known,
-  view: TableView,
-  withNotes: boolean,
 ): Array<{ value: string; label: string }> {
   switch (key) {
     case 'person':
       return [
-        { value: '', label: 'All people' },
         // The household's, and those nobody is chosen for yet (0.9.0).
         { value: HOUSEHOLD_MEMBER_FILTER, label: THE_HOUSEHOLD },
         ...known.members.map((m) => ({ value: m.id, label: m.display_name })),
@@ -694,59 +677,130 @@ function singleChoices(
       ];
     case 'kind': {
       const kinds = known.types
-        .filter((t) => !t.hidden || t.key === view.kind)
+        .filter((t) => !t.hidden || view.kind.includes(t.key))
         .filter((t) => withNotes || t.key !== NOTE_KIND)
         .sort((a, b) => a.label.localeCompare(b.label));
-      return [
-        { value: '', label: 'All kinds' },
-        ...kinds.map((t) => ({ value: t.key, label: t.label })),
-      ];
+      return kinds.map((t) => ({ value: t.key, label: t.label }));
     }
     case 'status':
-      return [
-        { value: '', label: 'Any status' },
-        ...Object.entries(STATUS_WORDS).map(([value, label]) => ({ value, label })),
-      ];
+      return Object.entries(STATUS_WORDS).map(([value, label]) => ({ value, label }));
     case 'visibility':
-      return [
-        { value: '', label: 'Anyone can see' },
-        ...(['household', 'adults', 'private'] as const).map((v) => ({
-          value: v,
-          label: VISIBILITY_WORDS[v],
-        })),
-      ];
+      return (['household', 'adults', 'private'] as const).map((v) => ({
+        value: v,
+        label: VISIBILITY_WORDS[v],
+      }));
     case 'collection':
       return [
-        { value: '', label: 'All collections' },
         ...known.collections.map((c) => ({ value: c.id, label: c.name })),
         { value: 'none', label: 'In no collection' },
       ];
     case 'tag':
       // A detail tag as it is shown: "Locker · 12" (0.9.0, T1).
-      return [
-        { value: '', label: 'All tags' },
-        ...[...new Set([...known.tags, ...(view.tag ? [view.tag] : [])])].map((t) => ({
-          value: t,
-          label: tagWords(t).text,
-        })),
-      ];
+      return [...new Set([...known.tags, ...view.tag])].map((t) => ({
+        value: t,
+        label: tagWords(t).text,
+      }));
     case 'label':
       // Every document with a detail of this label, whatever its value (T1).
-      return [{ value: '', label: 'Any detail' }, ...detailLabels(known.tags, view.label)];
+      return detailLabels(known.tags, view.label);
     case 'sensitive':
       // Sensitive, all said (0.9.0, AIR2).
       return [
-        { value: '', label: 'Sensitive or not' },
         { value: 'yes', label: SENSITIVE_LABEL },
         { value: 'no', label: 'Not sensitive' },
       ];
   }
 }
 
+/**
+ * A value chosen, in words, as its chip says it: by the reader's own names
+ * where the value is one of theirs, else a word that names nothing of
+ * anybody's (a person or a collection the reader is not given).
+ */
+export function choiceWords(key: FilterKey, value: string, known: Known): string {
+  const offered = filterChoices(key, known, {
+    person: [],
+    kind: [value],
+    status: [],
+    visibility: [],
+    collection: [],
+    tag: [value],
+    label: [value],
+    sensitive: [],
+  });
+  return offered.find((c) => c.value === value)?.label ?? unknownWords(key, value);
+}
+
+/**
+ * A value a filter cannot name, in words that name nothing of anybody's:
+ * a person or a collection the reader is not given (or gone, or not yet
+ * loaded), never their id; a tag or a detail by itself.
+ */
+export function unknownWords(key: FilterKey, value: string): string {
+  switch (key) {
+    case 'person':
+      return 'someone in the family';
+    case 'kind':
+      return 'another kind';
+    case 'collection':
+      return 'a collection';
+    case 'status':
+      return 'another status';
+    case 'visibility':
+      return 'another audience';
+    case 'sensitive':
+      return value === 'yes' ? SENSITIVE_LABEL : 'Not sensitive';
+    case 'tag':
+      return tagWords(value).text;
+    case 'label':
+      return value;
+  }
+}
+
+/** The find box's name, for the filters whose lists grow long. */
+const FIND_WORDS: Partial<Record<FilterKey, string>> = {
+  kind: 'Find a kind',
+  tag: 'Find a tag',
+  label: 'Find a detail',
+  person: 'Find a person',
+  collection: 'Find a collection',
+};
+
+/**
+ * One of the table's filters, as a list of boxes (0.9.0-dev.92): named in
+ * words, never more than the vault takes or the address carries.
+ */
+function TableFilter(props: {
+  k: FilterKey;
+  id: string;
+  view: TableView;
+  known: Known;
+  withNotes: boolean;
+  inline?: boolean;
+  onChange: (values: string[]) => void;
+}) {
+  const { k, view } = props;
+  return (
+    <MultiFilter
+      id={props.id}
+      inline={props.inline}
+      label={FILTER_LABELS[k]}
+      any={FILTER_ANY[k]}
+      values={view[k]}
+      options={filterChoices(k, props.known, view, props.withNotes)}
+      unknown={(v) => unknownWords(k, v)}
+      find={FIND_WORDS[k]}
+      field={k}
+      room={ADDRESS_ROOM - paramsOf(view).toString().length}
+      onChange={props.onChange}
+    />
+  );
+}
+
 /** The labels of the detail tags the reader can see: "Locker", by "locker". */
 function detailLabels(
   tags: readonly string[],
-  chosen: string,
+  chosen: readonly string[],
 ): Array<{ value: string; label: string }> {
   const labels = new Map<string, string>();
   for (const t of tags) {
@@ -754,10 +808,29 @@ function detailLabels(
     const d = tagDetail(t);
     if (shown && d) labels.set(tagLabelKey(d.label), shown);
   }
-  if (chosen && !labels.has(tagLabelKey(chosen))) labels.set(tagLabelKey(chosen), chosen);
+  for (const c of chosen) if (!labels.has(tagLabelKey(c))) labels.set(tagLabelKey(c), c);
   return [...labels]
     .sort((a, b) => a[1].localeCompare(b[1]))
     .map(([value, label]) => ({ value, label }));
+}
+
+/**
+ * The choices made in the table's filters, a chip each (0.9.0-dev.92):
+ * "Person: Sam", "Kind: Passport", each taken off by itself.
+ */
+export function choiceChips(
+  view: TableView,
+  setView: (v: TableView) => void,
+  known: Known,
+  keys: readonly FilterKey[],
+): Chip[] {
+  return keys.flatMap((k) =>
+    view[k].map((v) => ({
+      key: `${k}:${v}`,
+      words: `${FILTER_LABELS[k]}: ${choiceWords(k, v, known)}`,
+      clear: () => setView({ ...view, [k]: view[k].filter((x) => x !== v) }),
+    })),
+  );
 }
 
 export const FILTER_LABELS: Record<FilterKey, string> = {
@@ -786,13 +859,14 @@ function filtersFor(known: Known, scoped = false): FilterKey[] {
 }
 
 /**
- * What a cabinet's folder asked that the table has no select for (0.9.0,
- * C1): a topic, a date range, who issued it, where it is kept, Essential,
- * and its other tags. Each said, and taken off by itself; and, where the
- * folder asked for its notes too, that the table's count may differ.
+ * What a cabinet's folder asked that the table has no filter for (0.9.0,
+ * C1): a topic, a date range, who issued it, where it is kept, Essential.
+ * Each said as chips, a topic or an issuer one each (0.9.0-dev.92), each
+ * taken off by itself; and, where the folder asked for its notes too, that
+ * the table's count may differ. Its people, kinds and tags are the table's
+ * own filters' choices, chips of their own.
  */
-export function FolderChips(props: { view: TableView; setView: (v: TableView) => void }) {
-  const { view, setView } = props;
+export function useFolderChips(view: TableView, setView: (v: TableView) => void): Chip[] {
   const f = view.folder;
   const k = f.keys;
   // Who issued it, by the household's names (0.9.0-dev.91): read only where a folder asks it.
@@ -803,16 +877,17 @@ export function FolderChips(props: { view: TableView; setView: (v: TableView) =>
     async (t) => (asksIssuer ? (await api.issuerGroups(t)).items : []),
     [authVersion, asksIssuer, issuerChanges],
   );
-  const issuerChipWords = (asked: string) => {
-    const keys = asked.split(',').filter((x) => x !== '');
-    const named = keys
-      .filter((x) => x !== NO_ISSUER)
-      .map(
-        (x) => issuers?.find((g) => g.key === x || g.members.some((m) => m.key === x))?.name ?? x,
-      );
-    const none = keys.includes(NO_ISSUER);
-    if (named.length === 0) return NO_ISSUER_GIVEN;
-    return `From ${named.join(' or ')}${none ? ', or no issuer given' : ''}`;
+  const issuerChipWords = (key: string) =>
+    key === NO_ISSUER
+      ? NO_ISSUER_GIVEN
+      : `From ${issuers?.find((g) => g.key === key || g.members.some((m) => m.key === key))?.name ?? key}`;
+  /** One of a folder's keys taken off, the rest kept (a topic, an issuer). */
+  const withoutKey = (k: 'category' | 'issuer', key: string) => {
+    const rest = keysOf(f.keys[k]).filter((x) => x !== key);
+    const keys = { ...f.keys };
+    if (rest.length > 0) keys[k] = rest.join(',');
+    else delete keys[k];
+    setView({ ...view, folder: { ...f, keys } });
   };
   const without = (...drop: FolderKey[]) => {
     const keys = { ...k };
@@ -823,16 +898,12 @@ export function FolderChips(props: { view: TableView; setView: (v: TableView) =>
     const words = rangeWords(k[from], k[to]);
     return words ? [{ key: from, words: `${label} ${words}`, clear: () => without(from, to) }] : [];
   };
-  const chips = [
-    ...(k.category
-      ? [
-          {
-            key: 'category',
-            words: `Topic: ${categoriesWords(k.category)}`,
-            clear: () => without('category'),
-          },
-        ]
-      : []),
+  return [
+    ...keysOf(k.category).map((topic) => ({
+      key: `category:${topic}`,
+      words: `Topic: ${categoriesWords(topic)}`,
+      clear: () => withoutKey('category', topic),
+    })),
     ...range('dated_from', 'dated_to', 'Dated'),
     ...range('issued_from', 'issued_to', 'Issued'),
     ...range('added_from', 'added_to', 'Added'),
@@ -841,9 +912,11 @@ export function FolderChips(props: { view: TableView; setView: (v: TableView) =>
       ? [{ key: 'issued_by', words: `From ${k.issued_by}`, clear: () => without('issued_by') }]
       : []),
     // Who issued it, by key, as the household names it (0.9.0-dev.91).
-    ...(k.issuer
-      ? [{ key: 'issuer', words: issuerChipWords(k.issuer), clear: () => without('issuer') }]
-      : []),
+    ...keysOf(k.issuer).map((key) => ({
+      key: `issuer:${key}`,
+      words: issuerChipWords(key),
+      clear: () => withoutKey('issuer', key),
+    })),
     ...(k.location
       ? [{ key: 'location', words: `Kept at ${k.location}`, clear: () => without('location') }]
       : []),
@@ -875,34 +948,16 @@ export function FolderChips(props: { view: TableView; setView: (v: TableView) =>
           },
         ]
       : []),
-    ...f.tags.map((t, i) => ({
-      key: `tag-${i}`,
-      words: `Tag: ${tagWords(t).text}`,
-      clear: () => setView({ ...view, folder: { ...f, tags: f.tags.filter((_, j) => j !== i) } }),
-    })),
   ];
-  return (
-    <>
-      {chips.map((c) => (
-        <span key={c.key} className="folder-chip">
-          {c.words}
-          <button
-            type="button"
-            className="btn btn-quiet btn-small"
-            aria-label={`Take off the filter ${c.words}`}
-            onClick={c.clear}
-          >
-            <span aria-hidden="true">×</span>
-          </button>
-        </span>
-      ))}
-      {f.partial && (
-        <p className="muted folder-partial">
-          This folder asks for more than the table can show; its count may differ.
-        </p>
-      )}
-    </>
-  );
+}
+
+/** Said where a folder asked for its notes too (C1): the table's count may differ. */
+function FolderPartial({ view }: { view: TableView }) {
+  return view.folder.partial ? (
+    <p className="muted folder-partial">
+      This folder asks for more than the table can show; its count may differ.
+    </p>
+  ) : null;
 }
 
 // ------------------------------------------------------------- wide
@@ -1034,8 +1089,11 @@ function TableDocuments(props: {
     const sort: DocumentSort = key;
     setView({ ...view, sort, dir: view.sort === sort && view.dir === 'asc' ? 'desc' : 'asc' });
   };
-  const setFilter = (key: FilterKey, value: string) => setView({ ...view, [key]: value });
+  const setFilter = (key: FilterKey, values: string[]) => setView({ ...view, [key]: values });
   const anyFilter = filtersOn(view) > 0;
+  const filterKeys = filtersFor(known, scope !== undefined);
+  const folderChips = useFolderChips(view, setView);
+  const filtersRef = useRef<HTMLDivElement>(null);
 
   const toggleColumn = (key: ColumnKey, on: boolean) => {
     const next = new Set(hidden);
@@ -1181,44 +1239,30 @@ function TableDocuments(props: {
           />
         </div>
       </div>
-      <div className="filters" role="group" aria-label="Filters">
-        {filtersFor(known, scope !== undefined).map((k) => (
-          <FilterSelect
+      <div ref={filtersRef} className="filters" role="group" aria-label="Filters" tabIndex={-1}>
+        {filterKeys.map((k) => (
+          <TableFilter
             key={k}
+            k={k}
             id={`filter-${k}`}
-            label={FILTER_LABELS[k]}
-            value={view[k]}
-            options={filterChoices(k, known, view, scope !== undefined)}
+            view={view}
+            known={known}
+            withNotes={scope !== undefined}
             onChange={(v) => setFilter(k, v)}
           />
         ))}
-        <FolderChips view={view} setView={setView} />
-        {anyFilter && (
-          <button
-            type="button"
-            className="btn btn-quiet btn-small"
-            onClick={() =>
-              setView({
-                ...view,
-                person: '',
-                kind: '',
-                status: '',
-                visibility: '',
-                collection: '',
-                tag: '',
-                label: '',
-                sensitive: '',
-                folder: NO_FOLDER,
-              })
-            }
-          >
-            Clear filters
-          </button>
-        )}
         <p className="muted table-count" role="status">
           {countWords(pages, view)}
         </p>
       </div>
+      {/* Always there, so the focus has somewhere to go when the last chip does. */}
+      <ChipRow
+        label="Filters chosen"
+        chips={[...choiceChips(view, setView, known, FILTER_KEYS), ...folderChips]}
+        onClearAll={() => setView(withoutFilters(view))}
+        fallback={filtersRef}
+        note={view.folder.partial ? <FolderPartial view={view} /> : undefined}
+      />
       <ErrorNote message={pages.error ?? rowError} />
       {outcome && (
         <OutcomeNote
@@ -3012,6 +3056,7 @@ function PhoneDocuments(props: {
   const [filtering, setFiltering] = useState(false);
   const filtersButton = useRef<HTMLButtonElement>(null);
   const on = filtersOn(view);
+  const folderChips = useFolderChips(view, props.setView);
   // A row its ⋯ took away (to the Trash) is chosen no longer.
   const { drop } = select;
   const ids = pages.items.map((d) => d.id).join(',');
@@ -3040,6 +3085,12 @@ function PhoneDocuments(props: {
     scope?.onChanged();
   };
 
+  // The sort, shown as chosen at once while the address catches up (0.9.0-dev.92).
+  const [sortShown, setSort] = useAtOnce(`${view.sort}:${view.dir}`, (v) => {
+    const [sort, dir] = v.split(':') as [DocumentSort, SortDirection];
+    props.setView({ ...view, sort, dir });
+  });
+
   const filtersAction = (
     <button
       ref={filtersButton}
@@ -3056,12 +3107,14 @@ function PhoneDocuments(props: {
       <p className="muted" role="status" tabIndex={-1} data-landing>
         {countWords(pages, view)}
       </p>
-      {/* A cabinet folder's other filters (C1): seen, and each taken off, here too. */}
-      {folderChipCount(view.folder) > 0 || view.folder.partial ? (
-        <div className="filters" role="group" aria-label="Folder filters">
-          <FolderChips view={view} setView={props.setView} />
-        </div>
-      ) : null}
+      {/* The choices made, and a cabinet folder's other filters (C1): seen, and each taken off, here too. */}
+      <ChipRow
+        label="Filters chosen"
+        chips={[...choiceChips(view, props.setView, known, FILTER_KEYS), ...folderChips]}
+        onClearAll={() => props.setView(withoutFilters(view))}
+        fallback={filtersButton}
+        note={view.folder.partial ? <FolderPartial view={view} /> : undefined}
+      />
       <ErrorNote message={pages.error ?? removeError} />
       {(select.on || pages.items.length > 0) && select.bar}
       {trashed.note}
@@ -3124,20 +3177,19 @@ function PhoneDocuments(props: {
             <Select
               id="phone-sort"
               label="Sort by"
-              value={`${view.sort}:${view.dir}`}
+              value={sortShown}
               options={sortChoices}
-              onChange={(v) => {
-                const [sort, dir] = v.split(':') as [DocumentSort, SortDirection];
-                props.setView({ ...view, sort, dir });
-              }}
+              onChange={setSort}
             />
             {filtersFor(known, scope !== undefined).map((k) => (
-              <Select
+              <TableFilter
                 key={k}
+                k={k}
+                inline
                 id={`phone-filter-${k}`}
-                label={FILTER_LABELS[k]}
-                value={view[k]}
-                options={filterChoices(k, known, view, scope !== undefined)}
+                view={view}
+                known={known}
+                withNotes={scope !== undefined}
                 onChange={(v) => props.setView({ ...view, [k]: v })}
               />
             ))}
@@ -3147,24 +3199,8 @@ function PhoneDocuments(props: {
             <div className="row">
               <Button onClick={() => setFiltering(false)}>Done</Button>
               {on > 0 && (
-                <Button
-                  kind="quiet"
-                  onClick={() =>
-                    props.setView({
-                      ...view,
-                      person: '',
-                      kind: '',
-                      status: '',
-                      visibility: '',
-                      collection: '',
-                      tag: '',
-                      label: '',
-                      sensitive: '',
-                      folder: NO_FOLDER,
-                    })
-                  }
-                >
-                  Clear filters
+                <Button kind="quiet" onClick={() => props.setView(withoutFilters(view))}>
+                  Clear all
                 </Button>
               )}
             </div>

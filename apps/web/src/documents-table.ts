@@ -1,5 +1,8 @@
 import {
   can,
+  normaliseTag,
+  tagKey,
+  tagLabelKey,
   formatDate,
   isDocumentSort,
   mayChangeVisibilityAtAll,
@@ -106,22 +109,26 @@ export function columnsFor(
 
 // ------------------------------------------------------------- the address
 
-/** What the table shows: its sort, and each filter (empty for none). */
+/**
+ * What the table shows: its sort, and each filter's choices (none for
+ * any). Since 0.9.0-dev.92 each filter takes several: within one, any of
+ * them; across filters, all of them.
+ */
 export interface TableView {
   sort: DocumentSort;
   dir: SortDirection;
-  /** A person's id, or `none`. */
-  person: string;
-  kind: string;
-  status: string;
-  visibility: string;
-  /** A collection's id, or `none`. */
-  collection: string;
-  tag: string;
-  /** A detail tag's label, any value (0.9.0, T1): "locker". */
-  label: string;
-  /** Sensitive, all said (0.9.0, AIR2): `yes`, `no`, or '' for either. */
-  sensitive: string;
+  /** People's ids, `none` (Not sure yet) or `household`. */
+  person: string[];
+  kind: string[];
+  status: string[];
+  visibility: string[];
+  /** Collections' ids, or `none`. */
+  collection: string[];
+  tag: string[];
+  /** Details' labels, any value (0.9.0, T1): "locker". */
+  label: string[];
+  /** Sensitive, all said (0.9.0, AIR2): `yes`, `no`; none or both for either. */
+  sensitive: string[];
   /**
    * The rest of what a cabinet's folder asks (0.9.0, C1), carried into the
    * table whole: said above it as chips, each taken off by itself.
@@ -154,8 +161,6 @@ export type FolderKey = (typeof FOLDER_KEYS)[number];
 
 export interface FolderPart {
   keys: Partial<Record<FolderKey, string>>;
-  /** Tags past the first (the Tag filter's): any of them. */
-  tags: string[];
   /**
    * The folder asked something the table always leaves out — its notes —
    * so the table may count fewer than the folder does.
@@ -163,7 +168,7 @@ export interface FolderPart {
   partial: boolean;
 }
 
-export const NO_FOLDER: FolderPart = { keys: {}, tags: [], partial: false };
+export const NO_FOLDER: FolderPart = { keys: {}, partial: false };
 
 const DAY = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -178,6 +183,29 @@ export const FILTER_KEYS = [
   'sensitive',
 ] as const;
 export type FilterKey = (typeof FILTER_KEYS)[number];
+
+/**
+ * The filters whose values are words, never split at a comma (a tag, a
+ * detail's label: a comma may be a part of one); the rest are keys, which
+ * an address may give comma-separated too, as a cabinet folder does.
+ */
+const WORD_FILTERS: readonly FilterKey[] = ['tag', 'label'];
+
+/** Every filter taken off, the folder's too: Clear all. */
+export function withoutFilters(view: TableView): TableView {
+  return {
+    ...view,
+    person: [],
+    kind: [],
+    status: [],
+    visibility: [],
+    collection: [],
+    tag: [],
+    label: [],
+    sensitive: [],
+    folder: NO_FOLDER,
+  };
+}
 
 const STATUSES: readonly string[] = [
   'expired',
@@ -194,16 +222,23 @@ const VISIBILITIES: readonly string[] = ['household', 'adults', 'private'];
  * The view an address asks for. A sort the reader may not have — by where
  * originals are kept, for a viewer or a guest — or one that is not there is
  * the title's: a link never shows them what is not theirs, nor fails. A
- * filter may hold several values, comma-separated, as a merged folder asks
- * (any of them); each must be one there is.
+ * filter may hold several values (0.9.0-dev.92), each given once
+ * (`person=a&person=b`); a filter of keys comma-separated too, as a merged
+ * folder asks (any of them). A value that is not one there is is left out.
  */
 export function viewFrom(params: URLSearchParams, role: Role): TableView {
   const sort = params.get('sort');
-  const pick = (k: string, ok?: readonly string[]) => {
-    const v = params.get(k) ?? '';
-    return ok && !v.split(',').every((x) => ok.includes(x)) ? '' : v;
+  const pick = (k: FilterKey, ok?: readonly string[]): string[] => {
+    const given = params.getAll(k);
+    const all = WORD_FILTERS.includes(k) ? given : given.flatMap((v) => v.split(','));
+    // A tag as the vault keeps it, a label by its key (0.9.0-dev.92): what
+    // a folder or a link asks ticks the box there is, never a second one.
+    const said = all
+      .map((v) => (k === 'tag' ? normaliseTag(v) : k === 'label' ? tagLabelKey(v) : v.trim()))
+      .filter((v) => v !== '');
+    const kept = k === 'tag' ? onceEach(said, tagKey) : [...new Set(said)];
+    return ok ? kept.filter((v) => ok.includes(v)) : kept;
   };
-  const tags = params.getAll('tag').filter((t) => t !== '');
   const keys: FolderPart['keys'] = {};
   for (const k of FOLDER_KEYS) {
     const v = params.get(k);
@@ -231,11 +266,35 @@ export function viewFrom(params: URLSearchParams, role: Role): TableView {
     status: pick('status', STATUSES),
     visibility: pick('visibility', VISIBILITIES),
     collection: pick('collection'),
-    tag: tags[0] ?? '',
+    tag: pick('tag'),
     label: pick('label'),
     sensitive: pick('sensitive', SENSITIVE_FILTER_VALUES),
-    folder: { keys, tags: tags.slice(1), partial: params.get('partial') === '1' },
+    folder: { keys, partial: params.get('partial') === '1' },
   };
+}
+
+/** Each value once, by its key: the first spelling kept. */
+function onceEach(values: readonly string[], key: (v: string) => string): string[] {
+  const seen = new Set<string>();
+  return values.filter((v) => {
+    const k = key(v);
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
+}
+
+/**
+ * A view's tags as the household spells them (0.9.0-dev.92): a tag asked
+ * in another case is the box there is for it, not a second one.
+ */
+export function spelledAsKnown(view: TableView, known: readonly string[]): TableView {
+  if (view.tag.length === 0) return view;
+  const tag = onceEach(
+    view.tag.map((t) => known.find((k) => tagKey(k) === tagKey(t)) ?? t),
+    tagKey,
+  );
+  return { ...view, tag };
 }
 
 /** The address for a view: only what differs from the title, A to Z, unfiltered. */
@@ -243,8 +302,8 @@ export function paramsOf(view: TableView): URLSearchParams {
   const out = new URLSearchParams();
   if (view.sort !== 'title') out.set('sort', view.sort);
   if (view.dir === 'desc') out.set('dir', 'desc');
-  for (const k of FILTER_KEYS) if (view[k]) out.set(k, view[k]);
-  for (const t of view.folder.tags) out.append('tag', t);
+  // Each choice given once: a link to the same view, as the vault is asked.
+  for (const k of FILTER_KEYS) for (const v of view[k]) out.append(k, v);
   for (const k of FOLDER_KEYS) {
     const v = view.folder.keys[k];
     if (v) out.set(k, v);
@@ -286,18 +345,20 @@ export function queryOf(
   opts: { cursor?: string | null; limit?: number } = {},
 ): DocumentListParams {
   const k = view.folder.keys;
-  const tags = [view.tag, ...view.folder.tags].filter((t) => t !== '');
+  // None is any; one, as the filter always was; several, each given once.
+  const one = <T extends string>(v: readonly string[]): T | readonly T[] | undefined =>
+    v.length === 0 ? undefined : v.length === 1 ? (v[0] as T) : (v as readonly T[]);
   return {
     sort: view.sort,
     direction: view.dir,
-    member_id: view.person || undefined,
-    type_key: view.kind || undefined,
-    status: (view.status || undefined) as StatusValue | undefined,
-    visibility: (view.visibility || undefined) as Visibility | undefined,
-    collection_id: view.collection || undefined,
-    tag: tags.length > 1 ? tags : tags[0],
-    tag_label: view.label || undefined,
-    sensitive: view.sensitive || undefined,
+    member_id: one(view.person),
+    type_key: one(view.kind),
+    status: one<StatusValue>(view.status),
+    visibility: one<Visibility>(view.visibility),
+    collection_id: one(view.collection),
+    tag: one(view.tag),
+    tag_label: one(view.label),
+    sensitive: one(view.sensitive),
     category: k.category,
     issued_by: k.issued_by,
     issuer: k.issuer,
@@ -318,7 +379,11 @@ export function queryOf(
   };
 }
 
-/** How many things a folder's chips say it asks. */
+/** A folder's filter of keys as its values: `financial,tax` is two. */
+export const keysOf = (v: string | undefined): string[] =>
+  (v ?? '').split(',').filter((x) => x !== '');
+
+/** How many chips a folder's filters are: a topic or an issuer one each (0.9.0-dev.92). */
 export function folderChipCount(f: FolderPart): number {
   const k = f.keys;
   const ranges = (['added', 'issued', 'expires', 'dated'] as const).filter(
@@ -326,24 +391,17 @@ export function folderChipCount(f: FolderPart): number {
   ).length;
   return (
     ranges +
-    (
-      [
-        'category',
-        'issued_by',
-        'issuer',
-        'location',
-        'original_place',
-        'source_folder',
-        'essential',
-      ] as const
-    ).filter((x) => k[x]).length +
-    f.tags.length
+    keysOf(k.category).length +
+    keysOf(k.issuer).length +
+    (['issued_by', 'location', 'original_place', 'source_folder', 'essential'] as const).filter(
+      (x) => k[x],
+    ).length
   );
 }
 
-/** How many filters are on: what the phone's Filters button says. */
+/** How many choices are made: what the phone's Filters button says, a chip each. */
 export function filtersOn(view: TableView): number {
-  return FILTER_KEYS.filter((k) => view[k]).length + folderChipCount(view.folder);
+  return FILTER_KEYS.reduce((n, k) => n + view[k].length, 0) + folderChipCount(view.folder);
 }
 
 // ------------------------------------------------------------- remembered

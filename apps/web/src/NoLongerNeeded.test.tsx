@@ -3,6 +3,7 @@ import axe from 'axe-core';
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { filterSays, openFilter, tick } from './filter-testing.js';
 import { App } from './App.js';
 import { fresh, installFakeApi, ME, PASSPORT, signedIn, type FakeState } from './test-api.js';
 
@@ -401,22 +402,21 @@ describe('no longer needed, on the web (0.9.0)', () => {
     atWidth(1280);
     const state = open('/documents', [{ ...MARKED }, { ...GREEN }]);
     const filters = await screen.findByRole('group', { name: 'Filters' });
-    const filter = within(filters).getByRole('combobox', { name: 'Status' });
-    const choices = within(filter)
-      .getAllByRole('option')
-      .map((o) => o.textContent);
+    expect(filterSays(filters, 'Status')).toBe('Any status');
+    const choices = within(openFilter(filters, 'Status'))
+      .getAllByRole('checkbox')
+      .map((o) => o.closest('.check')?.textContent);
     expect(choices).toContain('No longer needed');
-    expect(choices[0]).toBe('Any status');
     // Any status: it is listed, with its status.
     await screen.findByText('EAD card');
-    fireEvent.change(filter, { target: { value: 'no_longer_needed' } });
+    tick(filters, 'Status', 'No longer needed');
     await waitFor(() =>
       expect(state.calls.some((c) => c.url.includes('status=no_longer_needed'))).toBe(true),
     );
     await waitFor(() => expect(screen.queryByText('Green card')).toBeNull());
     expect(screen.getByText('EAD card')).toBeInTheDocument();
     // Expiring soon: not among them.
-    fireEvent.change(filter, { target: { value: 'expiring_soon' } });
+    tick(filters, 'Status', 'No longer needed', 'Expiring soon');
     await waitFor(() => expect(screen.queryByText('EAD card')).toBeNull());
   });
 

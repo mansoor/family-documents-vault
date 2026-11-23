@@ -19,12 +19,15 @@ export const ACTIVITY_CSV_MAX_LINES = 50_000;
 /** Who the Who filter asks for that is not one of the family the reader is given. */
 export const ACTIVITY_ANYBODY_ELSE = 'else';
 
-/** The Activity page's filters, each empty for any: as its address has them. */
+/**
+ * The Activity page's filters, each empty for any: as its address has them.
+ * Who and what may each hold several (0.9.0-dev.92): any of them.
+ */
 export interface ActivityFilters {
-  /** A member's id, or `else` (`ACTIVITY_ANYBODY_ELSE`). */
-  who: string;
-  /** An `ActivityKind`. */
-  kind: string;
+  /** Members' ids, or `else` (`ACTIVITY_ANYBODY_ELSE`): any of them. */
+  who: readonly string[];
+  /** `ActivityKind`s: any of them. */
+  kind: readonly string[];
   /** Days, YYYY-MM-DD, on the household's calendar, as its times are said. */
   from: string;
   to: string;
@@ -32,9 +35,9 @@ export interface ActivityFilters {
 
 /**
  * Whether a line is one the filters keep, as the Activity page sifts the
- * lines it has loaded and the export the lines it writes: who did it (one
- * of the family the reader is given, by id, or anybody else), what sort of
- * thing it was, and the day it was on (`dayOf`, on the household's
+ * lines it has loaded and the export the lines it writes: who did it (any
+ * of the family asked, by id, or anybody else), what sort of thing it was
+ * (any of those asked), and the day it was on (`dayOf`, on the household's
  * calendar; asked only when a day is).
  */
 export function activityLineKept(
@@ -43,12 +46,12 @@ export function activityLineKept(
   isFamily: (memberId: string) => boolean,
   dayOf: (iso: string) => string,
 ): boolean {
-  if (f.who) {
+  if (f.who.length > 0) {
     const id = l.actor_member_id ?? null;
     const known = id !== null && isFamily(id);
-    if (f.who === ACTIVITY_ANYBODY_ELSE ? known : id !== f.who) return false;
+    if (!f.who.some((w) => (w === ACTIVITY_ANYBODY_ELSE ? !known : id === w))) return false;
   }
-  if (f.kind && l.kind !== f.kind) return false;
+  if (f.kind.length > 0 && (l.kind === undefined || !f.kind.includes(l.kind))) return false;
   const day = f.from || f.to ? dayOf(l.at) : '';
   if (f.from && day < f.from) return false;
   if (f.to && day > f.to) return false;
@@ -226,19 +229,30 @@ export function activityCsvFileName(today: string): string {
   return `activity-vault-${today}.csv`;
 }
 
-/** What `GET /api/v1/audit/export` is asked: the page's filters, and one document's lines. */
+/**
+ * What `GET /api/v1/audit/export` is asked: the page's filters, and one
+ * document's lines. Several who and kinds (0.9.0-dev.92,
+ * `features.multi_filters`): each given once, any of them.
+ */
 export interface ActivityExportAsk {
-  who?: string | undefined;
-  kind?: string | undefined;
+  who?: string | readonly string[] | undefined;
+  kind?: string | readonly string[] | undefined;
   from?: string | undefined;
   to?: string | undefined;
   /** One document's lines (as `?document=` on the page, 0.9.0, DA). */
   document?: string | undefined;
 }
 
-/** The export's query, with only the filters asked: `who=…&kind=opened&from=2026-11-01`. */
+/**
+ * The export's query, with only the filters asked: `who=…&kind=opened&from=2026-11-01`;
+ * several of one, the field once for each (`kind=opened&kind=shared`).
+ */
 export function activityExportQuery(ask: ActivityExportAsk): string {
   return (['who', 'kind', 'from', 'to', 'document'] as const)
-    .flatMap((k) => (ask[k] ? [`${k}=${encodeURIComponent(ask[k])}`] : []))
+    .flatMap((k) => {
+      const v = ask[k];
+      const all: readonly string[] = v === undefined ? [] : typeof v === 'string' ? [v] : v;
+      return all.filter((x) => x !== '').map((x) => `${k}=${encodeURIComponent(x)}`);
+    })
     .join('&');
 }
