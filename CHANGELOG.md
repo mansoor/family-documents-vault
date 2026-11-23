@@ -6,6 +6,12 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.9.0-dev.93] - 2026-11-23 — a clean first start
+
+### Fixed
+
+- **The first `docker compose up` of a new install no longer fails now and then** with "mkdir …/vault: file exists". The api and the worker share the vault's files volume, and on the very first start Docker fills that empty volume from the image; when both containers started at the same moment they could trip over each other. The worker now starts once the api has started.
+
 ## [0.9.0-dev.92] - 2026-11-23 — filters that take more than one choice
 
 ### Added

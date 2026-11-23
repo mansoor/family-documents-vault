@@ -267,6 +267,12 @@ services:
       # Its queue's schema and every table it reads are the migrate service's.
       migrate:
         condition: service_completed_successfully
+      # The api and the worker share vault-data. On the very first start the
+      # volume is empty and Docker fills it from the image's /data; two
+      # containers doing that at once can fail ("mkdir .../vault: file
+      # exists"). Starting after the api lets the api fill it alone.
+      api:
+        condition: service_started
 
   web:
     image: ghcr.io/mansoor/family-documents-vault/web:${FDV_VERSION:-latest}
