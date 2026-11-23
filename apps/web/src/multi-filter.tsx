@@ -35,6 +35,37 @@ import { Check } from './ui.js';
  * drawn without it (`useLayoutEffect` on what is drawn).
  */
 
+/**
+ * A value an address holds, shown as it was just set (0.9.0-dev.92): the
+ * router draws a new address in a transition, so a box or a field bound to
+ * it would spring back for a moment — a tick undone, then done again, and
+ * to a test's click no change at all. What was set is shown at once, until
+ * the address catches up (a value other than the one it was set from); then
+ * it is let go, so Back to that same address later shows the address.
+ */
+export function useAtOnce<T>(
+  value: T,
+  apply: (next: T) => void,
+  keyOf: (v: T) => string = String,
+): [T, (next: T) => void] {
+  const [set, setSet] = useState<{ from: string; value: T } | null>(null);
+  const key = keyOf(value);
+  // The address moved on: what was set is the address's now, or overtaken.
+  const [seen, setSeen] = useState(key);
+  if (seen !== key) {
+    setSeen(key);
+    setSet(null);
+  }
+  const shown = set !== null && set.from === key && seen === key ? set.value : value;
+  return [
+    shown,
+    (next) => {
+      setSet({ from: key, value: next });
+      apply(next);
+    },
+  ];
+}
+
 export interface FilterOption {
   value: string;
   label: string;
@@ -129,8 +160,14 @@ export function MultiFilter(props: {
   // focus if it went with its value (one no longer offered, unticked), once
   // the page is drawn without it.
   const pending = useRef<number | null>(null);
-  const options = withChosen(props.values, props.options, unknown);
-  const chosenKey = props.values.join('\u0000');
+  // What is chosen, shown as ticked the moment it is (`useAtOnce`).
+  const [values, setValues] = useAtOnce<readonly string[]>(
+    props.values,
+    (next) => props.onChange([...next]),
+    (v) => v.join('\u0000'),
+  );
+  const options = withChosen(values, props.options, unknown);
+  const chosenKey = values.join('\u0000');
   useLayoutEffect(() => {
     const at = pending.current;
     if (at === null) return;
@@ -143,11 +180,11 @@ export function MultiFilter(props: {
 
   const toggle = (value: string, on: boolean, at: number) => {
     const next = on
-      ? [...props.values.filter((v) => v !== value), value]
-      : props.values.filter((v) => v !== value);
+      ? [...values.filter((v) => v !== value), value]
+      : values.filter((v) => v !== value);
     pending.current = at;
     // In the order they are offered, so the address is the same however they were ticked.
-    props.onChange(options.map((o) => o.value).filter((v) => next.includes(v)));
+    setValues(options.map((o) => o.value).filter((v) => next.includes(v)));
   };
   useEffect(() => {
     if (!open) return;
@@ -171,9 +208,9 @@ export function MultiFilter(props: {
   // No more than the vault takes at once, nor an address too long to send.
   const field = props.field ?? props.id;
   const room = props.room ?? Infinity;
-  const full = props.values.length >= FILTER_VALUES_MAX;
+  const full = values.length >= FILTER_VALUES_MAX;
   const blockedOf = (value: string) =>
-    !props.values.includes(value) && (full || addressLength(field, value) > room);
+    !values.includes(value) && (full || addressLength(field, value) > room);
   const capped = options.some((o) => blockedOf(o.value));
 
   // A long list: a box to find one in; those chosen stay, to untick.
@@ -181,9 +218,9 @@ export function MultiFilter(props: {
   const want = found.trim().toLowerCase();
   const visible = options
     .map((o, i) => ({ ...o, i }))
-    .filter((o) => !want || o.label.toLowerCase().includes(want) || props.values.includes(o.value));
+    .filter((o) => !want || o.label.toLowerCase().includes(want) || values.includes(o.value));
 
-  const on = props.values.length > 0;
+  const on = values.length > 0;
   const findWords = props.find ?? `Find a ${props.label.toLowerCase()}`;
   const head =
     on || findable ? (
@@ -203,7 +240,7 @@ export function MultiFilter(props: {
             type="button"
             className="btn btn-quiet btn-small multi-filter-clear"
             onClick={() => {
-              props.onChange([]);
+              setValues([]);
               if (!props.inline) button.current?.focus();
             }}
           >
@@ -230,7 +267,7 @@ export function MultiFilter(props: {
               <Check
                 key={o.value}
                 id={`${props.id}-${o.i}`}
-                checked={props.values.includes(o.value)}
+                checked={values.includes(o.value)}
                 disabled={blocked}
                 describedBy={blocked ? capId : undefined}
                 label={o.label}
@@ -252,7 +289,7 @@ export function MultiFilter(props: {
     );
   }
 
-  const summary = filterSummary(props.label, props.any, props.values, options, unknown);
+  const summary = filterSummary(props.label, props.any, values, options, unknown);
   return (
     <div
       className="filter multi-filter"

@@ -16,7 +16,7 @@ import { Link, useSearchParams } from 'react-router';
 import { api, type Member } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
 import { useShellMode } from '../shell.js';
-import { ChipRow, MultiFilter, type Chip } from '../multi-filter.js';
+import { ChipRow, MultiFilter, useAtOnce, type Chip } from '../multi-filter.js';
 import { Button, ErrorNote, TopBar } from '../ui.js';
 import { exactWords, relativeWords, useFamilyZone } from '../family-time.js';
 import { NOTHING, PrintOut } from '../print.js';
@@ -748,17 +748,19 @@ function DayFilter(props: {
   max?: string | undefined;
   onChange: (v: string) => void;
 }) {
+  // Shown as chosen at once, while the address catches up (0.9.0-dev.92).
+  const [value, setValue] = useAtOnce(props.value, props.onChange);
   return (
     <span className="filter filter-day">
       <label htmlFor={props.id}>{props.label}</label>
       <input
         id={props.id}
         type="date"
-        className={props.value ? 'on' : undefined}
-        value={props.value}
+        className={value ? 'on' : undefined}
+        value={value}
         min={props.min}
         max={props.max}
-        onChange={(e) => props.onChange(e.target.value)}
+        onChange={(e) => setValue(e.target.value)}
       />
     </span>
   );

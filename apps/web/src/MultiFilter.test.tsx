@@ -1,7 +1,7 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { FILTER_VALUES_MAX } from '@fdv/shared';
 import axe from 'axe-core';
-import { useRef, useState } from 'react';
+import { startTransition, useRef, useState } from 'react';
 import { afterEach, describe, expect, it } from 'vitest';
 import { filterButton, filterSays, openFilter, tick } from './filter-testing.js';
 import { CAP_WORDS, ChipRow, FIND_FROM, MultiFilter, type FilterOption } from './multi-filter.js';
@@ -38,11 +38,22 @@ function Harness(props: {
   inline?: boolean;
   room?: number;
   withChips?: boolean;
+  /** Each change drawn in a transition that waits for this, as a router's may. */
+  gate?: Promise<void>;
+  /** The values, set from outside: Back to an address already seen. */
+  outside?: (set: (v: string[]) => void) => void;
 }) {
   const [values, setValues] = useState<string[]>(props.start ?? []);
+  props.outside?.(setValues);
   const fallback = useRef<HTMLDivElement>(null);
   const set = (v: string[]) => {
-    if (props.delay) window.setTimeout(() => setValues(v), props.delay);
+    const gate = props.gate;
+    if (gate) {
+      startTransition(async () => {
+        await gate;
+        startTransition(() => setValues(v));
+      });
+    } else if (props.delay) window.setTimeout(() => setValues(v), props.delay);
     else setValues(v);
   };
   const options = props.options ?? PEOPLE;
@@ -176,6 +187,57 @@ describe('a filter of several choices (0.9.0-dev.92)', () => {
     expect(group.querySelector('.multi-filter-list')).not.toBeNull();
     expect(within(group).getByRole('button', { name: 'Show all' })).toBeVisible();
     await expectAccessible();
+  });
+});
+
+describe('a box shows its tick at once, whenever the address is drawn (0.9.0-dev.92)', () => {
+  it('ticked, it is ticked straight after the click, the change still in its transition', async () => {
+    let open!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      open = resolve;
+    });
+    render(<Harness gate={gate} />);
+    const page = document.body;
+    const menu = openFilter(page, 'Person');
+    const sam = within(menu).getByRole('checkbox', { name: 'Sam' });
+    fireEvent.click(sam);
+    // The address not drawn yet: the box, the button and Show all say it already.
+    expect(sam).toBeChecked();
+    expect(filterSays(page, 'Person')).toBe('Sam');
+    expect(within(menu).getByRole('button', { name: 'Show all' })).toBeVisible();
+    fireEvent.click(within(menu).getByRole('checkbox', { name: 'Leo' }));
+    expect(within(menu).getByRole('checkbox', { name: 'Leo' })).toBeChecked();
+    expect(sam).toBeChecked();
+    // Drawn: still so.
+    await act(async () => {
+      open();
+      await gate;
+    });
+    await waitFor(() => expect(filterSays(page, 'Person')).toBe('Person · 2'));
+    expect(sam).toBeChecked();
+    // Show all, at once too.
+    fireEvent.click(within(menu).getByRole('button', { name: 'Show all' }));
+    expect(filterSays(page, 'Person')).toBe('All people');
+  });
+
+  it('once the address has caught up, Back to an address seen before shows that address', async () => {
+    let setOutside!: (v: string[]) => void;
+    render(
+      <Harness
+        outside={(set) => {
+          setOutside = set;
+        }}
+      />,
+    );
+    const page = document.body;
+    tick(page, 'Person', 'Sam');
+    expect(filterSays(page, 'Person')).toBe('Sam');
+    // Back: the address as it was, no choice.
+    act(() => setOutside([]));
+    expect(filterSays(page, 'Person')).toBe('All people');
+    expect(
+      within(openFilter(page, 'Person')).getByRole('checkbox', { name: 'Sam' }),
+    ).not.toBeChecked();
   });
 });
 

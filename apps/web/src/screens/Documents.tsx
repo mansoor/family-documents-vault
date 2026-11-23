@@ -104,7 +104,7 @@ import { storedRole } from '../session.js';
 import { moveInMenu, useShellMode } from '../shell.js';
 import { plainClick, useChangesBeside, useFlyouts, useOpenDocument } from '../flyout-context.js';
 import { None, OutcomeNote, PickAll, useGrid, type Outcome } from '../table-grid.js';
-import { ADDRESS_ROOM, ChipRow, MultiFilter, type Chip } from '../multi-filter.js';
+import { ADDRESS_ROOM, ChipRow, MultiFilter, useAtOnce, type Chip } from '../multi-filter.js';
 import {
   Button,
   Check,
@@ -3085,6 +3085,12 @@ function PhoneDocuments(props: {
     scope?.onChanged();
   };
 
+  // The sort, shown as chosen at once while the address catches up (0.9.0-dev.92).
+  const [sortShown, setSort] = useAtOnce(`${view.sort}:${view.dir}`, (v) => {
+    const [sort, dir] = v.split(':') as [DocumentSort, SortDirection];
+    props.setView({ ...view, sort, dir });
+  });
+
   const filtersAction = (
     <button
       ref={filtersButton}
@@ -3171,12 +3177,9 @@ function PhoneDocuments(props: {
             <Select
               id="phone-sort"
               label="Sort by"
-              value={`${view.sort}:${view.dir}`}
+              value={sortShown}
               options={sortChoices}
-              onChange={(v) => {
-                const [sort, dir] = v.split(':') as [DocumentSort, SortDirection];
-                props.setView({ ...view, sort, dir });
-              }}
+              onChange={setSort}
             />
             {filtersFor(known, scope !== undefined).map((k) => (
               <TableFilter
