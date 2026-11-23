@@ -31,6 +31,7 @@ import { IncomingFileScreen } from './screens/Incoming.js';
 import { JoinScreen } from './screens/Join.js';
 import { KindScreen, KindsScreen } from './screens/KindsOfDocument.js';
 import { TagsScreen } from './screens/Tags.js';
+import { IssuersScreen } from './screens/Issuers.js';
 import { CollectionScreen, CollectionsScreen } from './screens/Collections.js';
 import { NotesScreen } from './screens/Notes.js';
 import { ForgotPasswordScreen, ResetPasswordScreen } from './screens/Password.js';
@@ -434,6 +435,7 @@ export function App() {
                 <Route path="kinds/new" element={<KindScreen />} />
                 <Route path="kinds/:key" element={<KindScreen />} />
                 <Route path="tags" element={<TagsScreen />} />
+                <Route path="issuers" element={<IssuersScreen />} />
                 <Route
                   path="data"
                   element={

@@ -142,6 +142,8 @@ export function activityKind(action: string): ActivityKind {
     case 'household.ended_sharing_changed':
     case 'household.two_step_changed':
     case 'household.auto_lock_changed':
+    case 'issuer.joined': // 0.9.0-dev.91: issuers said to be the same,
+    case 'issuer.separated': // or separated.
     case 'ai_reader.changed':
     case 'ai_reader.tested':
     case 'ai_reader.send_sensitive_changed':
@@ -1242,6 +1244,17 @@ export function eventWords(e: ActivityEvent): (ActivityLine & { named: boolean }
           )
         : line(`${who} turned off the vault locking itself in a browser after a while away`, true);
     }
+    // The household's "Same as" list of issuers (0.9.0-dev.91): which two,
+    // each by its name on the reader's own papers (the vault puts it in as
+    // the line is read); one the reader can read no paper of is never named.
+    case 'issuer.joined':
+      return line(
+        `${who} said ${issuerWords(detail.issuer)} is the same issuer as ${issuerWords(detail.same_as)}`,
+      );
+    case 'issuer.separated':
+      return line(
+        `${who} separated ${issuerWords(detail.issuer)} from ${issuerWords(detail.same_as)}`,
+      );
     // How long ended links and requests are kept (0.9.0, RQ), from which
     // choice to which.
     case 'household.ended_sharing_changed': {
@@ -1590,6 +1603,17 @@ function capitalise(s: string): string {
 }
 
 /** A detail field as a string, or empty: never "[object Object]". */
+/**
+ * An issuer in a line of the "Same as" list (0.9.0-dev.91): its name on the
+ * reader's own papers, quoted; or, where they can read no paper of it, said
+ * without naming it.
+ */
+export const ISSUER_UNSEEN = 'an issuer you can’t see';
+function issuerWords(v: unknown): string {
+  const name = text(v);
+  return name ? `“${name}”` : ISSUER_UNSEEN;
+}
+
 function text(v: unknown): string {
   return typeof v === 'string' ? v : '';
 }

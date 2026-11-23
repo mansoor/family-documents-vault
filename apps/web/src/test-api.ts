@@ -1,4 +1,16 @@
 import {
+  apartPair,
+  issuerGroupsOf,
+  issuerRoot,
+  aliasMap,
+  joinAliases,
+  leavingKey,
+  separateAliases,
+  type AliasRow,
+  NO_ISSUER,
+  sameAsSuggestions,
+  storedIssuerKey,
+  type IssuerGroups,
   type AppLinkSession,
   type AppKeyView,
   type ConnectedAppView,
@@ -384,6 +396,14 @@ export interface FakeState {
    * as the vault draws it.
    */
   cabinetPreview?: (ask: CabinetPreviewAsk) => CabinetPreview | null;
+  /**
+   * The household's "Same as" list of issuers (0.9.0-dev.91), from → to,
+   * and the pairs said to be separate, as the vault keeps them.
+   */
+  issuerAliases?: AliasRow[];
+  issuerApart?: Array<[string, string]>;
+  /** Each POST /issuers/same and /issuers/separate, as sent. */
+  issuerChanges?: Array<{ how: 'same' | 'separate'; from: string; to: string }>;
   /** Each POST /cabinet/preview, as sent. */
   cabinetPreviewAsks?: CabinetPreviewAsk[];
   /** How many parts the vault has drawn: each new one's id. */
@@ -1727,7 +1747,10 @@ export function installFakeApi(state: FakeState) {
           // What Sensitive protects (0.9.0, H1a): said when a test asks.
           ...(state.sensitiveProtects ? { sensitive_protects: true } : {}),
           // My cabinet (0.9.0, C1): said when a test asks.
-          ...(state.cabinets ? { cabinets: true, cabinet_dividers: true, cabinet_pins: true } : {}),
+          // And Who issued it as a level (0.9.0-dev.91).
+          ...(state.cabinets
+            ? { cabinets: true, cabinet_dividers: true, cabinet_pins: true, cabinet_issuer: true }
+            : {}),
           // Places in a cabinet (0.9.0, C3): said when a test asks.
           ...(state.originalPlace ? { original_place: true } : {}),
           // The folder a paper came from (0.9.0, C4): said when a test asks.
@@ -6631,6 +6654,7 @@ export function installFakeApi(state: FakeState) {
       type Paper = {
         issued?: { date: string } | null;
         created_at?: string;
+        issued_by?: unknown;
         type_key?: string | null;
         category?: string | null;
         owner_member_id?: string | null;
@@ -6644,6 +6668,7 @@ export function installFakeApi(state: FakeState) {
           (state.types.find((t) => t.key === d.type_key)?.category as string | undefined) ??
           null,
         person: d.household_owned === true ? 'household' : (d.owner_member_id ?? 'none'),
+        issuer: issuerOf(state, d.issued_by),
       });
       /** People and kinds named as the reader is given them; the reader first. */
       const drawNames = () => {
@@ -6665,6 +6690,12 @@ export function installFakeApi(state: FakeState) {
                 : (short.get(id) ?? 'Someone in the family'),
           kind: (key: string) =>
             (state.types.find((t) => t.key === key)?.label as string | undefined) ?? 'Another kind',
+          issuer: (key: string) => {
+            const g = issuerGroupsOfState(state).items.find(
+              (x) => x.key === key || x.members.some((m) => m.key === key),
+            );
+            return g?.name ?? key;
+          },
           personOrder: (a: string, b: string) => rank(a) - rank(b) || a.localeCompare(b),
         };
       };
@@ -6798,6 +6829,7 @@ export function installFakeApi(state: FakeState) {
             category: p.category,
             type_key: p.type_key,
             year: Number(p.day.slice(0, 4)),
+            issuer: p.issuer,
           };
           const key = JSON.stringify(g);
           const had = groups.get(key);
@@ -6813,7 +6845,14 @@ export function installFakeApi(state: FakeState) {
             // Ids never one the cabinet has, as the vault's are random.
             () => `drawn-${(state.cabinetDrawn = (state.cabinetDrawn ?? 0) + 1)}`,
           );
-          return json({ ...drawn, size: cabinetSize(drawn.layout) });
+          // Who issued it among the levels asked (0.9.0-dev.91): what looks like one.
+          const asksIssuer =
+            ask.levels.includes('issuer') || ask.cabinet?.levels?.includes('issuer') === true;
+          return json({
+            ...drawn,
+            size: cabinetSize(drawn.layout),
+            ...(asksIssuer ? { same_as: issuerGroupsOfState(state).same_as } : {}),
+          });
         } catch (e) {
           if (e instanceof RedrawRefused) return refuse(422, 'cabinet_levels', e.message);
           throw e;
@@ -6895,7 +6934,7 @@ export function installFakeApi(state: FakeState) {
       const cat = query.get('category');
       if (cat) items = items.filter((d) => d.category === cat);
       const from = query.get('issued_by');
-      if (from) items = items.filter((d) => sameIssuer(d.issued_by, from));
+      if (from) items = items.filter((d) => sameIssuer(d.issued_by, from, state));
       // One person's (5.17c): their documents, and their profile's first few.
       const whose = query.get('member_id');
       if (whose) items = items.filter((d) => d.owner_member_id === whose);
@@ -6903,6 +6942,29 @@ export function installFakeApi(state: FakeState) {
       const status = query.get('status');
       if (status) items = items.filter((d) => (d.status as { value?: string })?.value === status);
       return json({ items: items.map(listed), next_cursor: null, has_more: false });
+    }
+    // The household's issuers and its "Same as" list (0.9.0-dev.91), as the vault keeps them.
+    if (path === '/api/v1/issuers/groups') return json(issuerGroupsOfState(state));
+    if (path === '/api/v1/issuers/same' || path === '/api/v1/issuers/separate') {
+      const sent = body as { from: string; to: string };
+      const how = path.endsWith('same') ? 'same' : 'separate';
+      (state.issuerChanges ??= []).push({ how, from: sent.from, to: sent.to });
+      if (!issuerGroupsOfState(state).may_change) {
+        return refuse(403, 'forbidden', 'Only owners and adults say which issuers are the same.');
+      }
+      const rows = state.issuerAliases ?? [];
+      const aliases = aliasMap(rows);
+      const apart = (state.issuerApart ??= []);
+      if (how === 'same') {
+        state.issuerAliases = joinAliases(rows, sent.from, sent.to);
+      } else {
+        const leaving = leavingKey(aliases, sent.from, sent.to);
+        if (leaving !== null) state.issuerAliases = separateAliases(rows, leaving);
+        apart.push(
+          apartPair(leaving ?? sent.from, leaving ? issuerRoot(leaving, aliases) : sent.to),
+        );
+      }
+      return json(issuerGroupsOfState(state));
     }
     if (path === '/api/v1/issuers') {
       // Distinct, most used first; those used for type_key before the rest.
@@ -8461,6 +8523,16 @@ function documentTable(
     .filter(
       (d) => !want('type_key') || (want('type_key') ?? '').split(',').includes(String(d.type_key)),
     )
+    // Who issued it, by key, as the household names it (0.9.0-dev.91).
+    .filter((d) => {
+      const asked = want('issuer');
+      if (!asked) return true;
+      const mine = issuerOf(state, d.issued_by);
+      const aliases = aliasMap(state.issuerAliases ?? []);
+      return asked
+        .split(',')
+        .some((k) => (k === NO_ISSUER ? mine === null : mine === issuerRoot(k, aliases)));
+    })
     // A topic, or several (0.9.0, C1): its own, else its kind's.
     .filter((d) => {
       const asked = want('category');
@@ -8693,9 +8765,48 @@ function changedKind(
   return { kind: next };
 }
 
-/** One issuer however it was written, as the server compares them. */
-function sameIssuer(value: unknown, wanted: string): boolean {
-  return typeof value === 'string' && value.trim().toLowerCase() === wanted.trim().toLowerCase();
+/**
+ * One issuer however it was written, as the server compares them: as
+ * written, or by its key as the household names it (0.9.0-dev.91).
+ */
+function sameIssuer(value: unknown, wanted: string, state?: FakeState): boolean {
+  if (typeof value !== 'string') return false;
+  if (value.trim().toLowerCase() === wanted.trim().toLowerCase()) return true;
+  const want = storedIssuerKey(wanted);
+  return state !== undefined && want !== null && issuerOf(state, value) === issuerOf(state, want);
+}
+
+/** Who issued a paper, by its key, as the household names it (0.9.0-dev.91); null for none. */
+function issuerOf(state: FakeState, issuedBy: unknown): string | null {
+  const key = typeof issuedBy === 'string' ? storedIssuerKey(issuedBy) : null;
+  return key === null ? null : issuerRoot(key, aliasMap(state.issuerAliases ?? []));
+}
+
+/** The household's issuers in groups, as GET /issuers/groups gives them to the reader. */
+function issuerGroupsOfState(state: FakeState): IssuerGroups {
+  const byKey = new Map<string, Map<string, number>>();
+  for (const d of state.documents) {
+    if (d.deleted_at || typeof d.issued_by !== 'string') continue;
+    const key = storedIssuerKey(d.issued_by);
+    if (key === null) continue;
+    const spellings = byKey.get(key) ?? new Map<string, number>();
+    spellings.set(d.issued_by, (spellings.get(d.issued_by) ?? 0) + 1);
+    byKey.set(key, spellings);
+  }
+  const names = [...byKey].map(([key, spellings]) => {
+    const [name] = [...spellings].sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1))[0] ?? [key];
+    return { key, name, count: [...spellings.values()].reduce((n, x) => n + x, 0) };
+  });
+  const items = issuerGroupsOf(names, aliasMap(state.issuerAliases ?? []));
+  const role = storedRole();
+  const may = role === 'owner' || role === 'adult';
+  return {
+    items,
+    same_as: may
+      ? sameAsSuggestions(items, state.issuerApart ?? [], aliasMap(state.issuerAliases ?? []))
+      : [],
+    may_change: may,
+  };
 }
 
 /** Whatever role `signedIn()` last stored, defaulting to owner. */

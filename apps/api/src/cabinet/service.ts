@@ -3,6 +3,7 @@ import { withPrincipal, type Db } from '@fdv/db';
 import {
   addFolderTree,
   addToDrawing,
+  mergeSameIssuers,
   askedFolders,
   cabinetSize,
   compareFolders,
@@ -16,6 +17,7 @@ import {
   resolvedRanges,
   PIN_IN_TRASH,
   PIN_LIMITS,
+  seesLocation,
   shownDividers,
   TOO_MANY_PINS,
   CABINET_CHANGED,
@@ -45,12 +47,14 @@ import {
   type DocumentPage,
   type FolderContents,
   type FolderDivider,
+  type IssuerChange,
+  type IssuerGroups,
   type PinsMoved,
   type SourceFolder,
 } from '@fdv/shared';
 import { sql } from 'kysely';
 import { parse } from '../auth/routes.js';
-import type { Principal } from '../auth/service.js';
+import type { Principal, RequestMeta } from '../auth/service.js';
 import { ApiError, notFound } from '../errors.js';
 import { datedSql } from '../documents/filters.js';
 import { followLayout, placeRefused } from '../documents/original-place.js';
@@ -64,6 +68,15 @@ import {
   type CabinetPlaces,
   type PlacedDocument,
 } from '../documents/table.js';
+import {
+  aliasesOf,
+  issuerFolding,
+  issuerGroups,
+  issuerSuggestions,
+  sameIssuer,
+  separateIssuer,
+  type IssuerFolding,
+} from './issuers.js';
 
 /** The most folders one drawing reads: past what any cabinet can hold (CABINET_LIMITS.folders_total). */
 const FROM_FOLDERS_MOST = 2000;
@@ -115,7 +128,12 @@ async function foldersDividers(
   names: () => Promise<CabinetNames>,
 ): Promise<FolderDivider[]> {
   const counted = await dividerCounts(trx, p, folder, q);
-  return shownDividers(counted.shape, counted.counts, counted.named ? await names() : undefined);
+  if (!counted.named) return shownDividers(counted.shape, counted.counts);
+  const named = await names();
+  return shownDividers(counted.shape, counted.counts, {
+    ...named,
+    ...(counted.issuer ? { issuer: counted.issuer } : {}),
+  });
 }
 
 /**
@@ -126,12 +144,34 @@ async function foldersDividers(
 async function dividerCounts(trx: Db, p: Principal, folder: CabinetFolder, q: ListQuery) {
   const shape = { filter: folder.filter, dividers: dividersOf(folder) };
   const dims = dividerDims(shape);
-  const counts = await documentDividerCounts(trx, p, q, dims, resolvedRanges(shape.dividers));
+  let counts = await documentDividerCounts(trx, p, q, dims, resolvedRanges(shape.dividers));
+  // Who issued it (0.9.0-dev.91): counted by each paper's own key, then
+  // gathered into the household's groups as the reader knows them, each by
+  // a key they can read a paper of, and named — only the groups shown.
+  let issuer: ((key: string) => string) | undefined;
+  if (dims.includes('issuer')) {
+    const at = dims.indexOf('issuer');
+    const keys = [...counts.keys()]
+      .map((k) => k.split('/')[at]?.slice('issuer:'.length) ?? '')
+      .filter((k) => k !== '');
+    const fold = await issuerFolding(trx, p, [...new Set(keys)]);
+    const gathered = new Map<string, number>();
+    for (const [k, n] of counts) {
+      const segs = k.split('/');
+      const own = segs[at]?.slice('issuer:'.length) ?? '';
+      if (own !== '') segs[at] = `issuer:${fold.rep(own) ?? own}`;
+      const key = segs.join('/');
+      gathered.set(key, (gathered.get(key) ?? 0) + n);
+    }
+    counts = gathered;
+    issuer = fold.name;
+  }
   return {
     shape,
     counts,
-    named: dims.some((d) => d === 'kind' || d === 'person'),
+    named: dims.some((d) => d === 'kind' || d === 'person' || d === 'issuer'),
     kinds: dims.includes('kind'),
+    issuer,
   };
 }
 
@@ -237,16 +277,23 @@ export class CabinetService {
         .where('member_id', '=', p.memberId)
         .executeTakeFirst();
       if (!row) return null;
-      const layout = readLayout(row.layout);
-      const view: CabinetView = {
+      let layout = readLayout(row.layout);
+      let view: CabinetView = {
         layout: answered(layout),
         version: row.version,
         updated_at: row.updated_at.toISOString(),
       };
       if (layout.levels === null) return { view, unheld: [] };
+      // Issuers said to be the same since it was drawn (0.9.0-dev.91): their
+      // folders, drawers or cabinets made one first, saved as a new version.
+      const merged = await mergedIssuers(trx, p, layout, row.version);
+      if (merged) {
+        layout = merged.layout;
+        view = merged.view;
+      }
       const stamp = await stampOf(trx, p);
       const key = `${p.householdId}:${p.memberId}`;
-      const looked = `${row.version}|${stamp.key}`;
+      const looked = `${view.version}|${stamp.key}`;
       // Nothing added or changed since it was saved, or since it was last looked over.
       if (
         LOOKED_OVER.get(key) === looked ||
@@ -258,19 +305,28 @@ export class CabinetService {
       // Held by a drawn cabinet's folder or pin: one arranged by hand holds
       // nothing for the drawing, which grows a folder of its own beside it.
       const drawn = { ...layout, cabinets: layout.cabinets.filter((c) => c.drawn) };
-      const placed = await placesOf(trx, p, drawn, 'every');
+      const placed = await placesOf(trx, p, drawn, 'every', byIssuer(layout));
       remember(LOOKED_OVER, key, looked);
-      return { view, unheld: placed.documents.filter((d) => d.folders === 0) };
+      const unheld = placed.documents.filter((d) => d.folders === 0);
+      // Who issued them, as the reader knows each group, where it is a level.
+      const fold = byIssuer(layout)
+        ? await issuerFolding(trx, p, [
+            ...new Set(unheld.flatMap((d) => (d.issuer === null ? [] : [d.issuer]))),
+          ])
+        : null;
+      return { view, unheld, fold };
     });
     if (!read) return { layout: null, version: 0, updated_at: null };
     const { view, unheld } = read;
+    const fold = 'fold' in read ? read.fold : null;
     const layout = readLayout(view.layout);
     if (unheld.length === 0) return view;
     // Folders to add: named as the caller is given people and kinds, and
     // saved only over the version read — a change made meanwhile wins.
     const kinds = await this.kindNames(p);
     return withPrincipal(this.db, p, async (trx) => {
-      const kept = addToDrawing(layout, groupsOf(unheld), await namesFor(trx, p, kinds), () =>
+      const names = await namesFor(trx, p, kinds, fold?.name);
+      const kept = addToDrawing(layout, groupsOf(unheld, fold), names, () =>
         randomBytes(6).toString('base64url'),
       );
       if (kept.added === 0) return view;
@@ -406,23 +462,7 @@ export class CabinetService {
    */
   async preview(p: Principal, ask: CabinetPreviewAsk): Promise<CabinetPreview> {
     const kinds = await this.kindNames(p);
-    const { groups, names, saved } = await withPrincipal(this.db, p, async (trx) => {
-      const rows = (
-        await sql<{
-          owner_member_id: string | null;
-          household_owned: boolean;
-          category: string | null;
-          type_key: string | null;
-          year: number;
-          n: number;
-        }>`
-          select d.owner_member_id, d.household_owned, d.category, d.type_key,
-                 extract(year from ${datedSql('d')})::int as year, count(*)::int as n
-            from document d
-           where ${readDocument(p)} and d.deleted_at is null
-             and d.type_key is distinct from ${NOTE_KIND}
-           group by 1, 2, 3, 4, 5`.execute(trx)
-      ).rows;
+    const { groups, names, saved, sameAs } = await withPrincipal(this.db, p, async (trx) => {
       const row = ask.layout
         ? undefined
         : await trx
@@ -431,14 +471,44 @@ export class CabinetService {
             .where('household_id', '=', p.householdId)
             .where('member_id', '=', p.memberId)
             .executeTakeFirst();
+      const saved = row ? readLayout(row.layout) : null;
+      // Who issued it (0.9.0-dev.91): grouped by, named, and what looks like
+      // one suggested, only where it is a level of what is drawn or drawn
+      // over — else it would only split the groups.
+      const issuers = asksIssuer(ask) || byIssuer(ask.layout ?? saved);
+      const rows = (
+        await sql<{
+          owner_member_id: string | null;
+          household_owned: boolean;
+          category: string | null;
+          type_key: string | null;
+          year: number;
+          issuer: string | null;
+          n: number;
+        }>`
+          select d.owner_member_id, d.household_owned, d.category, d.type_key,
+                 extract(year from ${datedSql('d')})::int as year,
+                 ${issuers ? sql`d.issuer_key` : sql`null::text`} as issuer, count(*)::int as n
+            from document d
+           where ${readDocument(p)} and d.deleted_at is null
+             and d.type_key is distinct from ${NOTE_KIND}
+           group by 1, 2, 3, 4, 5, 6`.execute(trx)
+      ).rows;
+      const fold = issuers
+        ? await issuerFolding(trx, p, [
+            ...new Set(rows.flatMap((r) => (r.issuer === null ? [] : [r.issuer]))),
+          ])
+        : null;
       return {
-        names: await namesFor(trx, p, kinds),
-        saved: row ? readLayout(row.layout) : null,
+        names: await namesFor(trx, p, kinds, fold?.name),
+        saved,
+        sameAs: issuers ? await issuerSuggestions(trx, p) : [],
         groups: rows.map((r): CabinetGroup => ({
           person: personOf(r),
           category: r.category,
           type_key: r.type_key,
           year: r.year,
+          issuer: r.issuer === null ? null : (fold?.rep(r.issuer) ?? r.issuer),
           n: r.n,
         })),
       };
@@ -453,7 +523,12 @@ export class CabinetService {
       }
       throw e;
     }
-    return { ...drawn, layout: answered(drawn.layout), size: cabinetSize(drawn.layout) };
+    return {
+      ...drawn,
+      layout: answered(drawn.layout),
+      size: cabinetSize(drawn.layout),
+      ...(asksIssuer(ask) ? { same_as: sameAs } : {}),
+    };
   }
 
   /**
@@ -679,8 +754,8 @@ export class CabinetService {
       // divider; a range of the folder's own is one, empty or not; Other
       // years, only with something; a level of one, passed over.
       const counted = await dividerCounts(trx, p, folder, { ...q, cabinet: { except: pinned } });
-      // People as the reader is given them; kinds, if any, read after.
-      const people = counted.named ? await namesFor(trx, p, new Map()) : null;
+      // People and issuers as the reader is given them; kinds, if any, read after.
+      const people = counted.named ? await namesFor(trx, p, new Map(), counted.issuer) : null;
       return { version, pinned, counted, people };
     });
     // Kinds named as `types()` gives them, only for a folder divided by kind.
@@ -818,6 +893,21 @@ export class CabinetService {
       }
       return { pinned: ids.length };
     });
+  }
+
+  /** GET /issuers/groups (0.9.0-dev.91): the household's issuers, as the caller can read them. */
+  issuerGroups(p: Principal): Promise<IssuerGroups> {
+    return issuerGroups(this.db, p);
+  }
+
+  /** POST /issuers/same (0.9.0-dev.91): one issuer said to be the same as another. */
+  sameIssuer(p: Principal, change: IssuerChange, meta: RequestMeta): Promise<IssuerGroups> {
+    return sameIssuer(this.db, p, change, meta);
+  }
+
+  /** POST /issuers/separate (0.9.0-dev.91): two issuers said to be separate. */
+  separateIssuer(p: Principal, change: IssuerChange, meta: RequestMeta): Promise<IssuerGroups> {
+    return separateIssuer(this.db, p, change, meta);
   }
 
   /**
@@ -1060,8 +1150,14 @@ function personOf(r: { household_owned: boolean; owner_member_id: string | null 
   return r.household_owned ? HOUSEHOLD_MEMBER_FILTER : (r.owner_member_id ?? NOBODY_MEMBER_FILTER);
 }
 
-/** Papers counted into a drawing's groups: by person, topic, kind and year. */
-function groupsOf(docs: readonly PlacedDocument[]): CabinetGroup[] {
+/**
+ * Papers counted into a drawing's groups: by person, topic, kind, year and
+ * issuer — its group as the reader knows it (`fold`), where it is a level.
+ */
+function groupsOf(
+  docs: readonly PlacedDocument[],
+  fold: IssuerFolding | null = null,
+): CabinetGroup[] {
   const by = new Map<string, CabinetGroup>();
   for (const d of docs) {
     const g: CabinetGroup = {
@@ -1069,9 +1165,10 @@ function groupsOf(docs: readonly PlacedDocument[]): CabinetGroup[] {
       category: d.category,
       type_key: d.type_key,
       year: d.year,
+      issuer: d.issuer === null ? null : (fold?.rep(d.issuer) ?? d.issuer),
       n: 1,
     };
-    const key = JSON.stringify([g.person, g.category, g.type_key, g.year]);
+    const key = JSON.stringify([g.person, g.category, g.type_key, g.year, g.issuer]);
     const had = by.get(key);
     if (had) had.n += 1;
     else by.set(key, g);
@@ -1084,7 +1181,13 @@ function groupsOf(docs: readonly PlacedDocument[]): CabinetGroup[] {
  * database gives them, the caller first, then the family by name, the
  * household's, Not sure yet last; kinds as `types()` gives them.
  */
-async function namesFor(trx: Db, p: Principal, kinds: Map<string, string>): Promise<CabinetNames> {
+async function namesFor(
+  trx: Db,
+  p: Principal,
+  kinds: Map<string, string>,
+  /** How issuers are named (0.9.0-dev.91): only where one is a level. */
+  issuer?: (key: string) => string,
+): Promise<CabinetNames> {
   const people = await trx.selectFrom('member').select(['id', 'display_name']).execute();
   const short = shortName(people);
   const full = new Map(people.map((m) => [m.id, m.display_name] as const));
@@ -1104,6 +1207,7 @@ async function namesFor(trx: Db, p: Principal, kinds: Map<string, string>): Prom
           ? NOT_SURE_YET
           : (short.get(id) ?? 'Someone in the family'),
     kind: (key) => kinds.get(key) ?? 'Another kind',
+    ...(issuer ? { issuer } : {}),
     personOrder: (a, b) =>
       rank(a) - rank(b) ||
       (full.get(a) ?? '').localeCompare(full.get(b) ?? '') ||
@@ -1121,6 +1225,8 @@ async function placesOf(
   p: Principal,
   layout: CabinetLayout,
   which: 'shown' | 'every',
+  /** Whether each paper's issuer is read too (0.9.0-dev.91): a drawing by it grows by it. */
+  issuer = false,
 ): Promise<CabinetPlaces> {
   const folders =
     which === 'shown' ? shownFolders(layout).map((s) => s.folder) : everyFolder(layout);
@@ -1129,6 +1235,7 @@ async function placesOf(
     trx,
     p,
     folders.map((f) => ({ q: questionOf(f), pins: pins.get(f.id) ?? [] })),
+    { issuer },
   );
 }
 
@@ -1139,8 +1246,23 @@ async function placesOf(
  */
 async function stampOf(trx: Db, p: Principal): Promise<{ last: Date | null; key: string }> {
   const r = (
-    await sql<{ last: Date | null; n: number; pins: number; pinned: Date | null }>`
-      select greatest(max(d.updated_at), max(d.created_at)) as last, count(*)::int as n,
+    await sql<{
+      last: Date | null;
+      n: number;
+      pins: number;
+      pinned: Date | null;
+      joined: number;
+    }>`
+      select greatest(max(d.updated_at), max(d.created_at),
+                      -- Issuers said to be the same, or separate (0.9.0-dev.91):
+                      -- a paper may be in another issuer's folder now.
+                      (select max(a.created_at) from issuer_alias a
+                        where a.household_id = ${p.householdId}::uuid),
+                      (select max(s.created_at) from issuer_apart s
+                        where s.household_id = ${p.householdId}::uuid)) as last,
+             count(*)::int as n,
+             (select count(*)::int from issuer_alias a
+               where a.household_id = ${p.householdId}::uuid) as joined,
              (select count(*)::int from cabinet_pin cp
                where cp.household_id = ${p.householdId}::uuid
                  and cp.member_id = ${p.memberId}::uuid) as pins,
@@ -1153,7 +1275,13 @@ async function stampOf(trx: Db, p: Principal): Promise<{ last: Date | null; key:
   const last = r?.last ?? null;
   return {
     last,
-    key: [last?.getTime() ?? 0, r?.n ?? 0, r?.pins ?? 0, r?.pinned?.getTime() ?? 0].join(':'),
+    key: [
+      last?.getTime() ?? 0,
+      r?.n ?? 0,
+      r?.pins ?? 0,
+      r?.pinned?.getTime() ?? 0,
+      r?.joined ?? 0,
+    ].join(':'),
   };
 }
 
@@ -1162,6 +1290,8 @@ const REMEMBERED = 1000;
 
 /** Each person's drawn cabinet, as it was when last looked over for papers in no folder. */
 const LOOKED_OVER = new Map<string, string>();
+/** Each person's drawn cabinet, as it was last looked over for issuers said to be one, and the list then. */
+const MERGE_LOOKED = new Map<string, string>();
 /** Each person's papers in no folder, as last worked out, and for what. */
 const UNFILED = new Map<string, { stamp: string; ids: string[] }>();
 
@@ -1169,4 +1299,147 @@ function remember<T>(map: Map<string, T>, key: string, value: T): void {
   map.delete(key);
   map.set(key, value);
   if (map.size > REMEMBERED) map.delete(map.keys().next().value as string);
+}
+
+/** Whether a layout is drawn by who issued it anywhere: its levels, or a cabinet's own. */
+function byIssuer(layout: CabinetLayout | null | undefined): boolean {
+  if (!layout) return false;
+  return (
+    (layout.levels ?? []).includes('issuer') ||
+    (Array.isArray(layout.cabinets) &&
+      layout.cabinets.some((c) => c.drawn?.levels?.includes('issuer') === true))
+  );
+}
+
+/** Whether a preview asks for who issued it: the default's levels, or one cabinet's own. */
+function asksIssuer(ask: CabinetPreviewAsk): boolean {
+  return ask.levels.includes('issuer') || ask.cabinet?.levels?.includes('issuer') === true;
+}
+
+/**
+ * A drawn cabinet made one again where issuers were said to be the same
+ * since it was drawn (0.9.0-dev.91, `mergeSameIssuers`): the folders,
+ * drawers or cabinets of one group merged, the survivor the one the reader
+ * knows the group by; each merged folder's pins moved to it, and where
+ * originals are kept followed. Saved over the version read, as growing is;
+ * nothing where none are one now, or the layout changed meanwhile.
+ */
+async function mergedIssuers(
+  trx: Db,
+  p: Principal,
+  layout: CabinetLayout,
+  version: number,
+): Promise<{ layout: CabinetLayout; view: CabinetView } | null> {
+  if (!byIssuer(layout)) return null;
+  // Looked over already, with the list as it is: nothing new to merge. One
+  // count, never the list itself, on an ordinary read.
+  const list = (
+    await sql<{ n: number; at: Date | null }>`
+      select count(*)::int as n, max(created_at) as at
+        from issuer_alias where household_id = ${p.householdId}::uuid`.execute(trx)
+  ).rows[0];
+  const key = `${p.householdId}:${p.memberId}`;
+  const stamp = (v: number) => `${v}|${list?.n ?? 0}|${list?.at?.getTime() ?? 0}`;
+  if (MERGE_LOOKED.get(key) === stamp(version)) return null;
+  remember(MERGE_LOOKED, key, stamp(version));
+  if ((list?.n ?? 0) === 0) return null;
+  const aliases = await aliasesOf(trx, p);
+  if (aliases.size === 0) return null;
+  const values = new Set<string>();
+  for (const c of layout.cabinets) {
+    if (!c.drawn) continue;
+    if (layout.levels?.[0] === 'issuer' && c.drawn.value) values.add(c.drawn.value);
+    for (const d of c.drawers) {
+      for (const f of d.folders) for (const v of (f.filter.issuer ?? '').split(',')) values.add(v);
+    }
+  }
+  values.delete('');
+  // Nothing drawn for an issuer said to be the same as another: nothing to merge.
+  if (![...values].some((v) => aliases.has(v))) return null;
+  const fold = await issuerFolding(trx, p, [...values]);
+  const merged = mergeSameIssuers(layout, fold.rootOf, (k) => fold.rep(k) === k);
+  if (!merged.changed || layoutProblemOf(merged.layout) !== null) return null;
+  const saved = await trx
+    .updateTable('cabinet_layout')
+    .set({
+      layout: JSON.stringify(merged.layout),
+      version: sql<number>`version + 1`,
+      updated_at: sql<Date>`now()`,
+    })
+    .where('household_id', '=', p.householdId)
+    .where('member_id', '=', p.memberId)
+    .where('version', '=', version)
+    .returning(['version', 'updated_at'])
+    .executeTakeFirst();
+  if (!saved) return null;
+  remember(MERGE_LOOKED, key, stamp(saved.version));
+  if (merged.moved.length > 0) {
+    const from = merged.moved.map((m) => m.from);
+    const to = merged.moved.map((m) => m.to);
+    // The merged folders' pins, moved: at most as many as a folder holds, the
+    // survivor's own first, then the most recently pinned of those moved; the
+    // rest let go, as if unpinned, so what a folder counts is what it opens.
+    const came = (
+      await sql<{ folder_id: string; document_id: string }>`
+        insert into cabinet_pin (household_id, member_id, folder_id, document_id, pinned_at)
+        select cp.household_id, cp.member_id, m.to_id, cp.document_id, cp.pinned_at
+          from cabinet_pin cp
+          join unnest(${from}::text[], ${to}::text[]) as m(from_id, to_id) on m.from_id = cp.folder_id
+         where cp.household_id = ${p.householdId}::uuid and cp.member_id = ${p.memberId}::uuid
+        on conflict do nothing
+        returning folder_id, document_id`.execute(trx)
+    ).rows;
+    await sql`
+      delete from cabinet_pin
+       where household_id = ${p.householdId}::uuid and member_id = ${p.memberId}::uuid
+         and folder_id = any(${from}::text[])`.execute(trx);
+    if (came.length > 0) {
+      await sql`
+        delete from cabinet_pin cp
+         using (select folder_id, document_id,
+                       row_number() over (
+                         partition by folder_id
+                         order by (folder_id, document_id) in (
+                                    select * from unnest(${came.map((c) => c.folder_id)}::text[],
+                                                         ${came.map((c) => c.document_id)}::uuid[])),
+                                  pinned_at desc, document_id) as n
+                  from cabinet_pin
+                 where household_id = ${p.householdId}::uuid and member_id = ${p.memberId}::uuid
+                   and folder_id = any(${to}::text[])) r
+         where cp.household_id = ${p.householdId}::uuid and cp.member_id = ${p.memberId}::uuid
+           and cp.folder_id = r.folder_id and cp.document_id = r.document_id
+           and r.n > ${PIN_LIMITS.folder}`.execute(trx);
+    }
+    // Where originals are kept, in a folder merged into another (C3): in the
+    // one it joined now, the reader's own, before the layout is followed.
+    if (seesLocation(p.role)) {
+      const held = (
+        await sql<{ id: string }>`
+          select d.id from document d
+           where d.household_id = ${p.householdId}::uuid
+             and d.original_place_by = ${p.memberId}::uuid
+             and d.original_place_folder = any(${from}::text[])
+             and not (d.visibility = 'private'
+                      and d.owner_member_id is distinct from ${p.memberId}::uuid)
+           order by d.id
+             for update`.execute(trx)
+      ).rows.map((r) => r.id);
+      if (held.length > 0) {
+        await sql`
+          update document d
+             set original_place_folder = m.to_id
+            from unnest(${from}::text[], ${to}::text[]) as m(from_id, to_id)
+           where d.id = any(${held}::uuid[]) and d.original_place_folder = m.from_id`.execute(trx);
+      }
+    }
+  }
+  await followLayout(trx, p, merged.layout).catch(placeRefused);
+  return {
+    layout: merged.layout,
+    view: {
+      layout: answered(merged.layout),
+      version: saved.version,
+      updated_at: saved.updated_at.toISOString(),
+    },
+  };
 }

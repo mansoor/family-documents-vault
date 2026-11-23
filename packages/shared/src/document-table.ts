@@ -112,6 +112,12 @@ export type DocumentListParams = {
   category?: string | undefined;
   issued_by?: string | undefined;
   /**
+   * Who issued it, by issuer key (0.9.0-dev.91, `features.cabinet_issuer`):
+   * keys comma-separated, any of them, each with every key the household
+   * says is the same; or `_none` for no issuer given.
+   */
+  issuer?: string | undefined;
+  /**
    * A tag, whatever its case since 0.9.0 (`features.tag_details`); several,
    * any of them, since `features.tag_filters`.
    */

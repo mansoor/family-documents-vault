@@ -26,6 +26,20 @@ import {
   type CabinetLayout,
   type CabinetLevel,
   type CabinetPreviewAsk,
+  apartPair,
+  isIssuerKey,
+  issuerGroupsOf,
+  issuerRoot,
+  aliasMap,
+  joinAliases,
+  leavingKey,
+  mergeSameIssuers,
+  separateAliases,
+  type AliasRow,
+  NO_ISSUER,
+  sameAsSuggestions,
+  storedIssuerKey,
+  type IssuerGroups,
   type CabinetFromFolders,
   type CabinetView,
   type DocumentPage,
@@ -484,6 +498,13 @@ export interface FakeVaultState {
     string,
     Array<{ folder_id: string; document_id: string; pinned_at: string }>
   >;
+  /**
+   * The household's "Same as" list of issuers (0.9.0-dev.91): an issuer
+   * key, from, said to be the same as another, to — one level only.
+   */
+  issuerAliases?: AliasRow[];
+  /** Issuer keys said to be separate (0.9.0-dev.91): each pair in order. */
+  issuerApart?: Array<[string, string]>;
   /** The household's name, as set up: a container in a folder's name (S2). */
   householdName?: string | null;
   email: string | null;
@@ -1827,6 +1848,54 @@ export function createFakeVault(): {
       ? state.role
       : ((state.members.find((m) => m.id === memberId)?.role as Role | undefined) ?? null);
   /** Whose a session is (5.28): the fake's own person, or somebody in `signIns`. */
+  /** Who issued a paper, by its key, as the household names it (0.9.0-dev.91); null for none. */
+  const aliasesOf = () => aliasMap(state.issuerAliases ?? []);
+  const issuerOfDoc = (d: { issued_by?: string | null }): string | null => {
+    const key = storedIssuerKey(d.issued_by ?? null);
+    return key === null ? null : issuerRoot(key, aliasesOf());
+  };
+  /** The household's issuers in groups, from what `who` can read; suggestions for owners and adults. */
+  const issuerGroupsFor = (who: { memberId: string; role: Role }): IssuerGroups => {
+    const byKey = new Map<string, Map<string, number>>();
+    for (const d of state.documents) {
+      if (d.deleted_at || d.type_key === NOTE_KIND) continue;
+      if (
+        !canSee(who, {
+          visibility: d.visibility ?? 'household',
+          owner_member_id: d.owner_member_id ?? null,
+        })
+      ) {
+        continue;
+      }
+      const key = storedIssuerKey(d.issued_by ?? null);
+      if (key === null || !d.issued_by) continue;
+      const spellings = byKey.get(key) ?? new Map<string, number>();
+      spellings.set(d.issued_by, (spellings.get(d.issued_by) ?? 0) + 1);
+      byKey.set(key, spellings);
+    }
+    const names = [...byKey].map(([key, spellings]) => {
+      const [name] = [...spellings].sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1))[0] ?? [
+        key,
+      ];
+      return { key, name, count: [...spellings.values()].reduce((n, x) => n + x, 0) };
+    });
+    const items = issuerGroupsOf(names, aliasesOf());
+    const may = who.role === 'owner' || who.role === 'adult';
+    return {
+      items,
+      same_as: may ? sameAsSuggestions(items, state.issuerApart ?? [], aliasesOf()) : [],
+      may_change: may,
+    };
+  };
+  /** Issuer keys named as `who` reads the household's groups. */
+  const issuerNamer = (who: { memberId: string; role: Role }) => {
+    const named = new Map<string, string>();
+    for (const g of issuerGroupsFor(who).items) {
+      named.set(g.key, g.name);
+      for (const m of g.members) named.set(m.key, g.name);
+    }
+    return (key: string) => named.get(key) ?? key;
+  };
   const whoOf = (s: FakeSession): { memberId: string; role: Role } => ({
     memberId: s.memberId ?? ME,
     role: s.memberId === undefined ? state.role : (roleOfMember(s.memberId) ?? 'viewer'),
@@ -3975,6 +4044,7 @@ export function createFakeVault(): {
           cabinet_dividers: true,
           cabinet_pins: true,
           cabinet_levels: true,
+          cabinet_issuer: true,
           caregivers: true,
           // An Idempotency-Key on POST /documents (0.9.0-dev.45), as the vault keeps it.
           idempotent_create: true,
@@ -4381,6 +4451,17 @@ export function createFakeVault(): {
       const collectionId = param(url, 'collection_id');
       const by = param(url, 'issued_by');
       const asked = param(url, 'purge_requested');
+      // Who issued it, by key, as the household names it (0.9.0-dev.91).
+      const issuersAsked = listParam(url, 'issuer');
+      if (issuersAsked?.some((k) => k !== NO_ISSUER && !isIssuerKey(k))) {
+        return fail(
+          422,
+          'validation_failed',
+          'That is not who issued a document, as the vault keys it.',
+          'issuer',
+        );
+      }
+      const byKey = by ? storedIssuerKey(by) : null;
       const rows = state.documents
         .filter((d) => Boolean(d.deleted_at) === inTrash)
         .filter((d) =>
@@ -4390,7 +4471,19 @@ export function createFakeVault(): {
           }),
         )
         .filter((d) => asked === undefined || Boolean(d.purge_requested_at) === (asked === 'true'))
-        .filter((d) => !by || d.issued_by?.toLowerCase() === by.trim().toLowerCase())
+        .filter(
+          (d) =>
+            !by ||
+            d.issued_by?.toLowerCase() === by.trim().toLowerCase() ||
+            (byKey !== null && issuerOfDoc(d) === issuerRoot(byKey, aliasesOf())),
+        )
+        .filter((d) => {
+          if (issuersAsked === undefined) return true;
+          const mine = issuerOfDoc(d);
+          return issuersAsked.some((k) =>
+            k === NO_ISSUER ? mine === null : mine === issuerRoot(k, aliasesOf()),
+          );
+        })
         .filter(
           (d) =>
             members === undefined ||
@@ -4712,10 +4805,11 @@ export function createFakeVault(): {
           // Its own topic, else its kind's, as the vault keeps it.
           const category =
             d.category ?? state.types.find((t) => t.key === d.type_key)?.category ?? null;
-          const key = JSON.stringify([person, category, d.type_key, year]);
+          const issuer = issuerOfDoc(d);
+          const key = JSON.stringify([person, category, d.type_key, year, issuer]);
           const g = groups.get(key);
           if (g) g.n += 1;
-          else groups.set(key, { person, category, type_key: d.type_key, year, n: 1 });
+          else groups.set(key, { person, category, type_key: d.type_key, year, issuer, n: 1 });
         }
         return [...groups.values()];
       };
@@ -4731,6 +4825,7 @@ export function createFakeVault(): {
                 ? NOT_SURE_YET
                 : (short.get(id) ?? 'Someone in the family'),
           kind: (key: string) => state.types.find((t) => t.key === key)?.label ?? 'Another kind',
+          issuer: issuerNamer(who),
           personOrder: (a: string, b: string) => rank(a) - rank(b) || a.localeCompare(b),
         };
       };
@@ -4762,8 +4857,32 @@ export function createFakeVault(): {
       };
       if (path === '/api/v1/cabinet' && method === 'GET') {
         // A drawn cabinet kept up to date (19 Nov 2026), as the vault keeps it.
-        const layout = held.layout;
+        let layout = held.layout;
         if (!layout?.levels) return ok(held);
+        // Issuers said to be the same since it was drawn (0.9.0-dev.91): made one first.
+        const aliases = aliasesOf();
+        const merged = mergeSameIssuers(
+          layout,
+          (k) => issuerRoot(k, aliases),
+          (k) => !aliases.has(k),
+        );
+        if (merged.changed && layoutProblemOf(merged.layout) === null) {
+          for (const m of merged.moved) {
+            for (const x of pinsOf().filter((y) => y.folder_id === m.from)) {
+              if (!pinsOf().some((y) => y.folder_id === m.to && y.document_id === x.document_id)) {
+                pinsOf().push({ ...x, folder_id: m.to });
+              }
+            }
+          }
+          allPins[who.memberId] = pinsOf().filter(
+            (y) => !merged.moved.some((m) => m.from === y.folder_id),
+          );
+          held.layout = merged.layout;
+          held.version += 1;
+          held.updated_at = new Date().toISOString();
+          cabinets[who.memberId] = held;
+          layout = merged.layout;
+        }
         // Held by a drawn cabinet's folder or pin: one arranged by hand holds nothing for it.
         const all = await placed(
           { ...layout, cabinets: layout.cabinets.filter((c) => c.drawn) },
@@ -4942,7 +5061,15 @@ export function createFakeVault(): {
             drawNames(),
             () => next('fake-node'),
           );
-          return ok({ ...drawn, size: cabinetSize(drawn.layout) });
+          // Who issued it among the levels asked (0.9.0-dev.91): what looks like one.
+          const asksIssuer =
+            levels.includes('issuer') ||
+            (body.cabinet as CabinetPreviewAsk['cabinet'])?.levels?.includes('issuer') === true;
+          return ok({
+            ...drawn,
+            size: cabinetSize(drawn.layout),
+            ...(asksIssuer ? { same_as: issuerGroupsFor(who).same_as } : {}),
+          });
         } catch (e) {
           if (e instanceof RedrawRefused) return fail(422, 'cabinet_levels', e.message);
           throw e;
@@ -5103,6 +5230,7 @@ export function createFakeVault(): {
         // Each paper's divider, by every one of the folder's steps (0.9.0-dev.90).
         const paperOf = (d: DocumentView) => ({
           day: datedOf(d),
+          issuer: issuerOfDoc(d),
           type_key: d.type_key,
           category: d.category ?? state.types.find((t) => t.key === d.type_key)?.category ?? null,
           person:
@@ -5328,7 +5456,13 @@ export function createFakeVault(): {
       const items = state.documents
         .filter((d) => Boolean(d.deleted_at) === inTrash)
         .filter((d) => asked === undefined || Boolean(d.purge_requested_at) === (asked === 'true'))
-        .filter((d) => !by || d.issued_by?.toLowerCase() === by.trim().toLowerCase());
+        .filter(
+          (d) =>
+            !by ||
+            d.issued_by?.toLowerCase() === by.trim().toLowerCase() ||
+            (storedIssuerKey(by) !== null &&
+              issuerOfDoc(d) === issuerRoot(storedIssuerKey(by) as string, aliasesOf())),
+        );
       // ?status= as the real vault filters it: by the status each one says;
       // several (V1), any of them.
       const statuses = listParam(url, 'status');
@@ -5906,6 +6040,68 @@ export function createFakeVault(): {
           };
         });
       return ok({ items });
+    }
+    // The household's issuers and its "Same as" list (0.9.0-dev.91), as the
+    // vault keeps them: groups from what the caller can read; joined and
+    // separated by owners and adults, of issuers on papers they can read.
+    if (path === '/api/v1/issuers/groups' && init.method === 'GET') {
+      const s = session();
+      if (!('id' in s)) return s;
+      return ok(issuerGroupsFor(whoOf(s)));
+    }
+    if (
+      (path === '/api/v1/issuers/same' || path === '/api/v1/issuers/separate') &&
+      init.method === 'POST'
+    ) {
+      const s = session();
+      if (!('id' in s)) return s;
+      const who = whoOf(s);
+      if (who.role !== 'owner' && who.role !== 'adult') {
+        return fail(403, 'forbidden', 'Only owners and adults say which issuers are the same.');
+      }
+      const from = typeof body.from === 'string' ? body.from : '';
+      const to = typeof body.to === 'string' ? body.to : '';
+      if (!isIssuerKey(from) || !isIssuerKey(to)) {
+        return fail(422, 'validation_failed', 'That is not who issued a document.');
+      }
+      if (from === to) return fail(422, 'validation_failed', 'Choose two different issuers.');
+      const before = issuerGroupsFor(who).items;
+      const groupWith = (k: string) =>
+        before.find((g) => g.key === k || g.members.some((m) => m.key === k));
+      if (!groupWith(from) || !groupWith(to)) {
+        return fail(404, 'not_found', 'That issuer is on no paper you can see.');
+      }
+      const rows = state.issuerAliases ?? [];
+      const aliases = aliasMap(rows);
+      const apart = (state.issuerApart ??= []);
+      const keepApart = (a: string, b: string) => {
+        const pair = apartPair(a, b);
+        if (!apart.some(([x, y]) => x === pair[0] && y === pair[1])) apart.push(pair);
+      };
+      if (path === '/api/v1/issuers/same') {
+        const keysOf = (root: string) => [
+          root,
+          ...rows.filter((r) => r.to === root).map((r) => r.from),
+        ];
+        const moving = keysOf(issuerRoot(from, aliases));
+        const joining = keysOf(issuerRoot(to, aliases));
+        state.issuerAliases = joinAliases(rows, from, to);
+        // No key that moved is kept apart from any of the group it joined.
+        state.issuerApart = apart.filter(
+          ([a, b]) =>
+            !(
+              (moving.includes(a) && joining.includes(b)) ||
+              (joining.includes(a) && moving.includes(b))
+            ),
+        );
+      } else {
+        const leaving = leavingKey(aliases, from, to);
+        if (leaving !== null) {
+          state.issuerAliases = separateAliases(rows, leaving);
+          keepApart(leaving, issuerRoot(leaving, aliases));
+        } else keepApart(from, to);
+      }
+      return ok(issuerGroupsFor(who));
     }
     if (path === '/api/v1/issuers' && init.method === 'GET') {
       const s = session();

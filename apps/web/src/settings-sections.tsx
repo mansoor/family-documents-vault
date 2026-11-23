@@ -15,8 +15,9 @@ import { Splitter, useKeptWidth, type WidthBounds } from './splitter.js';
  *    on this browser, for everybody: 0.9.0), Your computers, Connected apps
  *    (0.9.0, APP1), Your data.
  *  - Household: Privacy (neutral wording in notifications and email since
- *    H2), Time zone, Kinds of document, Tags — an owner
- *    changes them; everybody else reads what is theirs, as before.
+ *    H2), Time zone, Kinds of document, Tags, Who issued it (0.9.0-dev.91:
+ *    owners and adults) — an owner changes them; everybody else reads what
+ *    is theirs, as before.
  *  - Server and reading, an owner's: Storage, Email in and out, Scanner
  *    folder, Reading and the check (and Text messages, Backups, and
  *    Security & health, where the vault offers them). What was the For
@@ -49,6 +50,7 @@ export type SectionKey =
   | 'timezone'
   | 'kinds'
   | 'tags'
+  | 'issuers'
   | 'storage'
   | 'email'
   | 'scanner'
@@ -123,6 +125,13 @@ export const managesKinds = (role: Role, caps: Capabilities | null): boolean =>
  */
 export const managesTags = (role: Role, caps: Capabilities | null): boolean =>
   caps?.features.tag_management === true && can(role, 'document.edit');
+
+/**
+ * Whether this reader keeps the household's "Same as" list of issuers
+ * (0.9.0-dev.91): owners and adults, where the vault keeps one.
+ */
+export const managesIssuers = (role: Role, caps: Capabilities | null): boolean =>
+  caps?.features.cabinet_issuer === true && (role === 'owner' || role === 'adult');
 
 /**
  * Neutral wording in notifications and email (0.9.0, H2): the household's
@@ -275,6 +284,18 @@ export function settingsGroups(
         '/settings/tags',
         'Tags',
         'Rename, merge and delete the tags on your documents',
+      ),
+    );
+  }
+  // Who issued it (0.9.0-dev.91), after Tags: the household's "Same as" list,
+  // kept by owners and adults.
+  if (managesIssuers(role, caps)) {
+    household.push(
+      section(
+        'issuers',
+        '/settings/issuers',
+        'Who issued it',
+        'Say which banks and companies are the same, however they are written',
       ),
     );
   }
@@ -552,6 +573,14 @@ const DRAWN: Record<SectionKey, ReactNode> = {
     <>
       <path d="M3.5 4.5v6.3l9.2 9.2a1.5 1.5 0 0 0 2.1 0l5.2-5.2a1.5 1.5 0 0 0 0-2.1L10.8 3.5H4.5a1 1 0 0 0-1 1z" />
       <circle cx="8" cy="8" r="1.5" />
+    </>
+  ),
+  // Who issued it (0.9.0-dev.91): a building with columns, as a bank's.
+  issuers: (
+    <>
+      <path d="M3.5 9 12 4l8.5 5" />
+      <path d="M5.5 10v7M10 10v7M14 10v7M18.5 10v7" />
+      <path d="M3.5 19.5h17" />
     </>
   ),
   storage: (

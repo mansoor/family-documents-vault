@@ -79,6 +79,7 @@ const asks = (f: CabinetFolder, l: CabinetLevel): string | undefined =>
     person: f.filter.member_id,
     kind: f.filter.type_key,
     year: f.filter.dated_from?.slice(0, 4),
+    issuer: f.filter.issuer,
   })[l];
 
 /** Every ordered pick of `k` levels. */
@@ -138,6 +139,7 @@ describe('drawing in any order of levels', () => {
                   person: g.person,
                   kind: g.type_key,
                   year: String(g.year),
+                  issuer: g.issuer ?? '_none',
                 }[l];
                 return v === asks(f, l);
               }),

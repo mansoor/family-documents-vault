@@ -118,7 +118,10 @@ export interface MoveDown {
   divider: boolean;
 }
 
-/** Which level not in use goes in above one that can go no further down: the fewest groups first. */
+/**
+ * Which level not in use goes in above one that can go no further down: the
+ * fewest groups first. Never Who issued it, which has more than any.
+ */
 const SPARE_ORDER: readonly CabinetLevel[] = ['year', 'person', 'topic', 'kind'];
 
 /**

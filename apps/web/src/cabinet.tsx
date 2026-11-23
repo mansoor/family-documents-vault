@@ -9,7 +9,6 @@ import {
   dividerLevelsOf,
   LEVEL_LIMITS,
   LEVEL_PRESETS,
-  LEVELS_COMING,
   levelsProblem,
   levelsWords,
   moveDownFor,
@@ -49,6 +48,7 @@ import {
   type FolderContents,
   type FolderDivider,
   type FolderDividers,
+  type IssuerSameAs,
   type PinsMoved,
   type SizeWarning,
 } from '@fdv/shared';
@@ -76,6 +76,7 @@ import {
 } from './ui.js';
 import { DocRow } from './screens/Home.js';
 import { useChangesBeside, useOpenDocument } from './flyout-context.js';
+import { issuersChanged, useIssuersVersion } from './issuer-store.js';
 import { storedRole } from './session.js';
 
 /**
@@ -197,15 +198,25 @@ function CabinetIcon() {
   );
 }
 
-/** How people and kinds are named, as this reader is given them. */
+/** How people, kinds and issuers are named, as this reader is given them. */
 function useNames() {
-  const { authVersion } = useApp();
+  const { authVersion, caps } = useApp();
   const { data: members } = useLoad(async (t) => (await api.members(t)).items, [authVersion]);
   const { data: types } = useLoad(
     async (t) => (await api.documentTypes(t, { all: true })).items,
     [authVersion],
   );
+  // Who issued it, as the household names it (0.9.0-dev.91): only where the vault keeps it.
+  const byIssuer = caps?.features.cabinet_issuer === true;
+  // Read again whenever the household's list changes in this tab.
+  const issuerChanges = useIssuersVersion();
+  const { data: issuers } = useLoad(
+    async (t) => (byIssuer ? (await api.issuerGroups(t)).items : []),
+    [authVersion, byIssuer, issuerChanges],
+  );
   return {
+    issuer: (key: string) =>
+      issuers?.find((g) => g.key === key || g.members.some((m) => m.key === key))?.name ?? key,
     types,
     person: (id: string) =>
       id === 'household'
@@ -1467,6 +1478,21 @@ function ArrangeCabinet(props: {
   const asked = useRef(0);
   const [counts, setCounts] = useState<Record<string, number | null>>(props.counts);
   const [drawn, setDrawn] = useState<{ documents: number; left_out: number } | null>(null);
+  /** Issuers that look like one, where Who issued it is a level asked (0.9.0-dev.91). */
+  const [sameAs, setSameAs] = useState<IssuerSameAs[]>([]);
+  /** Where a suggestion just said Same or Separate was, for the focus to stay near. */
+  const [sameAsFocus, setSameAsFocus] = useState<number | null>(null);
+  useEffect(() => {
+    if (sameAsFocus === null) return;
+    const rows = document.querySelectorAll<HTMLElement>('.same-as-list > li');
+    const row = rows[Math.min(sameAsFocus, rows.length - 1)];
+    const target =
+      row?.querySelector<HTMLButtonElement>('button:not([disabled])') ??
+      document.querySelector<HTMLButtonElement>('[data-level="issuer"] [data-act]:not([disabled])');
+    target?.focus();
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setSameAsFocus(null);
+  }, [sameAsFocus, sameAs]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [said, setSaid] = useState('');
@@ -1495,6 +1521,11 @@ function ArrangeCabinet(props: {
   const [busy, setBusy] = useState(false);
   const [focusOn, setFocusOn] = useState<{ id: string; act: string } | null>(null);
 
+  /** What was last drawn: drawn again once issuers are said to be the same, or separate. */
+  const [lastAsk, setLastAsk] = useState<{
+    levels: CabinetLevel[];
+    cabinet?: { id: string; levels: CabinetLevel[] | null };
+  } | null>(null);
   /** Drawn by the vault: the default's levels, or one cabinet's own (null: the default's again). */
   const draw = (ask: {
     levels: CabinetLevel[];
@@ -1510,6 +1541,8 @@ function ArrangeCabinet(props: {
         setDraft(p.layout);
         setCounts({ ...props.counts, ...p.counts });
         setDrawn({ documents: p.documents, left_out: p.left_out });
+        setSameAs(p.same_as ?? []);
+        setLastAsk(ask);
         setError(null);
       })
       .catch((err: unknown) => {
@@ -1638,6 +1671,35 @@ function ArrangeCabinet(props: {
           `${CABINET_CHANGED} Your arrangement here is kept: Use this arrangement again to put it in its place, or load the newer one instead.`,
         );
       } else setError(describeError(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  /**
+   * Two issuers said to be the same, or separate, from the picker
+   * (0.9.0-dev.91): the household's list changed, and the cabinet drawn again.
+   */
+  const sameOrSeparate = async (s: IssuerSameAs, how: 'same' | 'separate') => {
+    setBusy(true);
+    try {
+      const body = { from: s.from.key, to: s.to.key };
+      await withToken((t) =>
+        how === 'same' ? api.sameIssuer(t, body) : api.separateIssuer(t, body),
+      );
+      issuersChanged();
+      // The focus on the suggestion that takes its place, else the one before,
+      // else (none left) the Who issued it level itself.
+      setSameAsFocus(sameAs.indexOf(s));
+      setSameAs((list) => list.filter((x) => x !== s));
+      setSaid(
+        how === 'same'
+          ? `“${s.from.name}” is now the same issuer as “${s.to.name}”.`
+          : `“${s.from.name}” and “${s.to.name}” are kept separate.`,
+      );
+      if (how === 'same' && lastAsk) draw(lastAsk);
+    } catch (err) {
+      setError(describeError(err));
     } finally {
       setBusy(false);
     }
@@ -1840,6 +1902,14 @@ function ArrangeCabinet(props: {
           onUseDefault={scoped ? () => followDefault(scoped) : undefined}
           onSaveAnyway={() => void use()}
         />
+        {(scoped ? [defaults?.[0], ...picked] : picked).includes('issuer') && sameAs.length > 0 && (
+          <SameAsBox
+            sameAs={sameAs}
+            busy={busy}
+            onSame={(s) => void sameOrSeparate(s, 'same')}
+            onSeparate={(s) => void sameOrSeparate(s, 'separate')}
+          />
+        )}
       </div>
 
       <section className="arrange-preview" aria-labelledby="arrange-preview-h" aria-busy={loading}>
@@ -2442,11 +2512,6 @@ function LevelPicker(props: {
               + {name(l)}
             </button>
           ))}
-        {LEVELS_COMING.map((c) => (
-          <button key={c.key} type="button" className="chip chip-coming" disabled>
-            {c.name} <span className="chip-soon">coming next</span>
-          </button>
-        ))}
       </div>
       {all.length >= LEVEL_LIMITS.fewest && (
         <p className="level-example">
@@ -2514,6 +2579,68 @@ function LevelPicker(props: {
         </div>
       )}
       {props.note && <p className="muted level-note">{props.note}</p>}
+    </section>
+  );
+}
+
+/**
+ * Issuers that look like one (0.9.0-dev.91), where Who issued it is among
+ * the levels chosen: "Barclays (14 papers) and Barclays Bank UK (3) look like
+ * one." Same joins them in the household's list, for everybody, and the
+ * cabinet is drawn again; Separate keeps them apart and stops suggesting it.
+ * Never joined by itself; no paper is changed. Every issuer is in Settings.
+ */
+function SameAsBox(props: {
+  sameAs: IssuerSameAs[];
+  busy: boolean;
+  onSame: (s: IssuerSameAs) => void;
+  onSeparate: (s: IssuerSameAs) => void;
+}) {
+  const headingId = useId();
+  const papers = (n: number) => `${n} paper${n === 1 ? '' : 's'}`;
+  return (
+    <section className="same-as" aria-labelledby={headingId}>
+      <h3 id={headingId}>These issuers look like one</h3>
+      <p className="muted">
+        Say they are the same and they share a cabinet, drawer, folder or divider, for everybody in
+        the family. No document is changed.
+      </p>
+      <ul className="same-as-list">
+        {props.sameAs.slice(0, 5).map((s) => (
+          <li key={`${s.from.key}\n${s.to.key}`}>
+            <span>
+              “{s.to.name}” ({papers(s.to.count)}) and “{s.from.name}” ({papers(s.from.count)}) look
+              like one.
+            </span>
+            <span className="row" style={{ gap: 4 }}>
+              <button
+                type="button"
+                className="btn btn-primary btn-small"
+                disabled={props.busy}
+                aria-label={`Same: “${s.from.name}” is “${s.to.name}”`}
+                onClick={() => props.onSame(s)}
+              >
+                Same
+              </button>
+              <button
+                type="button"
+                className="btn btn-quiet btn-small"
+                disabled={props.busy}
+                aria-label={`Separate: keep “${s.from.name}” and “${s.to.name}” apart`}
+                onClick={() => props.onSeparate(s)}
+              >
+                Separate
+              </button>
+            </span>
+          </li>
+        ))}
+      </ul>
+      <p className="muted">
+        {props.sameAs.length > 5
+          ? `${props.sameAs.length - 5} more, and every issuer, in `
+          : 'Every issuer is in '}
+        <Link to="/settings/issuers">Settings › Who issued it</Link>.
+      </p>
     </section>
   );
 }

@@ -1569,6 +1569,8 @@ describe('every address Settings had still works (R1)', () => {
     ['/settings/kinds/new', '/settings/kinds/new', 'Add a kind'],
     ['/settings/kinds/passport', '/settings/kinds/passport', 'Passport'],
     ['/settings/tags', '/settings/tags', 'Tags'],
+    // Who issued it (0.9.0-dev.91).
+    ['/settings/issuers', '/settings/issuers', 'Who issued it'],
     // For owners' list is the menu's Server and reading: its address, Storage.
     ['/settings/owners', '/settings/storage', 'Storage'],
     ['/settings/storage', '/settings/storage', 'Storage'],

@@ -595,6 +595,17 @@ export interface CapabilityFeatures {
    */
   cabinet_levels?: boolean;
   /**
+   * Who issued it as a cabinet level (0.9.0-dev.91): `issuer` among
+   * `CabinetLayout.levels` and divider levels; the folder question `issuer`
+   * (issuer keys, or `_none`), on GET /documents too; dividers keyed
+   * `issuer:<key>` (`issuer:` for none given, "No issuer given"); the
+   * household's "Same as" list — GET /issuers/groups, POST /issuers/same and
+   * /issuers/separate — which the cabinet, the dividers and the `issued_by`
+   * filter all follow; and POST /cabinet/preview's `same_as`. Absent from
+   * older vaults.
+   */
+  cabinet_issuer?: boolean;
+  /**
    * Caregivers and turning 18 (0.9.0, H1b): GET /caregivers, GET and POST
    * /members/{id}/caregivers, POST /members/{id}/caregivers/{caregiverId}/
    * keep and /revoke, GET /members/{id}/caregiver-views; GET

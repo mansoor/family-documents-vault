@@ -1594,6 +1594,12 @@ export interface Schema {
     identifier: string | null;
     /** Who issued it (0025). */
     issued_by: string | null;
+    /**
+     * Its issuer key (0129, 0.9.0-dev.91): `issued_by` as `issuerKey`
+     * (@fdv/shared) compares it, written by the vault with it; null with
+     * none. What the household's "Same as" list (issuer_alias) names.
+     */
+    issuer_key: ColumnType<string | null, string | null | undefined, string | null>;
     physical_location: string | null;
     /**
      * Where the original is, as a place in somebody's cabinet (0104, C3):
@@ -2329,6 +2335,30 @@ export interface Schema {
     folder_id: string;
     document_id: string;
     pinned_at: GeneratedTimestamp;
+  };
+
+  /**
+   * The household's "Same as" list (0129, 0.9.0-dev.91): an issuer key said
+   * to be the same issuer as another, one level only. Read by the household,
+   * written by owners and adults.
+   */
+  issuer_alias: {
+    household_id: string;
+    from_key: string;
+    to_key: string;
+    /** The keys it followed before a join moved it, the nearest first: what a separation puts back. */
+    path: ColumnType<string[], string[] | undefined, string[]>;
+    created_by: string | null;
+    created_at: GeneratedTimestamp;
+  };
+
+  /** Two issuer keys said to be separate (0129): never suggested as one again. */
+  issuer_apart: {
+    household_id: string;
+    a_key: string;
+    b_key: string;
+    created_by: string | null;
+    created_at: GeneratedTimestamp;
   };
 
   /**

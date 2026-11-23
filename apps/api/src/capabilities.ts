@@ -246,6 +246,8 @@ export function buildCapabilities(config: CapabilityConfig): Capabilities {
       cabinet_pins: true,
       // 0.9.0-dev.90: a cabinet arranged by levels you choose, and per cabinet.
       cabinet_levels: true,
+      // 0.9.0-dev.91: Who issued it as a level, and the household's "Same as" list.
+      cabinet_issuer: true,
       // 0.9.0 (H1b): caregivers for somebody's medical papers, and turning 18.
       caregivers: true,
       // 0.9.0-dev.45: POST /documents takes an Idempotency-Key.

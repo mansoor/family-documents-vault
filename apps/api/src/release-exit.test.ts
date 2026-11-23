@@ -711,6 +711,21 @@ const RULES: Record<string, Rule> = {
     bodies: () => [{ tag: AHMED_TAG }, { tag: AHMED_DETAIL_TAG }, { tag: AHMED_LABEL }],
   },
   'GET /api/v1/issuers': { who: 'signedIn' },
+  // The household's "Same as" list of issuers (0.9.0-dev.91): its groups
+  // read by anybody signed in, from what they can read; kept by owners and
+  // adults, only of issuers on papers they can read.
+  'GET /api/v1/issuers/groups': { who: 'signedIn' },
+  'POST /api/v1/issuers/same': {
+    who: 'adults',
+    bodies: () => [
+      { from: 'ahmed private issuer 541', to: 'stolen 541' },
+      { from: 'stolen 541', to: 'ahmed private issuer 541' },
+    ],
+  },
+  'POST /api/v1/issuers/separate': {
+    who: 'adults',
+    bodies: () => [{ from: 'ahmed private issuer 541', to: 'stolen 541' }],
+  },
   'GET /api/v1/document-types': { who: 'signedIn' },
   'GET /api/v1/document-attributes': { who: 'signedIn' },
 

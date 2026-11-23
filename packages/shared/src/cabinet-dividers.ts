@@ -1,5 +1,6 @@
 import type { CabinetLevel, FolderFilter } from './cabinet.js';
 import type { DocumentView } from './documents.js';
+import { compareIssuerNames, NO_ISSUER_GIVEN } from './issuer-groups.js';
 import { CATEGORY_LABELS } from './tokens.js';
 
 /**
@@ -145,12 +146,19 @@ export interface DividerPaper {
   category: string | null;
   /** A person's id, `household`, or `none` (Not sure yet). */
   person: string;
+  /**
+   * Who issued it (0.9.0-dev.91): its issuer key, the household's "Same as"
+   * list applied; null or absent for none given.
+   */
+  issuer?: string | null | undefined;
 }
 
 /** How dividers name people and kinds, as the reader is given them, and put people in order. */
 export interface DividerNames {
   person: (id: string) => string;
   kind: (key: string) => string;
+  /** An issuer key's name, the household's spelling (0.9.0-dev.91); the key itself where absent. */
+  issuer?: ((key: string) => string) | undefined;
   personOrder?: ((a: string, b: string) => number) | undefined;
 }
 
@@ -182,6 +190,8 @@ function segmentOf(dim: DividerDim, paper: DividerPaper, spans: readonly DaySpan
       return `topic:${paper.category ?? ''}`;
     case 'person':
       return `person:${paper.person}`;
+    case 'issuer':
+      return `issuer:${paper.issuer ?? ''}`;
   }
 }
 
@@ -328,6 +338,11 @@ function orderOf(dim: DividerDim, names: DividerNames): (a: string, b: string) =
       return (a, b) => noneLast(a, b, (x, y) => topicRank(x) - topicRank(y) || x.localeCompare(y));
     case 'person':
       return (a, b) => noneLast(a, b, (x, y) => names.personOrder?.(x, y) || x.localeCompare(y));
+    case 'issuer': {
+      const name = (v: string) => names.issuer?.(v) ?? v;
+      return (a, b) =>
+        noneLast(a, b, (x, y) => compareIssuerNames(name(x), name(y)) || compareIssuerNames(x, y));
+    }
     case 'ranges':
       return () => 0;
   }
@@ -365,6 +380,8 @@ function leafOf(
     } else if (dim === 'kind') name = value === '' ? NO_KIND_YET : names.kind(value);
     else if (dim === 'topic')
       name = value === '' ? NO_TOPIC_YET : (CATEGORY_LABELS[value] ?? value);
+    else if (dim === 'issuer')
+      name = value === '' ? NO_ISSUER_GIVEN : (names.issuer?.(value) ?? value);
     else name = names.person(value);
     return { level: dim === 'ranges' ? 'year' : dim, key: seg, name };
   });
@@ -392,7 +409,10 @@ function leafOf(
 export interface DividerStep {
   /** The level it is a step of: a folder's own range is in Year's place. */
   level: CabinetLevel;
-  /** `year:2025`, `range:0`, `other`, `kind:payslip`, `topic:`, `person:household`… */
+  /**
+   * `year:2025`, `range:0`, `other`, `kind:payslip`, `topic:`,
+   * `person:household`, `issuer:barclays` (0.9.0-dev.91), `issuer:` (none given)…
+   */
   key: string;
   name: string;
 }
@@ -432,7 +452,7 @@ export interface FolderDivider {
 export type DividerAtom =
   | { within: DaySpan }
   | { outside: DaySpan[] }
-  | { level: 'kind' | 'topic' | 'person'; value: string | null };
+  | { level: 'kind' | 'topic' | 'person' | 'issuer'; value: string | null };
 
 export interface DividerAsk {
   atoms: DividerAtom[];
@@ -464,7 +484,7 @@ export function dividerAsks(
   const atoms: DividerAtom[] = [];
   let next = 0;
   for (const seg of key.split('/')) {
-    const level = /^(kind|topic|person):(.*)$/s.exec(seg);
+    const level = /^(kind|topic|person|issuer):(.*)$/s.exec(seg);
     const want: DividerDim[] =
       seg === 'other'
         ? ['year', 'ranges']
@@ -504,7 +524,13 @@ export function paperBehind(ask: DividerAsk, paper: DividerPaper): boolean {
     if ('within' in a) return inSpan(paper.day, a.within);
     if ('outside' in a) return !a.outside.some((s) => inSpan(paper.day, s));
     const v =
-      a.level === 'kind' ? paper.type_key : a.level === 'topic' ? paper.category : paper.person;
+      a.level === 'kind'
+        ? paper.type_key
+        : a.level === 'topic'
+          ? paper.category
+          : a.level === 'issuer'
+            ? paper.issuer
+            : paper.person;
     return (v ?? null) === a.value;
   };
   return ask.atoms.every(holds) && !(ask.none_of ?? []).some((leaf) => leaf.every(holds));
@@ -636,7 +662,7 @@ export type DividerProblemCode =
   | 'cabinet_divider_levels';
 
 /** The levels a folder may be divided by: a cabinet's own (`CABINET_LEVELS`). */
-const DIVIDER_LEVELS: ReadonlySet<string> = new Set(['topic', 'person', 'year', 'kind']);
+const DIVIDER_LEVELS: ReadonlySet<string> = new Set(['topic', 'person', 'year', 'kind', 'issuer']);
 
 /** Two spans share a day: each end open counts as reaching as far as it can. */
 function overlap(a: DaySpan, b: DaySpan): boolean {
