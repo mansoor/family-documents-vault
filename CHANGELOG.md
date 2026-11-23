@@ -6,6 +6,25 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.9.0-dev.90] - 2026-11-22 — choose how your cabinet is arranged, level by level
+
+### Added
+
+- **Choose your cabinet's levels yourself.** In Arrange my cabinet, pick from Topic, Person, Year and Kind, and put them in the order you like: the first is your cabinets, the second their drawers, the third the folders. Two levels make one cabinet, as Person › Kind did before. Move a level with its ↑ and ↓ buttons, or drag it by its grip; remove one with ×, add one with its + button. The three ways you could choose before are still there, as one-tap shortcuts: Person › Topic › Year, Topic › Year › Person and Person › Kind.
+- **A fourth level makes dividers inside each folder**, so it costs no folders. Choose Topic › Year › Person › Kind, say, and the Financial › 2026 › Me folder opens on a divider for each kind: Bank statement, Payslip and so on. A folder can be divided by two levels too, one inside the other. Year is never a divider when it is already a cabinet, a drawer or a folder.
+- **See what your choice makes before you use it.** The page says how many cabinets, drawers and folders it makes, and where a paper would be found. When it is a lot to click through (more than 300 folders, more than 40 in one drawer, or more than 30 drawers in one cabinet) it says so in amber, about the cabinets you are arranging (never one you arranged by hand), and "Move it down for me" moves the level that makes so many down to the dividers, adding a level above it where it is last already. You can still save it. Only past what a cabinet can hold does it turn red, and then it can't be used until a level is moved down.
+- **Give one cabinet its own arrangement.** Each cabinet's ⋯ menu in Arrange my cabinet has "Arrange this cabinet": a Financial cabinet can go by Person and then Kind while the others follow your default. Only the levels inside the cabinet change: the cabinet itself always comes from your default's first level. The cabinet is marked "Own arrangement", here and on its card, and "Use the default again" puts it back.
+- Who issued it is shown as a level that is coming next.
+
+### Changed
+
+- **Changing levels keeps what you did by hand.** Wherever the same folder is drawn again, it keeps the name you gave it, whether it is hidden, your own date ranges and its pinned papers. Changing only the fourth and fifth levels redraws no folder at all, and a folder whose dividers you set yourself keeps them. You are still asked before any pinned paper is let go, and the page says how many would be.
+- **Cabinets you arranged yourself are kept.** A cabinet kept from your folder tree, or arranged by hand, is no longer replaced when you choose levels: it stays beside the drawn ones, marked "Arranged by hand", and is never redrawn or added to. A cabinet arranged before this version reads as arranged by hand until you choose its levels.
+- **New papers land where your levels put them**, in a cabinet with its own arrangement too, even when a cabinet you arranged by hand holds them already.
+- The line above your cabinets says how it is arranged: "Arranged by Topic › Year › Person", or "Arranged by hand".
+- **The phone app keeps working** and shows the dividers of a folder divided by two levels as one list, each named like "Bank statement · Barclays". A later phone app will group them.
+- Arranging your cabinet stays yours alone: nothing about it appears in the household's activity.
+
 ## [0.9.0-dev.89] - 2026-11-22 — no more needless clicks in My cabinet
 
 ### Changed

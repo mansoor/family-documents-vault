@@ -3,6 +3,8 @@ import { deriveKey } from '@fdv/crypto';
 import { householdToday, type Db } from '@fdv/db';
 import {
   DIVIDER_YEARS,
+  type DividerAtom,
+  type DividerDim,
   DOCUMENT_PAGE_MAX,
   HOUSEHOLD_MEMBER_FILTER,
   LOCATION_SORT_REFUSAL,
@@ -648,6 +650,43 @@ function spanSql(span: DaySpan): RawBuilder<boolean> {
   return parts.length === 0 ? sql<boolean>`true` : sql<boolean>`(${sql.join(parts, sql` and `)})`;
 }
 
+/**
+ * One step of a divider (0.9.0-dev.90): a year or range's days, none of
+ * them, or a kind, topic or person — read exactly as the grouped count
+ * (`documentDividerCounts`) groups it, a value missing as none.
+ */
+function atomSql(a: DividerAtom): RawBuilder<boolean> {
+  if ('within' in a) return spanSql(a.within);
+  if ('outside' in a) {
+    return a.outside.length === 0
+      ? sql<boolean>`true`
+      : sql<boolean>`not (${sql.join(a.outside.map(spanSql), sql` or `)})`;
+  }
+  switch (a.level) {
+    case 'kind':
+      return a.value === null
+        ? sql<boolean>`d.type_key is null`
+        : sql<boolean>`d.type_key = ${a.value}`;
+    case 'topic':
+      return a.value === null
+        ? sql<boolean>`d.category is null`
+        : sql<boolean>`d.category = ${a.value}`;
+    case 'person':
+      return a.value === HOUSEHOLD_MEMBER_FILTER
+        ? sql<boolean>`d.household_owned`
+        : a.value === NOBODY_MEMBER_FILTER
+          ? sql<boolean>`(not d.household_owned and d.owner_member_id is null)`
+          : sql<boolean>`(not d.household_owned and d.owner_member_id::text = ${a.value})`;
+  }
+}
+
+/** Every step of a divider together. */
+function atomsSql(atoms: readonly DividerAtom[]): RawBuilder<boolean> {
+  return atoms.length === 0
+    ? sql<boolean>`true`
+    : sql<boolean>`(${sql.join(atoms.map(atomSql), sql` and `)})`;
+}
+
 /** A cabinet folder's own conditions (C2), each narrowing what `whereOf` gives. */
 function cabinetClauses(c: CabinetConditions): RawBuilder<unknown>[] {
   const parts: RawBuilder<unknown>[] = [];
@@ -655,43 +694,69 @@ function cabinetClauses(c: CabinetConditions): RawBuilder<unknown>[] {
   if (c.except !== undefined && c.except.length > 0) {
     parts.push(sql`not (d.id = any(${c.except}::uuid[]))`);
   }
-  if (c.within) parts.push(spanSql(c.within));
-  for (const span of c.outside ?? []) parts.push(sql`not ${spanSql(span)}`);
+  if (c.divider) {
+    parts.push(atomsSql(c.divider.atoms));
+    for (const leaf of c.divider.none_of ?? []) parts.push(sql`not ${atomsSql(leaf)}`);
+  }
   return parts;
 }
 
 /**
+ * One step of a folder's grouped count, as a key's part: what
+ * `dividerKeyOf` (@fdv/shared) gives a paper, worked out by Postgres.
+ */
+function dimSql(dim: DividerDim, spans: readonly DaySpan[]): RawBuilder<string> {
+  const year = sql`extract(year from ${datedSql('d')})::int`;
+  switch (dim) {
+    case 'year':
+      return sql<string>`case when ${year} between ${DIVIDER_YEARS.first} and ${DIVIDER_YEARS.last}
+                           then 'year:' || ${year}::text else 'other' end`;
+    case 'ranges':
+      return spans.length === 0
+        ? sql<string>`'other'`
+        : sql<string>`case ${sql.join(
+            spans.map((s, i) => sql`when ${spanSql(s)} then ${`range:${i}`}`),
+            sql` `,
+          )} else 'other' end`;
+    case 'kind':
+      return sql<string>`'kind:' || coalesce(d.type_key, '')`;
+    case 'topic':
+      return sql<string>`'topic:' || coalesce(d.category, '')`;
+    case 'person':
+      return sql<string>`'person:' || case when d.household_owned then ${HOUSEHOLD_MEMBER_FILTER}
+                                        when d.owner_member_id is null then ${NOBODY_MEMBER_FILTER}
+                                        else d.owner_member_id::text end`;
+  }
+}
+
+/**
  * How many documents `q` gives this reader behind each of a folder's
- * dividers, in one grouped count (a cabinet folder's dividers): by the year each
- * is about (`year:2025`, or `other` outside 1000 to 9999), by which of a
- * folder's own ranges holds its date (`range:N`, N its place among
- * `spans`; `other` for none), or all together (`all`). Only keys with
- * something behind them are there. Each count is what the table would
- * count for `q` within that divider — the same conditions (`whereOf`) and,
- * for a question that asks a status, the same worked-out status — so they
- * add up to its total. Nothing for a question the table would refuse.
+ * dividers, in one grouped count: by the key `dividerKeyOf` (@fdv/shared)
+ * gives a paper — each of the folder's steps (`dims`: a year, `year:2025`
+ * or `other` outside 1000 to 9999; one of its own ranges, `range:N`, N its
+ * place among `spans`, or `other`; a kind, a topic or whose it is) joined
+ * by `/`; `all` for none. Only keys with something behind them are there.
+ * Each count is what the table would count for `q` within that divider —
+ * the same conditions (`whereOf`) and, for a question that asks a status,
+ * the same worked-out status — so they add up to its total. Nothing for a
+ * question the table would refuse.
  */
 export async function documentDividerCounts(
   trx: Db,
   p: Principal,
   q: ListQuery,
-  by: 'years' | 'all' | { spans: readonly DaySpan[] },
+  dims: readonly DividerDim[],
+  spans: readonly DaySpan[],
 ): Promise<Map<string, number>> {
   const out = new Map<string, number>();
   if (tableRefuses(p, q)) return out;
-  const year = sql`extract(year from ${datedSql('d')})::int`;
   const group =
-    by === 'all'
+    dims.length === 0
       ? sql<string>`'all'`
-      : by === 'years'
-        ? sql<string>`case when ${year} between ${DIVIDER_YEARS.first} and ${DIVIDER_YEARS.last}
-                           then 'year:' || ${year}::text else 'other' end`
-        : by.spans.length === 0
-          ? sql<string>`'other'`
-          : sql<string>`case ${sql.join(
-              by.spans.map((s, i) => sql`when ${spanSql(s)} then ${`range:${i}`}`),
-              sql` `,
-            )} else 'other' end`;
+      : sql<string>`${sql.join(
+          dims.map((d) => dimSql(d, spans)),
+          sql` || '/' || `,
+        )}`;
   if (asksStatus(q, q.status)) {
     const rows = (
       await sql<StatusRow & { g: string }>`

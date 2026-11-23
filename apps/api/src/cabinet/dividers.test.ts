@@ -114,7 +114,7 @@ describe.skipIf(!testAdminUrl())('dividers and pins in my cabinet (C2)', () => {
   const oneDrawer = (
     folders: Array<Omit<CabinetFolder, 'hidden'> & { hidden?: boolean }>,
   ): CabinetLayout => ({
-    arranged_by: null,
+    levels: null,
     cabinets: [
       {
         id: 'c1',
@@ -280,13 +280,13 @@ describe.skipIf(!testAdminUrl())('dividers and pins in my cabinet (C2)', () => {
             id: 'tia',
             name: 'Tia',
             filter: { member_id: member('teen') },
-            dividers: { years: false, ranges: [] },
+            dividers: { levels: [], ranges: [] },
           },
         ]),
       );
       const c = await opened('owner', 'tia');
       expect(c.dividers).toEqual([
-        { key: 'all', kind: 'all', name: '', from: null, to: null, count: 6 },
+        { key: 'all', kind: 'all', name: '', from: null, to: null, count: 6, path: [] },
       ]);
       expect((await behind('owner', 'tia', 'all')).total).toBe(6);
       // A divider the folder does not have is not one.
@@ -307,7 +307,7 @@ describe.skipIf(!testAdminUrl())('dividers and pins in my cabinet (C2)', () => {
       await saved('owner', oneDrawer([{ id: 'tax', name: 'Tax', filter: { category: 'tax' } }]));
       const c = await opened('owner', 'tax');
       expect(c.dividers).toEqual([
-        { key: 'all', kind: 'all', name: '', from: null, to: null, count: 1 },
+        { key: 'all', kind: 'all', name: '', from: null, to: null, count: 1, path: [] },
       ]);
       expect(c.total).toBe(1);
       expect((await counts('owner')).tax).toBe(1);
@@ -325,7 +325,7 @@ describe.skipIf(!testAdminUrl())('dividers and pins in my cabinet (C2)', () => {
             id: 'tax',
             name: 'Tax',
             filter: { category: 'tax' },
-            dividers: { years: true, ranges: [{ name: 'Lately', from: '2020', to: null }] },
+            dividers: { levels: ['year'], ranges: [{ name: 'Lately', from: '2020', to: null }] },
           },
         ]),
       );
@@ -338,7 +338,7 @@ describe.skipIf(!testAdminUrl())('dividers and pins in my cabinet (C2)', () => {
     it('never shows a year folder in a year drawer its own year as a divider, arranged by hand or drawn', async () => {
       // By hand: a 2023 drawer, Tia's folder of 2023, and one of 2027 with nothing yet.
       await saved('owner', {
-        arranged_by: null,
+        levels: null,
         cabinets: [
           {
             id: 'med',
@@ -374,7 +374,10 @@ describe.skipIf(!testAdminUrl())('dividers and pins in my cabinet (C2)', () => {
       expect(keyed(await opened('owner', 'tia27'))).toEqual([['all', 0]]);
       // Drawn by topic, then year, then person: every folder is a year's already.
       const drawn = await ok<{ layout: CabinetLayout }>(
-        call('owner', 'POST', '/api/v1/cabinet/preview', { arrange_by: 'category_year_person' }),
+        call('owner', 'POST', '/api/v1/cabinet/preview', {
+          levels: ['topic', 'year', 'person'],
+          layout: { levels: null, cabinets: [] },
+        }),
       );
       await saved('owner', drawn.layout);
       const folders = drawn.layout.cabinets.flatMap((cab) => cab.drawers.flatMap((d) => d.folders));
@@ -419,7 +422,10 @@ describe.skipIf(!testAdminUrl())('dividers and pins in my cabinet (C2)', () => {
             id: 'teens',
             name: 'Teens',
             filter: { member_id: teen(), dated_from: '2021-01-01', dated_to: '2024-12-31' },
-            dividers: { years: true, ranges: [{ name: 'Teen years', from: '2020', to: null }] },
+            dividers: {
+              levels: ['year'],
+              ranges: [{ name: 'Teen years', from: '2020', to: null }],
+            },
           },
         ]),
       );
@@ -577,7 +583,7 @@ describe.skipIf(!testAdminUrl())('dividers and pins in my cabinet (C2)', () => {
     });
 
     it('replace the years: each paper behind the range that holds its date, the rest behind Other years', async () => {
-      await saved('owner', school({ years: true, ranges: stages }));
+      await saved('owner', school({ levels: ['year'], ranges: stages }));
       const c = await opened('owner', 'school');
       expect(c.dividers.map((d) => [d.name, d.count, d.from, d.to])).toEqual([
         ['College', 0, '2027-09-01', null],
@@ -594,7 +600,7 @@ describe.skipIf(!testAdminUrl())('dividers and pins in my cabinet (C2)', () => {
       );
       expect((await behind('owner', 'school', 'other')).titles).toEqual(['Nursery photo day']);
       // A teen: the medical record kept to the adults is behind no divider of hers.
-      await saved('teen', school({ years: true, ranges: stages }));
+      await saved('teen', school({ levels: ['year'], ranges: stages }));
       const t = await opened('teen', 'school');
       expect(t.dividers.find((d) => d.name === 'Middle school')?.count).toBe(1);
       expect(t.total).toBe(5);
@@ -605,7 +611,7 @@ describe.skipIf(!testAdminUrl())('dividers and pins in my cabinet (C2)', () => {
       await saved(
         'owner',
         school({
-          years: true,
+          levels: ['year'],
           ranges: [
             { name: 'Elementary', from: '2014', to: '2020' },
             { name: 'Middle school', from: '2020', to: '2023' },
@@ -630,7 +636,7 @@ describe.skipIf(!testAdminUrl())('dividers and pins in my cabinet (C2)', () => {
       // Typed as a full date, the same year is an overlap.
       const r = await call('owner', 'PUT', '/api/v1/cabinet', {
         layout: school({
-          years: true,
+          levels: ['year'],
           ranges: [
             { name: 'Elementary', from: '2014', to: '2020-12-31' },
             { name: 'Middle school', from: '2020', to: '2023' },
@@ -645,7 +651,7 @@ describe.skipIf(!testAdminUrl())('dividers and pins in my cabinet (C2)', () => {
       const at = await mine('owner');
       for (const bad of ['0000-01-01', '0000', '0999-12-31']) {
         const r = await call('owner', 'PUT', '/api/v1/cabinet', {
-          layout: school({ years: true, ranges: [{ name: 'Long ago', from: bad, to: null }] }),
+          layout: school({ levels: ['year'], ranges: [{ name: 'Long ago', from: bad, to: null }] }),
           version: at.version,
         });
         expect(r.statusCode, bad).toBe(422);
@@ -691,7 +697,7 @@ describe.skipIf(!testAdminUrl())('dividers and pins in my cabinet (C2)', () => {
       const refusals: Array<[FolderDividers, string]> = [
         [
           {
-            years: true,
+            levels: ['year'],
             ranges: [
               { name: 'Elementary', from: '2014-01-01', to: '2020-12-31' },
               { name: 'Middle', from: '2020-01-01', to: '2023-12-31' },
@@ -701,7 +707,7 @@ describe.skipIf(!testAdminUrl())('dividers and pins in my cabinet (C2)', () => {
         ],
         [
           {
-            years: true,
+            levels: ['year'],
             ranges: [
               { name: 'College', from: '2027-09-01', to: null },
               { name: 'Later', from: '2030-01-01', to: null },
@@ -710,28 +716,31 @@ describe.skipIf(!testAdminUrl())('dividers and pins in my cabinet (C2)', () => {
           'cabinet_divider_overlap',
         ],
         [
-          { years: true, ranges: [{ name: 'Backwards', from: '2020-01-01', to: '2019-01-01' }] },
+          {
+            levels: ['year'],
+            ranges: [{ name: 'Backwards', from: '2020-01-01', to: '2019-01-01' }],
+          },
           'cabinet_divider_dates',
         ],
         [
-          { years: true, ranges: [{ name: 'Nowhere', from: null, to: null }] },
+          { levels: ['year'], ranges: [{ name: 'Nowhere', from: null, to: null }] },
           'cabinet_divider_dates',
         ],
         [
-          { years: true, ranges: [{ name: 'Not a day', from: '2020-02-30', to: null }] },
+          { levels: ['year'], ranges: [{ name: 'Not a day', from: '2020-02-30', to: null }] },
           'cabinet_divider_dates',
         ],
         [
-          { years: true, ranges: [{ name: '  ', from: '2020-01-01', to: null }] },
+          { levels: ['year'], ranges: [{ name: '  ', from: '2020-01-01', to: null }] },
           'cabinet_divider_name_missing',
         ],
         [
-          { years: true, ranges: [{ name: 'x'.repeat(81), from: '2020-01-01', to: null }] },
+          { levels: ['year'], ranges: [{ name: 'x'.repeat(81), from: '2020-01-01', to: null }] },
           'cabinet_divider_name_too_long',
         ],
         [
           {
-            years: true,
+            levels: ['year'],
             ranges: Array.from({ length: 21 }, (_, i) => ({
               name: `Y${i}`,
               from: `${2000 + i}-01-01`,

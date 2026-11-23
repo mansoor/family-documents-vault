@@ -1,10 +1,10 @@
 import { createDb, createPool, withPrincipal, type Db } from '@fdv/db';
 import { testAdminUrl } from '@fdv/db/testing';
 import {
-  ARRANGE_BY,
+  LEVEL_PRESETS,
   CABINET_LIMITS,
   type AlsoIn,
-  type ArrangeBy,
+  type CabinetLevel,
   type CabinetCounts,
   type CabinetFolder,
   type CabinetLayout,
@@ -79,8 +79,14 @@ describe.skipIf(!testAdminUrl())('my cabinet', () => {
   };
   const member = (who: Person) => people[who].member_id;
 
-  const preview = (who: Person, by: ArrangeBy) =>
-    ok<CabinetPreview>(call(who, 'POST', '/api/v1/cabinet/preview', { arrange_by: by }));
+  /** A drawing by levels, afresh: over no arrangement at all. */
+  const preview = (who: Person, levels: readonly CabinetLevel[]) =>
+    ok<CabinetPreview>(
+      call(who, 'POST', '/api/v1/cabinet/preview', {
+        levels,
+        layout: { levels: null, cabinets: [] },
+      }),
+    );
   const mine = (who: Person) => ok<CabinetView>(call(who, 'GET', '/api/v1/cabinet'));
   const save = (who: Person, layout: CabinetLayout, version: number) =>
     call(who, 'PUT', '/api/v1/cabinet', { layout, version });
@@ -102,7 +108,7 @@ describe.skipIf(!testAdminUrl())('my cabinet', () => {
   };
   /** A layout of one cabinet, one drawer, and these folders. */
   const oneDrawer = (folders: Array<Omit<CabinetFolder, 'hidden'> & { hidden?: boolean }>) => ({
-    arranged_by: null,
+    levels: null,
     cabinets: [
       {
         id: 'c1',
@@ -270,8 +276,10 @@ describe.skipIf(!testAdminUrl())('my cabinet', () => {
 
   describe('Arrange by', () => {
     it('by person, then topic, then year: the caller first, every year newest first', async () => {
-      const p = await preview('owner', 'person_category_year');
-      expect(p.layout.arranged_by).toBe('person_category_year');
+      const p = await preview('owner', ['person', 'topic', 'year']);
+      expect(p.layout.levels).toEqual(['person', 'topic', 'year']);
+      // What older apps read: arranged by hand, as far as they know.
+      expect(p.layout.arranged_by).toBeNull();
       const shape = p.layout.cabinets.map((c) => ({
         name: c.name,
         drawers: c.drawers.map((d) => ({
@@ -317,7 +325,7 @@ describe.skipIf(!testAdminUrl())('my cabinet', () => {
     });
 
     it('by topic, then year, then person: a Tax cabinet with a drawer for each year', async () => {
-      const p = await preview('owner', 'category_year_person');
+      const p = await preview('owner', ['topic', 'year', 'person']);
       const tax = p.layout.cabinets.find((c) => c.name === 'Tax');
       expect(
         tax?.drawers.map((d) => [d.name, d.folders.map((f) => `${f.name}:${p.counts[f.id]}`)]),
@@ -334,7 +342,7 @@ describe.skipIf(!testAdminUrl())('my cabinet', () => {
     });
 
     it('by person, then kind: one cabinet, a drawer for each person', async () => {
-      const p = await preview('owner', 'person_kind');
+      const p = await preview('owner', ['person', 'kind']);
       expect(p.layout.cabinets).toHaveLength(1);
       expect(p.layout.cabinets[0]?.name).toBe('My cabinet');
       const drawers = p.layout.cabinets[0]?.drawers ?? [];
@@ -353,7 +361,7 @@ describe.skipIf(!testAdminUrl())('my cabinet', () => {
 
     it('is drawn from what each person can see: never another’s Only me, nor a sensitive paper kept from them', async () => {
       // Tia: her passport and her school report; not the medical record kept to the adults.
-      const teen = await preview('teen', 'person_category_year');
+      const teen = await preview('teen', ['person', 'topic', 'year']);
       const flat = foldersOf(teen.layout).map((x) => x.path.join(' › '));
       expect(flat).toContain(`Tia › Identity › ${lastYear}`);
       expect(flat).toContain(`Tia › Education › ${thisYear}`);
@@ -364,7 +372,7 @@ describe.skipIf(!testAdminUrl())('my cabinet', () => {
       );
       expect(olive && teen.counts[olive.f.id]).toBe(1);
       // Sam: his Only me statement, and no Only me of Olive's.
-      const adult = await preview('adult', 'category_year_person');
+      const adult = await preview('adult', ['topic', 'year', 'person']);
       const adultFlat = foldersOf(adult.layout).map((x) => x.path.join(' › '));
       expect(adultFlat).toContain(`Financial › ${lastYear} › Sam`);
       const tax = foldersOf(adult.layout).find(
@@ -372,7 +380,7 @@ describe.skipIf(!testAdminUrl())('my cabinet', () => {
       );
       expect(tax && adult.counts[tax.f.id]).toBe(1);
       // The viewer: nothing kept to the adults.
-      const viewer = await preview('viewer', 'person_category_year');
+      const viewer = await preview('viewer', ['person', 'topic', 'year']);
       expect(
         foldersOf(viewer.layout)
           .map((x) => x.path.join(' › '))
@@ -387,13 +395,13 @@ describe.skipIf(!testAdminUrl())('my cabinet', () => {
 
     it('holds, saved, exactly what it counted: each folder’s count, and its list, the same', async () => {
       for (const who of ['owner', 'adult', 'teen', 'viewer'] as Person[]) {
-        for (const by of ARRANGE_BY) {
+        for (const by of LEVEL_PRESETS) {
           const p = await preview(who, by);
           await saved(who, p.layout);
           const got = await counts(who);
-          expect(got, `${who} ${by}`).toEqual(p.counts);
+          expect(got, `${who} ${by.join(' › ')}`).toEqual(p.counts);
           for (const { f } of foldersOf(p.layout)) {
-            expect((await listed(who, f.filter)).total, `${who} ${by} ${f.name}`).toBe(
+            expect((await listed(who, f.filter)).total, `${who} ${by.join(' › ')} ${f.name}`).toBe(
               p.counts[f.id],
             );
           }
@@ -401,9 +409,20 @@ describe.skipIf(!testAdminUrl())('my cabinet', () => {
       }
     });
 
-    it('refuses a way it does not know', async () => {
+    it('refuses a way it does not know, and levels that are not 2 to 5, each once', async () => {
       const r = await call('owner', 'POST', '/api/v1/cabinet/preview', { arrange_by: 'colour' });
       expect(r.statusCode).toBe(422);
+      for (const levels of [['year'], ['year', 'year'], ['year', 'colour'], []]) {
+        const wrong = await call('owner', 'POST', '/api/v1/cabinet/preview', { levels });
+        expect(wrong.statusCode, JSON.stringify(levels)).toBe(422);
+      }
+    });
+
+    it('still takes an older vault’s way, for its levels', async () => {
+      const p = await ok<CabinetPreview>(
+        call('owner', 'POST', '/api/v1/cabinet/preview', { arrange_by: 'person_kind' }),
+      );
+      expect(p.layout.levels).toEqual(['person', 'kind']);
     });
   });
 
@@ -644,9 +663,9 @@ describe.skipIf(!testAdminUrl())('my cabinet', () => {
         oneDrawer([{ id: 'has space', name: 'A', filter: {} }]),
         oneDrawer([{ id: 'f', name: '   ', filter: {} }]),
         oneDrawer([{ id: 'f', name: 'x'.repeat(CABINET_LIMITS.name + 1), filter: {} }]),
-        { arranged_by: null, cabinets: [], extra: true },
+        { levels: null, cabinets: [], extra: true },
         {
-          arranged_by: null,
+          levels: null,
           cabinets: Array.from({ length: 4 }, (_, c) => ({
             id: `c${c}`,
             name: `C${c}`,
@@ -751,7 +770,7 @@ describe.skipIf(!testAdminUrl())('my cabinet', () => {
           (
             await trx
               .updateTable('cabinet_layout')
-              .set({ layout: JSON.stringify({ arranged_by: null, cabinets: [] }) })
+              .set({ layout: JSON.stringify({ levels: null, cabinets: [] }) })
               .where('member_id', '=', olive)
               .executeTakeFirst()
           ).numUpdatedRows,
@@ -809,16 +828,28 @@ describe.skipIf(!testAdminUrl())('my cabinet', () => {
       await withPrincipal(one, principal('adult'), (trx) =>
         trx
           .insertInto('cabinet_layout')
-          .values({ household_id: hh, member_id: member('adult'), layout: '{"mine":1}' })
+          .values({
+            household_id: hh,
+            member_id: member('adult'),
+            layout: JSON.stringify({
+              levels: null,
+              cabinets: [{ id: 'm', name: 'Mine 1', hidden: false, drawers: [] }],
+            }),
+          })
           .onConflict((oc) =>
             oc
               .columns(['household_id', 'member_id'])
-              .doUpdateSet({ layout: '{"mine":2}' })
+              .doUpdateSet({
+                layout: JSON.stringify({
+                  levels: null,
+                  cabinets: [{ id: 'm', name: 'Mine 2', hidden: false, drawers: [] }],
+                }),
+              })
               .where('cabinet_layout.version', '>', 0),
           )
           .execute(),
       );
-      expect((await mine('adult')).layout).toEqual({ mine: 2 });
+      expect((await mine('adult')).layout?.cabinets.map((x) => x.name)).toEqual(['Mine 2']);
     });
 
     it('gives a caller who says nothing, or a share link, no row', async () => {
@@ -928,7 +959,7 @@ describe.skipIf(!testAdminUrl())('my cabinet', () => {
           }),
         );
       }
-      const p = await preview('owner', 'person_kind');
+      const p = await preview('owner', ['person', 'kind']);
       const names = (p.layout.cabinets[0]?.drawers ?? []).map((d) => d.name);
       const cut = names.filter((n) => n.startsWith('Bartholomew'));
       expect(cut).toHaveLength(2);

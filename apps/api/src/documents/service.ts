@@ -90,6 +90,7 @@ import {
   type DocumentPage,
   type DocumentSort,
   type DocumentTypeView,
+  type DividerAsk,
   type DocumentView,
   type NoLongerNeededView,
   type OfflineItem,
@@ -281,10 +282,12 @@ export interface CabinetConditions {
   only?: string[] | undefined;
   /** Not these (a folder's pinned papers, listed apart from its dividers). */
   except?: string[] | undefined;
-  /** Dated within these days (a divider's): the date a paper is about. */
-  within?: DaySpan | undefined;
-  /** Dated within none of these (Other years: a paper in none of a folder's ranges). */
-  outside?: DaySpan[] | undefined;
+  /**
+   * What one divider asks (by levels since 0.9.0-dev.90): the days a
+   * paper is about within a year or range, or none of them, its kind, topic
+   * or whose it is — and, for Everything else, none of the others.
+   */
+  divider?: DividerAsk | undefined;
 }
 
 export interface UploadInput {

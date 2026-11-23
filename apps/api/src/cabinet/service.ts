@@ -4,17 +4,18 @@ import {
   addFolderTree,
   addToDrawing,
   askedFolders,
+  cabinetSize,
   compareFolders,
-  drawCabinet,
+  dividerAsks,
+  dividerDims,
   NAME_HOLDS_SEPARATOR,
   PLACE_SEPARATOR,
-  DIVIDER_YEARS,
-  dividerMode,
   dividersProblemOf,
+  redrawCabinet,
+  RedrawRefused,
   resolvedRanges,
   PIN_IN_TRASH,
   PIN_LIMITS,
-  shownDividerMode,
   shownDividers,
   TOO_MANY_PINS,
   CABINET_CHANGED,
@@ -31,7 +32,6 @@ import {
   shortName,
   THE_HOUSEHOLD,
   type AlsoIn,
-  type ArrangeBy,
   type CabinetCounts,
   type CabinetFolder,
   type CabinetFromFolders,
@@ -39,7 +39,9 @@ import {
   type CabinetLayout,
   type CabinetNames,
   type CabinetPreview,
+  type CabinetPreviewAsk,
   type CabinetView,
+  type DividerAsk,
   type DocumentPage,
   type FolderContents,
   type FolderDivider,
@@ -53,13 +55,7 @@ import { ApiError, notFound } from '../errors.js';
 import { datedSql } from '../documents/filters.js';
 import { followLayout, placeRefused } from '../documents/original-place.js';
 import { folderQuery, listQueryOf } from '../documents/list-query.js';
-import {
-  readDocument,
-  type CabinetConditions,
-  type DaySpan,
-  type DocumentService,
-  type ListQuery,
-} from '../documents/service.js';
+import { readDocument, type DocumentService, type ListQuery } from '../documents/service.js';
 import {
   documentDividerCounts,
   documentMatches,
@@ -104,38 +100,40 @@ function everyFolder(layout: CabinetLayout): CabinetFolder[] {
 }
 
 /**
- * The dividers a folder is opened with, each counted, from one
- * grouped count of its question (its pins left out): by year, by the
- * folder's own ranges, or all together — so that every paper of the folder
- * is behind exactly one of them. Which are shown, and which levels are
- * passed over, is `shownDividers`'s, as the fakes work it out too.
+ * The dividers a folder is opened with, each counted, from one grouped
+ * count of its question (its pins left out): by each of its divider steps —
+ * a year, one of its own ranges, a kind, a topic or whose it is — so that
+ * every paper of the folder is behind exactly one of them. Which are shown,
+ * and which steps are passed over, is `shownDividers`'s, as the fakes work
+ * it out too; people and kinds are named as the reader is given them.
  */
 async function foldersDividers(
   trx: Db,
   p: Principal,
   folder: CabinetFolder,
   q: ListQuery,
+  names: () => Promise<CabinetNames>,
 ): Promise<FolderDivider[]> {
-  const shape = { filter: folder.filter, dividers: dividersOf(folder) };
-  const mode = shownDividerMode(shape);
-  const counts = await documentDividerCounts(
-    trx,
-    p,
-    q,
-    mode === 'none'
-      ? 'all'
-      : mode === 'years'
-        ? 'years'
-        : { spans: resolvedRanges(shape.dividers) },
-  );
-  return shownDividers(shape, counts);
+  const counted = await dividerCounts(trx, p, folder, q);
+  return shownDividers(counted.shape, counted.counts, counted.named ? await names() : undefined);
 }
 
-/** The years that have a divider of their own: four figures, as Postgres and the vault take a day. */
-const EVERY_YEAR: DaySpan = {
-  from: `${DIVIDER_YEARS.first}-01-01`,
-  to: `${DIVIDER_YEARS.last}-12-31`,
-};
+/**
+ * A folder's grouped count (`foldersDividers`), without naming its
+ * dividers yet: whether people or kinds will need names (`named`), and
+ * whether kinds do (`kinds`), which are read only then.
+ */
+async function dividerCounts(trx: Db, p: Principal, folder: CabinetFolder, q: ListQuery) {
+  const shape = { filter: folder.filter, dividers: dividersOf(folder) };
+  const dims = dividerDims(shape);
+  const counts = await documentDividerCounts(trx, p, q, dims, resolvedRanges(shape.dividers));
+  return {
+    shape,
+    counts,
+    named: dims.some((d) => d === 'kind' || d === 'person'),
+    kinds: dims.includes('kind'),
+  };
+}
 
 /**
  * A folder's dividers, as they may be asked: a layout is checked as it is
@@ -150,27 +148,46 @@ function dividersOf(folder: CabinetFolder) {
 
 /**
  * What one divider of a folder asks beside its question, by its key; null
- * for none of its. A folder without its own ranges may be one plain list
- * (`all`): by year with one year or fewer to show, or a year folder.
+ * for none of its (`dividerAsks`). Everything else (`rest`) needs the
+ * dividers shown, worked out again.
  */
-function dividerOf(folder: CabinetFolder, key: string): CabinetConditions | null {
-  const dividers = dividersOf(folder);
-  const mode = dividerMode(dividers);
-  if (key === 'all') return mode === 'ranges' ? null : {};
-  if (mode === 'none') return null;
-  if (mode === 'years') {
-    if (key === 'other') return { outside: [EVERY_YEAR] };
-    const year = /^year:(\d{4})$/.exec(key);
-    const y = Number(year?.[1]);
-    return year && y >= DIVIDER_YEARS.first && y <= DIVIDER_YEARS.last
-      ? { within: { from: `${year[1]}-01-01`, to: `${year[1]}-12-31` } }
-      : null;
-  }
-  const spans = resolvedRanges(dividers);
-  if (key === 'other') return { outside: spans };
-  const at = /^range:(\d{1,2})$/.exec(key);
-  const r = at ? spans[Number(at[1])] : undefined;
-  return r ? { within: r } : null;
+async function dividerOf(
+  folder: CabinetFolder,
+  key: string,
+  shown: () => Promise<FolderDivider[]>,
+): Promise<DividerAsk | null> {
+  const shape = { filter: folder.filter, dividers: dividersOf(folder) };
+  return dividerAsks(shape, key, key === 'rest' ? await shown() : undefined);
+}
+
+/**
+ * A layout as the vault reads it (0.9.0-dev.90): its levels, or null —
+ * arranged by hand, as a layout saved before levels reads — and a folder's
+ * dividers left off where they are not as this release keeps them.
+ */
+export function readLayout(raw: unknown): CabinetLayout {
+  const l = raw as Partial<CabinetLayout> | null | undefined;
+  const cabinets = Array.isArray(l?.cabinets) ? l.cabinets : [];
+  return {
+    levels: Array.isArray(l?.levels) ? l.levels : null,
+    cabinets: cabinets.map((c) => ({
+      ...c,
+      drawers: (Array.isArray(c.drawers) ? c.drawers : []).map((d) => ({
+        ...d,
+        folders: (Array.isArray(d.folders) ? d.folders : []).map((f) => {
+          if (f.dividers === undefined || dividersProblemOf(f.dividers) === null) return f;
+          const rest = { ...f };
+          delete rest.dividers;
+          return rest;
+        }),
+      })),
+    })),
+  };
+}
+
+/** A layout as it is answered: with `arranged_by` null, which older apps read (deprecated). */
+function answered(layout: CabinetLayout): CabinetLayout {
+  return { levels: layout.levels, arranged_by: null, cabinets: layout.cabinets };
 }
 
 /**
@@ -202,8 +219,8 @@ export class CabinetService {
 
   /**
    * GET /cabinet: the caller's layout; none until they save one. One drawn
-   * by Arrange by is kept up to date first (19 Nov 2026): a paper no
-   * folder of it holds, shown or hidden, by its question or a pin — one of
+   * by levels is kept up to date first (19 Nov 2026): a paper no folder of
+   * its drawn cabinets holds, shown or hidden, by its question or a pin — one of
    * a topic, year or person there was none of when it was drawn — gets the
    * folder the drawing would have given it (`addToDrawing`), up to what a
    * cabinet may hold, saved as a new version made to the one read. A layout
@@ -220,13 +237,13 @@ export class CabinetService {
         .where('member_id', '=', p.memberId)
         .executeTakeFirst();
       if (!row) return null;
-      const layout = row.layout as CabinetLayout;
+      const layout = readLayout(row.layout);
       const view: CabinetView = {
-        layout,
+        layout: answered(layout),
         version: row.version,
         updated_at: row.updated_at.toISOString(),
       };
-      if (!Array.isArray(layout?.cabinets) || !layout.arranged_by) return { view, unheld: [] };
+      if (layout.levels === null) return { view, unheld: [] };
       const stamp = await stampOf(trx, p);
       const key = `${p.householdId}:${p.memberId}`;
       const looked = `${row.version}|${stamp.key}`;
@@ -238,13 +255,16 @@ export class CabinetService {
       ) {
         return { view, unheld: [] };
       }
-      const placed = await placesOf(trx, p, layout, 'every');
+      // Held by a drawn cabinet's folder or pin: one arranged by hand holds
+      // nothing for the drawing, which grows a folder of its own beside it.
+      const drawn = { ...layout, cabinets: layout.cabinets.filter((c) => c.drawn) };
+      const placed = await placesOf(trx, p, drawn, 'every');
       remember(LOOKED_OVER, key, looked);
       return { view, unheld: placed.documents.filter((d) => d.folders === 0) };
     });
     if (!read) return { layout: null, version: 0, updated_at: null };
     const { view, unheld } = read;
-    const layout = view.layout as CabinetLayout;
+    const layout = readLayout(view.layout);
     if (unheld.length === 0) return view;
     // Folders to add: named as the caller is given people and kinds, and
     // saved only over the version read — a change made meanwhile wins.
@@ -273,7 +293,7 @@ export class CabinetService {
       // Changed meanwhile, somewhere else: that version is what is read next.
       if (!saved) return view;
       return {
-        layout: kept.layout,
+        layout: answered(kept.layout),
         version: saved.version,
         updated_at: saved.updated_at.toISOString(),
       };
@@ -301,6 +321,9 @@ export class CabinetService {
     // spaces before its words would otherwise pass as its trimmed words,
     // and be kept, and written on documents, as more than the database takes.
     layout = trimmedNames(layout);
+    // As it is kept (0.9.0-dev.90): its levels, null for none sent, and
+    // nothing of `arranged_by`, which older apps still send.
+    layout = { levels: layout.levels ?? null, cabinets: layout.cabinets };
     checkLayout(p, layout);
     const json = JSON.stringify(layout);
     return withPrincipal(this.db, p, async (trx) => {
@@ -313,7 +336,7 @@ export class CabinetService {
         .where('member_id', '=', p.memberId)
         .executeTakeFirst();
       const had = new Map(
-        nodesOf(before?.layout as CabinetLayout | undefined).map((n) => [n.id, n.name]),
+        nodesOf(before ? readLayout(before.layout) : undefined).map((n) => [n.id, n.name]),
       );
       const joined = nodesOf(layout).find(
         (n) => n.name.includes(PLACE_SEPARATOR) && had.get(n.id) !== n.name,
@@ -364,19 +387,26 @@ export class CabinetService {
       // Where originals are, in its folders (C3): their names kept up with
       // it, and let go of the folders it no longer has.
       await followLayout(trx, p, layout).catch(placeRefused);
-      return { layout, version: saved.version, updated_at: saved.updated_at.toISOString() };
+      return {
+        layout: answered(layout),
+        version: saved.version,
+        updated_at: saved.updated_at.toISOString(),
+      };
     });
   }
 
   /**
-   * POST /cabinet/preview: a layout drawn from what the caller can see,
-   * not saved. Counted by the database with the rules every list keeps:
-   * the caller's own, out of the Trash, notes left out; a person named as
-   * the caller is given them, a kind as `types()` gives it.
+   * POST /cabinet/preview: a layout drawn by levels from what the caller
+   * can see, over their arrangement (`ask.layout`, else the one saved), not
+   * saved (`redrawCabinet`): the default levels, or one cabinet's own.
+   * Counted by the database with the rules every list keeps: the caller's
+   * own, out of the Trash, notes left out; a person named as the caller is
+   * given them, a kind as `types()` gives it. A drawing past what a cabinet
+   * may hold is described (`size.over`), never refused: PUT /cabinet refuses it.
    */
-  async preview(p: Principal, by: ArrangeBy): Promise<CabinetPreview> {
+  async preview(p: Principal, ask: CabinetPreviewAsk): Promise<CabinetPreview> {
     const kinds = await this.kindNames(p);
-    const { groups, names } = await withPrincipal(this.db, p, async (trx) => {
+    const { groups, names, saved } = await withPrincipal(this.db, p, async (trx) => {
       const rows = (
         await sql<{
           owner_member_id: string | null;
@@ -393,8 +423,17 @@ export class CabinetService {
              and d.type_key is distinct from ${NOTE_KIND}
            group by 1, 2, 3, 4, 5`.execute(trx)
       ).rows;
+      const row = ask.layout
+        ? undefined
+        : await trx
+            .selectFrom('cabinet_layout')
+            .select('layout')
+            .where('household_id', '=', p.householdId)
+            .where('member_id', '=', p.memberId)
+            .executeTakeFirst();
       return {
         names: await namesFor(trx, p, kinds),
+        saved: row ? readLayout(row.layout) : null,
         groups: rows.map((r): CabinetGroup => ({
           person: personOf(r),
           category: r.category,
@@ -404,12 +443,17 @@ export class CabinetService {
         })),
       };
     });
-    const drawn = drawCabinet(by, groups, names, () => randomBytes(6).toString('base64url'));
-    const problem = layoutProblemOf(drawn.layout);
-    if (problem !== null) {
-      throw new ApiError(422, problem.code, problem.message, { detail: by });
+    const base = ask.layout ? readLayout(ask.layout) : saved;
+    let drawn;
+    try {
+      drawn = redrawCabinet(base, ask, groups, names, () => randomBytes(6).toString('base64url'));
+    } catch (e) {
+      if (e instanceof RedrawRefused) {
+        throw new ApiError(422, 'cabinet_levels', e.message, { detail: 'levels' });
+      }
+      throw e;
     }
-    return drawn;
+    return { ...drawn, layout: answered(drawn.layout), size: cabinetSize(drawn.layout) };
   }
 
   /**
@@ -460,7 +504,7 @@ export class CabinetService {
       .map((r) => ({ path: r.path, documents: r.documents }))
       .sort((a, b) => compareFolders(a.path, b.path));
     const drawn = addFolderTree(
-      (row?.layout as CabinetLayout | undefined) ?? null,
+      row ? readLayout(row.layout) : null,
       rows.map((r) => ({ path: r.path, documents: r.documents, key: r.key })),
       () => randomBytes(6).toString('base64url'),
       { key: (path) => asked.get(path) ?? path.toLowerCase() },
@@ -471,6 +515,7 @@ export class CabinetService {
       version: row?.version ?? 0,
       folders,
       ...drawn,
+      layout: answered(drawn.layout),
       left_out: drawn.left_out + unread,
     };
   }
@@ -495,7 +540,7 @@ export class CabinetService {
         : undefined;
       const fresh = newFolders === undefined ? {} : { new_folders: newFolders };
       if (!row) return { version: 0, counts: {}, ...fresh };
-      const shown = shownFolders(row.layout as CabinetLayout);
+      const shown = shownFolders(readLayout(row.layout));
       // Each folder's pins the caller may still open, counted once: its
       // question counts what it holds besides them (C2).
       const pins = await livePins(trx, p);
@@ -555,10 +600,7 @@ export class CabinetService {
       const stamp = `${row?.version ?? 0}|${(await stampOf(trx, p)).key}`;
       const had = UNFILED.get(key);
       if (had?.stamp === stamp) return had.ids;
-      const layout: CabinetLayout = (row?.layout as CabinetLayout | undefined) ?? {
-        arranged_by: null,
-        cabinets: [],
-      };
+      const layout: CabinetLayout = row ? readLayout(row.layout) : { levels: null, cabinets: [] };
       const ids = (await placesOf(trx, p, layout, 'shown')).documents
         .filter((d) => d.folders === 0)
         .map((d) => d.id);
@@ -594,7 +636,7 @@ export class CabinetService {
         .where('member_id', '=', p.memberId)
         .executeTakeFirst();
       if (!row) return { items: [] };
-      const shown = shownFolders(row.layout as CabinetLayout);
+      const shown = shownFolders(readLayout(row.layout));
       const asked = shown.flatMap((s) => {
         const q = questionOf(s.folder);
         return q ? [{ q, s }] : [];
@@ -628,17 +670,30 @@ export class CabinetService {
    * left out of them; `total` exactly GET /cabinet/counts's for it.
    */
   async folder(p: Principal, folderId: string): Promise<FolderContents> {
-    const found = await withPrincipal(this.db, p, async (trx) => {
+    const read = await withPrincipal(this.db, p, async (trx) => {
       const { folder, version } = await shownFolder(trx, p, folderId);
       const pinned = (await livePins(trx, p, { folder: folderId })).get(folderId) ?? [];
       const q = questionOf(folder);
-      if (!q || refusedForCabinet(p, q)) return { version, pinned, dividers: null };
+      if (!q || refusedForCabinet(p, q)) return { version, pinned, counted: null, people: null };
       // One grouped count: a year a status leaves nothing behind is no
       // divider; a range of the folder's own is one, empty or not; Other
       // years, only with something; a level of one, passed over.
-      const dividers = await foldersDividers(trx, p, folder, { ...q, cabinet: { except: pinned } });
-      return { version, pinned, dividers };
+      const counted = await dividerCounts(trx, p, folder, { ...q, cabinet: { except: pinned } });
+      // People as the reader is given them; kinds, if any, read after.
+      const people = counted.named ? await namesFor(trx, p, new Map()) : null;
+      return { version, pinned, counted, people };
     });
+    // Kinds named as `types()` gives them, only for a folder divided by kind.
+    const kinds = read.counted?.kinds ? await this.kindNames(p) : null;
+    const names =
+      read.people && kinds
+        ? { ...read.people, kind: (key: string) => kinds.get(key) ?? 'Another kind' }
+        : (read.people ?? undefined);
+    const found = {
+      version: read.version,
+      pinned: read.pinned,
+      dividers: read.counted ? shownDividers(read.counted.shape, read.counted.counts, names) : null,
+    };
     const pinned =
       found.pinned.length === 0
         ? []
@@ -673,15 +728,18 @@ export class CabinetService {
     folderId: string,
     q: { divider: string; cursor?: string | undefined; limit?: number | undefined },
   ): Promise<DocumentPage> {
+    const kinds = q.divider === 'rest' ? await this.kindNames(p) : new Map<string, string>();
     const asked = await withPrincipal(this.db, p, async (trx) => {
       const { folder } = await shownFolder(trx, p, folderId);
       const question = questionOf(folder);
-      const more = dividerOf(folder, q.divider);
-      if (!question || refusedForCabinet(p, question) || more === null) {
-        throw notFound('That divider');
-      }
+      if (!question || refusedForCabinet(p, question)) throw notFound('That divider');
       const pinned = (await livePins(trx, p, { folder: folderId })).get(folderId) ?? [];
-      return { ...question, cabinet: { except: pinned, ...more } };
+      const rest = { ...question, cabinet: { except: pinned } };
+      const more = await dividerOf(folder, q.divider, () =>
+        foldersDividers(trx, p, folder, rest, () => namesFor(trx, p, kinds)),
+      );
+      if (more === null) throw notFound('That divider');
+      return { ...question, cabinet: { except: pinned, divider: more } };
     });
     return this.docs.table(p, {
       ...asked,
@@ -713,10 +771,7 @@ export class CabinetService {
         .forUpdate()
         .executeTakeFirst();
       // A shown folder of theirs: a hidden one is not offered, and not taken (C2 review).
-      if (
-        !row ||
-        !shownFolders(row.layout as CabinetLayout).some((s) => s.folder.id === folderId)
-      ) {
+      if (!row || !shownFolders(readLayout(row.layout)).some((s) => s.folder.id === folderId)) {
         throw notFound('That folder');
       }
       const seen = (
@@ -798,7 +853,7 @@ async function shownFolder(
     .where('member_id', '=', p.memberId)
     .executeTakeFirst();
   const placed = row
-    ? shownFolders(row.layout as CabinetLayout).find((s) => s.folder.id === folderId)
+    ? shownFolders(readLayout(row.layout)).find((s) => s.folder.id === folderId)
     : undefined;
   if (!row || !placed) throw notFound('That folder');
   return { folder: placed.folder, version: row.version };

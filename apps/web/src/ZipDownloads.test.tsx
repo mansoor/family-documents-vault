@@ -273,7 +273,7 @@ describe('the Documents page’s second control (DL)', () => {
       cabinets: true,
       // An arrangement kept, every cabinet in it hidden: enough to arrange again.
       cabinet: {
-        layout: { arranged_by: 'person_category_year', cabinets: [] },
+        layout: { levels: ['person', 'topic', 'year'], cabinets: [] },
         version: 1,
         updated_at: new Date().toISOString(),
       },

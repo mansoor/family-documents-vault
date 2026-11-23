@@ -2300,7 +2300,7 @@ describe('the fake vault, my cabinet (0.9.0, C1)', () => {
 
     // None until saved.
     expect(await api.cabinet(token)).toEqual({ layout: null, version: 0, updated_at: null });
-    const drawn = await api.previewCabinet(token, 'category_year_person');
+    const drawn = await api.previewCabinet(token, { levels: ['topic', 'year', 'person'] });
     expect(drawn.layout.cabinets.map((c) => [c.name, c.drawers.map((d) => d.name)])).toEqual([
       ['Identity', [String(year), String(year - 1)]],
     ]);
@@ -2319,7 +2319,7 @@ describe('the fake vault, my cabinet (0.9.0, C1)', () => {
     await expect(api.documentAlsoIn(token, secret.id)).rejects.toMatchObject({ status: 404 });
     // A folder's question is the list's: anything else is refused.
     const folder = (filter: Record<string, unknown>) => ({
-      arranged_by: null,
+      levels: null,
       cabinets: [
         {
           id: 'c',
@@ -2376,7 +2376,7 @@ describe('the fake vault, my cabinet (0.9.0, C1)', () => {
     const theirs = vault.state.documents.find((d) => d.id === secret.id);
     if (theirs) theirs.owner_member_id = 'sam';
     const layout = (dividers?: FolderDividers) => ({
-      arranged_by: null,
+      levels: null,
       cabinets: [
         {
           id: 'c',
@@ -2411,7 +2411,7 @@ describe('the fake vault, my cabinet (0.9.0, C1)', () => {
     ]);
     expect(years.total).toBe(3);
     const ranges = {
-      years: true,
+      levels: ['year' as const],
       ranges: [
         { name: 'Elementary', from: '2014-09-01', to: '2020-08-31' },
         { name: 'Middle school', from: '2020-09-01', to: '2023-08-31' },
@@ -2431,7 +2431,7 @@ describe('the fake vault, my cabinet (0.9.0, C1)', () => {
     await expect(
       api.saveCabinet(token, {
         layout: layout({
-          years: true,
+          levels: ['year'],
           ranges: [
             { name: 'A', from: '2014-01-01', to: '2020-12-31' },
             { name: 'B', from: '2020-01-01', to: null },
@@ -2487,7 +2487,10 @@ describe('the fake vault, my cabinet (0.9.0, C1)', () => {
     // Years outside four figures are refused as they are saved.
     await expect(
       api.saveCabinet(token, {
-        layout: layout({ years: true, ranges: [{ name: 'Old', from: '0000-01-01', to: null }] }),
+        layout: layout({
+          levels: ['year'],
+          ranges: [{ name: 'Old', from: '0000-01-01', to: null }],
+        }),
         version: v2 + 2,
       }),
     ).rejects.toMatchObject({ status: 422, code: 'cabinet_divider_dates' });
@@ -2521,7 +2524,7 @@ describe('the fake vault, my cabinet (0.9.0, C1)', () => {
     await api.saveCabinet(token, {
       version: 0,
       layout: {
-        arranged_by: null,
+        levels: null,
         cabinets: [
           {
             id: 'c',
@@ -2539,7 +2542,7 @@ describe('the fake vault, my cabinet (0.9.0, C1)', () => {
                   folder(
                     'own',
                     { dated_from: '2026-01-01', dated_to: '2026-12-31' },
-                    { years: true, ranges: [{ name: 'This year', from: '2026', to: null }] },
+                    { levels: ['year'], ranges: [{ name: 'This year', from: '2026', to: null }] },
                   ),
                 ],
               },

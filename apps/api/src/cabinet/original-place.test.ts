@@ -71,7 +71,7 @@ describe.skipIf(!testAdminUrl())('where the original is, in a cabinet', () => {
     cabinet: string,
     folders: Array<{ id: string; name: string; hidden?: boolean }>,
   ): CabinetLayout => ({
-    arranged_by: null,
+    levels: null,
     cabinets: [
       {
         id: 'cab',

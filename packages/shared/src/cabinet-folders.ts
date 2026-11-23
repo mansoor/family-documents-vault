@@ -170,7 +170,7 @@ export function addFolderTree(
   const keyOf = opts.key ?? ((path: string) => path.toLowerCase());
   const out: CabinetLayout = layout
     ? (JSON.parse(JSON.stringify(layout)) as CabinetLayout)
-    : { arranged_by: null, cabinets: [] };
+    : { levels: null, cabinets: [] };
   const asked = new Set(askedFolders(out).map(keyOf));
   const added = { cabinets: 0, drawers: 0, folders: 0 };
   const counts: Record<string, number> = {};

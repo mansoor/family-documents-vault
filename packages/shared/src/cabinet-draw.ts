@@ -1,33 +1,44 @@
 import type {
-  ArrangeBy,
   Cabinet,
   CabinetDrawer,
   CabinetFolder,
   CabinetLayout,
+  CabinetLevel,
+  CabinetPreviewAsk,
+  DrawnFrom,
   FolderFilter,
 } from './cabinet.js';
-import { CABINET_LIMITS, cabinetName, layoutProblemOf } from './cabinet.js';
+import {
+  CABINET_LEVELS,
+  CABINET_LIMITS,
+  cabinetName,
+  LEVEL_LIMITS,
+  layoutProblemOf,
+  levelsProblem,
+  ownLevelsProblem,
+} from './cabinet.js';
 import { PLACE_SEPARATOR } from './original-place.js';
 import { CATEGORY_LABELS } from './tokens.js';
 
 /**
- * Arrange by (0.9.0, C1): a cabinet drawn from what the vault knows (the
- * vault's POST /cabinet/preview, and the client's fake). Pure:
- * given how many documents the caller can see of each person, topic, kind
- * and year (`CabinetGroup`, counted by the database with the rules every list
- * keeps), it lays out cabinets, drawers and folders, each folder the
- * list's own question for exactly the documents counted into it — so a
- * folder holds what its drawing said it would.
+ * Arranging a cabinet by levels (0.9.0; any order of levels since
+ * 0.9.0-dev.90): a cabinet drawn from what the vault knows (the vault's
+ * POST /cabinet/preview, and the client's fake). Pure: given how many
+ * documents the caller can see of each person, topic, kind and year
+ * (`CabinetGroup`, counted by the database with the rules every list
+ * keeps), it lays out cabinets, drawers and folders, each folder the list's
+ * own question for exactly the documents counted into it — so a folder
+ * holds what its drawing said it would.
  *
- *  - By person, then topic, then year: a cabinet for each person, a drawer
- *    for each topic, a folder for each year.
- *  - By topic, then year, then person: a cabinet for each topic (a Tax
- *    cabinet), a drawer for each year, a folder for each person.
- *  - By person, then kind: one cabinet, a drawer for each person, a folder
- *    for each kind.
+ * Only the first three levels make cabinets, drawers and folders (two
+ * levels: one cabinet, "My cabinet", its drawers and folders). The fourth
+ * and fifth are written on each folder as its divider levels, worked out
+ * when it opens; with none, Year is the divider unless it is a level above.
+ * A cabinet may have its own levels below it (`DrawnFrom.levels`).
  *
- * A paper with no topic (or, by kind, no kind) has no folder yet: it is
- * counted as left out, and lands in its folder once its details say where.
+ * A paper with no topic (or no kind) where Topic (or Kind) makes a cabinet,
+ * drawer or folder has no folder yet: it is counted as left out, and lands
+ * in its folder once its details say where.
  */
 
 /** How many documents share one person, topic, kind and year. */
@@ -54,10 +65,13 @@ export interface CabinetDrawn {
   counts: Record<string, number>;
   documents: number;
   left_out: number;
+  /** Drawn no further past `DRAWN_MOST` folders: too big to hold, whatever else it would make. */
+  capped?: boolean;
 }
 
 const CATEGORY_ORDER = Object.keys(CATEGORY_LABELS);
-const categoryRank = (c: string) => {
+/** A topic's place in the vault's own order: one it does not know, after them. */
+export const categoryRank = (c: string) => {
   const at = CATEGORY_ORDER.indexOf(c);
   return at === -1 ? CATEGORY_ORDER.length : at;
 };
@@ -70,7 +84,7 @@ const yearFilter = (year: number): FolderFilter => ({
 });
 
 /** One level of a drawing: which value of a group it sorts by, named and ordered. */
-interface Level {
+interface LevelDef {
   key: (g: CabinetGroup) => string | null;
   name: (v: string) => string;
   order: (a: string, b: string) => number;
@@ -88,150 +102,640 @@ const listOf = (v: string | undefined) => (v ? v.split(',').filter((x) => x !== 
 /** The most years a merged range is read as, one by one. */
 const YEARS_READ = 200;
 
-function levels(by: ArrangeBy, names: CabinetNames): [Level, Level, Level] | [Level, Level] {
-  const person: Level = {
-    key: (g) => g.person,
-    name: names.person,
-    order: names.personOrder,
-    filter: (v) => ({ member_id: v }),
-    values: (f) => listOf(f.member_id),
-  };
-  const category: Level = {
-    key: (g) => g.category,
-    name: categoryName,
-    order: (a, b) => categoryRank(a) - categoryRank(b) || a.localeCompare(b),
-    filter: (v) => ({ category: v }),
-    values: (f) => listOf(f.category),
-  };
-  const year: Level = {
-    key: (g) => String(g.year),
-    name: (v) => v,
-    // The newest first.
-    order: (a, b) => Number(b) - Number(a),
-    filter: (v) => yearFilter(Number(v)),
-    // Whole years, as a drawing asks them, or merged ones: 2024 to 2025 is both.
-    values: (f) => {
-      const from = Number(f.dated_from?.slice(0, 4));
-      const to = Number(f.dated_to?.slice(0, 4));
-      if (
-        f.dated_from !== `${from}-01-01` ||
-        f.dated_to !== `${to}-12-31` ||
-        to < from ||
-        to - from >= YEARS_READ
-      ) {
-        return [];
-      }
-      return Array.from({ length: to - from + 1 }, (_, i) => String(from + i));
+function levelDefs(names: CabinetNames): Record<CabinetLevel, LevelDef> {
+  return {
+    person: {
+      key: (g) => g.person,
+      name: names.person,
+      order: names.personOrder,
+      filter: (v) => ({ member_id: v }),
+      values: (f) => listOf(f.member_id),
+    },
+    topic: {
+      key: (g) => g.category,
+      name: categoryName,
+      order: (a, b) => categoryRank(a) - categoryRank(b) || a.localeCompare(b),
+      filter: (v) => ({ category: v }),
+      values: (f) => listOf(f.category),
+    },
+    year: {
+      key: (g) => String(g.year),
+      name: (v) => v,
+      // The newest first.
+      order: (a, b) => Number(b) - Number(a),
+      filter: (v) => yearFilter(Number(v)),
+      // Whole years, as a drawing asks them, or merged ones: 2024 to 2025 is both.
+      values: (f) => {
+        const from = Number(f.dated_from?.slice(0, 4));
+        const to = Number(f.dated_to?.slice(0, 4));
+        if (
+          f.dated_from !== `${from}-01-01` ||
+          f.dated_to !== `${to}-12-31` ||
+          to < from ||
+          to - from >= YEARS_READ
+        ) {
+          return [];
+        }
+        return Array.from({ length: to - from + 1 }, (_, i) => String(from + i));
+      },
+    },
+    kind: {
+      key: (g) => g.type_key,
+      name: names.kind,
+      order: (a, b) => names.kind(a).localeCompare(names.kind(b)) || a.localeCompare(b),
+      filter: (v) => ({ type_key: v }),
+      values: (f) => listOf(f.type_key),
     },
   };
-  const kind: Level = {
-    key: (g) => g.type_key,
-    name: names.kind,
-    order: (a, b) => names.kind(a).localeCompare(names.kind(b)) || a.localeCompare(b),
-    filter: (v) => ({ type_key: v }),
-    values: (f) => listOf(f.type_key),
-  };
-  switch (by) {
-    case 'person_category_year':
-      return [person, category, year];
-    case 'category_year_person':
-      return [category, year, person];
-    case 'person_kind':
-      return [person, kind];
-  }
+}
+
+/** The levels that make nodes: cabinet, drawer and folder; with two, the drawer and the folder. */
+export function nodeLevels(levels: readonly CabinetLevel[]): CabinetLevel[] {
+  return levels.slice(0, levels.length <= LEVEL_LIMITS.fewest ? levels.length : LEVEL_LIMITS.nodes);
+}
+
+/**
+ * A drawn folder's divider levels: levels 4 and 5 of its cabinet's; with
+ * none, Year, unless it is a level above already — never a "2026" divider
+ * in a 2026 drawer.
+ */
+export function dividerLevelsOf(levels: readonly CabinetLevel[]): CabinetLevel[] {
+  const below = levels.length <= LEVEL_LIMITS.nodes ? [] : levels.slice(LEVEL_LIMITS.nodes);
+  return below.length === 0 && !levels.includes('year') ? ['year'] : below;
+}
+
+/**
+ * The levels a drawn cabinet follows, all of them from its own first: the
+ * default's, or its own below the default's first level. Null for a cabinet
+ * arranged by hand, or any in a layout arranged by hand.
+ */
+export function cabinetLevels(
+  layout: Pick<CabinetLayout, 'levels'>,
+  cabinet: Pick<Cabinet, 'drawn'>,
+): CabinetLevel[] | null {
+  const levels = layout.levels;
+  if (!levels || !cabinet.drawn) return null;
+  const own = levels.length >= LEVEL_LIMITS.nodes ? cabinet.drawn.levels : undefined;
+  return own ? [levels[0] as CabinetLevel, ...own] : [...levels];
 }
 
 /** The groups under one value of a level, each value once, in its level's order. */
-function split(groups: readonly CabinetGroup[], level: Level): Array<[string, CabinetGroup[]]> {
+function split(groups: readonly CabinetGroup[], level: LevelDef): Array<[string, CabinetGroup[]]> {
   const by = new Map<string, CabinetGroup[]>();
   for (const g of groups) {
     const v = level.key(g);
     if (v === null || v === undefined) continue;
-    by.set(v, [...(by.get(v) ?? []), g]);
+    const list = by.get(v);
+    if (list) list.push(g);
+    else by.set(v, [g]);
   }
   return [...by].sort(([a], [b]) => level.order(a, b));
 }
 
 const total = (gs: readonly CabinetGroup[]) => gs.reduce((n, g) => n + g.n, 0);
 
-/**
- * The cabinet `by` draws from `groups`: every folder a question for what it
- * was counted from. `newId` gives each node its id (short, random, unique).
- */
-export function drawCabinet(
-  by: ArrangeBy,
-  groups: readonly CabinetGroup[],
-  names: CabinetNames,
-  newId: () => string,
-): CabinetDrawn {
-  const counts: Record<string, number> = {};
-  // Every name drawn kept to what a cabinet may hold: a long name cut, never
-  // refused; and never holding " › ", which joins a place's names (C3).
-  const lv = levels(by, {
+/** A name as a drawing gives it: " › " in it made " - ", then cut to a cabinet's length. */
+function drawnName(name: string): string {
+  return cabinetName(name.split(PLACE_SEPARATOR).join(' - '));
+}
+
+/** Names kept to what a cabinet may hold: a long name cut, never refused; never holding " › ". */
+function drawnNames(names: CabinetNames): CabinetNames {
+  return {
     ...names,
     person: (id) => drawnName(names.person(id)),
     kind: (key) => drawnName(names.kind(key)),
-  });
-  // Notes are kept apart, as the Documents table keeps them.
-  const base: FolderFilter = { notes: 'exclude' };
-  const folder = (name: string, filter: FolderFilter, n: number): CabinetFolder => {
-    const id = newId();
-    counts[id] = n;
-    return { id, name, hidden: false, filter: { ...base, ...filter } };
   };
-  let cabinets: Cabinet[];
-  if (lv.length === 3) {
-    const [first, second, third] = lv;
-    cabinets = split(groups, first).map(([a, ga]) => ({
-      id: newId(),
-      name: first.name(a),
+}
+
+/**
+ * The most folders one drawing makes: one past what a cabinet may hold, so
+ * a drawing too big is still drawn too big (and said so), but never drawn
+ * whole, however many groups there are.
+ */
+export const DRAWN_MOST = CABINET_LIMITS.folders_total + 1;
+
+/** What the drawing of one cabinet needs, and how many folders it has made. */
+interface Pen {
+  defs: Record<CabinetLevel, LevelDef>;
+  newId: () => string;
+  counts: Record<string, number>;
+  folders: number;
+  capped: boolean;
+}
+const penOf = (defs: Record<CabinetLevel, LevelDef>, newId: () => string): Pen => ({
+  defs,
+  newId,
+  counts: {},
+  folders: 0,
+  capped: false,
+});
+
+/**
+ * The drawers and folders of one cabinet: `eff` its levels from its own
+ * first (two: no cabinet level), `above` the cabinet's own question.
+ */
+function drawersOf(
+  pen: Pen,
+  eff: readonly CabinetLevel[],
+  groups: readonly CabinetGroup[],
+  above: FolderFilter,
+): CabinetDrawer[] {
+  const at = eff.length <= LEVEL_LIMITS.fewest ? 0 : 1;
+  const drawerLevel = pen.defs[eff[at] as CabinetLevel];
+  const folderLevel = pen.defs[eff[at + 1] as CabinetLevel];
+  const dividers = dividerLevelsOf(eff);
+  return split(groups, drawerLevel)
+    .map(([b, gb]): CabinetDrawer => ({
+      id: pen.newId(),
+      name: drawerLevel.name(b),
       hidden: false,
-      drawers: split(ga, second).map(([b, gb]): CabinetDrawer => ({
-        id: newId(),
-        name: second.name(b),
-        hidden: false,
-        folders: split(gb, third).map(([c, gc]) =>
-          folder(
-            third.name(c),
-            { ...first.filter(a), ...second.filter(b), ...third.filter(c) },
-            total(gc),
-          ),
-        ),
-      })),
-    }));
-  } else {
-    const [first, second] = lv;
+      folders: split(gb, folderLevel).flatMap(([c, gc]): CabinetFolder[] => {
+        // Past the most a drawing makes: drawn no further.
+        if (pen.folders >= DRAWN_MOST) {
+          pen.capped = true;
+          return [];
+        }
+        pen.folders += 1;
+        const id = pen.newId();
+        pen.counts[id] = total(gc);
+        const folder: CabinetFolder = {
+          id,
+          name: folderLevel.name(c),
+          hidden: false,
+          // Notes are kept apart, as the Documents table keeps them.
+          filter: {
+            notes: 'exclude',
+            ...above,
+            ...drawerLevel.filter(b),
+            ...folderLevel.filter(c),
+          },
+          dividers: { levels: [...dividers], ranges: [] },
+        };
+        return [folder];
+      }),
+    }))
+    .filter((d) => d.folders.length > 0);
+}
+
+/** One drawn cabinet: the default's first level's value `a`, its own levels below it if any. */
+function cabinetOf(
+  pen: Pen,
+  levels: readonly CabinetLevel[],
+  a: string,
+  groups: readonly CabinetGroup[],
+  own: readonly CabinetLevel[] | undefined,
+): Cabinet {
+  const first = pen.defs[levels[0] as CabinetLevel];
+  const eff = own ? [levels[0] as CabinetLevel, ...own] : levels;
+  const drawn: DrawnFrom = own ? { value: a, levels: [...own] } : { value: a };
+  return {
+    id: pen.newId(),
+    name: first.name(a),
+    hidden: false,
+    drawn,
+    drawers: drawersOf(pen, eff, groups, first.filter(a)),
+  };
+}
+
+/** The groups a cabinet of value `a` holds. */
+function groupsUnder(
+  pen: Pen,
+  levels: readonly CabinetLevel[],
+  a: string,
+  groups: readonly CabinetGroup[],
+): CabinetGroup[] {
+  const first = pen.defs[levels[0] as CabinetLevel];
+  return groups.filter((g) => first.key(g) === a);
+}
+
+/**
+ * The cabinet `levels` draws from `groups`: every folder a question for
+ * what it was counted from. `newId` gives each node its id (short, random,
+ * unique). `own` gives a cabinet, by its value, its own levels below it.
+ */
+export function drawCabinet(
+  levels: readonly CabinetLevel[],
+  groups: readonly CabinetGroup[],
+  names: CabinetNames,
+  newId: () => string,
+  own: ReadonlyMap<string, readonly CabinetLevel[]> = new Map(),
+): CabinetDrawn {
+  const pen = penOf(levelDefs(drawnNames(names)), newId);
+  let cabinets: Cabinet[];
+  if (levels.length <= LEVEL_LIMITS.fewest) {
     cabinets = [
       {
         id: newId(),
         name: 'My cabinet',
         hidden: false,
-        drawers: split(groups, first).map(([a, ga]): CabinetDrawer => ({
-          id: newId(),
-          name: first.name(a),
-          hidden: false,
-          folders: split(ga, second).map(([b, gb]) =>
-            folder(second.name(b), { ...first.filter(a), ...second.filter(b) }, total(gb)),
-          ),
-        })),
+        drawn: { value: null },
+        drawers: drawersOf(pen, levels, groups, {}),
       },
     ];
+  } else {
+    const first = pen.defs[levels[0] as CabinetLevel];
+    cabinets = split(groups, first).map(([a, ga]) => cabinetOf(pen, levels, a, ga, own.get(a)));
   }
   // Nothing drawn where a level found nothing to sort by.
-  cabinets = cabinets
-    .map((c) => ({ ...c, drawers: c.drawers.filter((d) => d.folders.length > 0) }))
-    .filter((c) => c.drawers.length > 0);
+  cabinets = cabinets.filter((c) => c.drawers.length > 0);
   const documents = total(groups);
-  const filed = Object.values(counts);
   // Each document is in one folder of a drawing: the rest have no topic, or no kind.
-  const left_out = documents - filed.reduce((n, x) => n + x, 0);
-  return { layout: { arranged_by: by, cabinets }, counts, documents, left_out };
+  const left_out = documents - Object.values(pen.counts).reduce((n, x) => n + x, 0);
+  return {
+    layout: { levels: [...levels], cabinets },
+    counts: pen.counts,
+    documents,
+    left_out,
+    ...(pen.capped ? { capped: true } : {}),
+  };
 }
 
-/** A name as a drawing gives it: " › " in it made " - ", then cut to a cabinet's length. */
-function drawnName(name: string): string {
-  return cabinetName(name.split(PLACE_SEPARATOR).join(' - '));
+// ------------------------------------------------------------- redrawing
+
+const clone = <T>(x: T): T => JSON.parse(JSON.stringify(x)) as T;
+
+/** A question as one string, whatever the order of its keys or of a tag list. */
+function questionKey(f: FolderFilter): string {
+  return JSON.stringify(
+    Object.entries(f)
+      .filter(([, v]) => v !== undefined)
+      .map(([k, v]) => [k, Array.isArray(v) ? [...v].sort() : v])
+      .sort(([a], [b]) => String(a).localeCompare(String(b))),
+  );
 }
+
+/** Each level's values, read from a question: no names needed. */
+const READER: Record<CabinetLevel, (f: FolderFilter) => string[]> = (() => {
+  const plain: CabinetNames = { person: (x) => x, kind: (x) => x, personOrder: () => 0 };
+  const defs = levelDefs(plain);
+  return {
+    topic: defs.topic.values,
+    person: defs.person.values,
+    year: defs.year.values,
+    kind: defs.kind.values,
+  };
+})();
+
+/** The one value a question asks of a level, or undefined where it asks none or several. */
+function oneValue(f: FolderFilter, level: CabinetLevel): string | undefined {
+  const vs = READER[level](f);
+  return vs.length === 1 ? vs[0] : undefined;
+}
+
+/** A drawer's value at a level: the one every one of its folders asks; else undefined. */
+function drawerValue(d: CabinetDrawer, level: CabinetLevel): string | undefined {
+  const vs = d.folders.map((f) => oneValue(f.filter, level));
+  const v = vs[0];
+  return v !== undefined && vs.every((x) => x === v) ? v : undefined;
+}
+
+/** A cabinet there before, with the levels it was drawn by. */
+interface Before {
+  cabinet: Cabinet;
+  levels: readonly CabinetLevel[];
+}
+
+/**
+ * Parts already there that a redraw may take the place of, each taken
+ * once: a drawn cabinet by its value (only while the cabinet level stays),
+ * a drawer by what its folders all ask at its own level and the cabinet's,
+ * a folder by its whole question. A drawer or folder keeps its name only
+ * where it was drawn by the same level: "Tax" never names a person's drawer.
+ * Each is looked up by an index made once, so a redraw is as quick for a
+ * thousand folders as for ten.
+ */
+class Kept {
+  private readonly used = new Set<string>();
+  private readonly cabinets = new Map<string, Cabinet[]>();
+  private readonly drawers = new Map<
+    string,
+    Array<{ drawer: CabinetDrawer; values: Map<CabinetLevel, string | undefined> }>
+  >();
+  private readonly folders = new Map<
+    string,
+    Array<{ folder: CabinetFolder; level: CabinetLevel }>
+  >();
+  constructor(
+    before: readonly Before[],
+    /** Whether the cabinets were drawn by the same first level as now. */
+    private readonly sameCabinets: boolean,
+  ) {
+    const add = <T>(map: Map<string, T[]>, key: string, x: T) => {
+      const list = map.get(key);
+      if (list) list.push(x);
+      else map.set(key, [x]);
+    };
+    for (const b of before) {
+      const two = b.levels.length <= LEVEL_LIMITS.fewest;
+      const drawerLevel = b.levels[two ? 0 : 1];
+      const folderLevel = b.levels[two ? 1 : 2];
+      if (b.cabinet.drawn) add(this.cabinets, String(b.cabinet.drawn.value), b.cabinet);
+      for (const d of b.cabinet.drawers) {
+        if (d.folders.length > 0 && drawerLevel) {
+          const values = new Map(CABINET_LEVELS.map((l) => [l, drawerValue(d, l)] as const));
+          const v = values.get(drawerLevel);
+          if (v !== undefined) add(this.drawers, `${drawerLevel}=${v}`, { drawer: d, values });
+        }
+        for (const f of d.folders) {
+          if (folderLevel)
+            add(this.folders, questionKey(f.filter), { folder: f, level: folderLevel });
+        }
+      }
+    }
+  }
+  private free<T extends { id: string }>(list: readonly T[] | undefined): T | undefined {
+    const x = list?.find((y) => !this.used.has(y.id));
+    if (x) this.used.add(x.id);
+    return x;
+  }
+  cabinet(value: string | null): Cabinet | undefined {
+    return this.sameCabinets ? this.free(this.cabinets.get(String(value))) : undefined;
+  }
+  /** A drawer of `level` holding `value`, in a cabinet of `above` (none: one cabinet of two levels). */
+  drawer(
+    level: CabinetLevel,
+    value: string,
+    above: [CabinetLevel, string] | null,
+  ): CabinetDrawer | undefined {
+    const found = this.drawers
+      .get(`${level}=${value}`)
+      ?.find(
+        (x) =>
+          !this.used.has(x.drawer.id) && (above === null || x.values.get(above[0]) === above[1]),
+      );
+    if (found) this.used.add(found.drawer.id);
+    return found?.drawer;
+  }
+  /** The folder of this very question, and whether it was drawn by `level` too. */
+  folder(
+    filter: FolderFilter,
+    level: CabinetLevel,
+  ): { folder: CabinetFolder; sameLevel: boolean } | undefined {
+    const found = this.folders.get(questionKey(filter))?.find((x) => !this.used.has(x.folder.id));
+    if (!found) return undefined;
+    this.used.add(found.folder.id);
+    return { folder: found.folder, sameLevel: found.level === level };
+  }
+}
+
+/**
+ * A cabinet drawn afresh, each part that is the same as one already there
+ * (`kept`) taking its place: its id, whether it is hidden, and its name
+ * where it was drawn by the same level — and, a folder, its pins (they
+ * follow its id) and its own date ranges. Its counts follow the ids.
+ */
+function keepWhatFits(
+  fresh: Cabinet,
+  levels: readonly CabinetLevel[],
+  kept: Kept,
+  counts: Record<string, number>,
+): Cabinet {
+  const two = levels.length <= LEVEL_LIMITS.fewest;
+  const eff = two
+    ? levels
+    : [levels[0] as CabinetLevel, ...(fresh.drawn?.levels ?? levels.slice(1))];
+  const drawerLevel = eff[two ? 0 : 1] as CabinetLevel;
+  const folderLevel = eff[two ? 1 : 2] as CabinetLevel;
+  const value = fresh.drawn?.value ?? null;
+  const was = kept.cabinet(value);
+  const above: [CabinetLevel, string] | null =
+    two || value === null ? null : [levels[0] as CabinetLevel, value];
+  const drawers = fresh.drawers.map((d): CabinetDrawer => {
+    const v = drawerValue(d, drawerLevel);
+    const old = v === undefined ? undefined : kept.drawer(drawerLevel, v, above);
+    const folders = d.folders.map((f): CabinetFolder => {
+      const o = kept.folder(f.filter, folderLevel);
+      if (!o) return f;
+      const n = counts[f.id];
+      delete counts[f.id];
+      if (n !== undefined) counts[o.folder.id] = n;
+      return {
+        ...f,
+        id: o.folder.id,
+        name: o.sameLevel ? o.folder.name : f.name,
+        hidden: o.folder.hidden,
+        dividers: {
+          levels: f.dividers?.levels ?? [],
+          ranges: clone(o.folder.dividers?.ranges ?? []),
+        },
+      };
+    });
+    return old
+      ? { ...d, id: old.id, name: old.name, hidden: old.hidden, folders }
+      : { ...d, folders };
+  });
+  return was
+    ? { ...fresh, id: was.id, name: was.name, hidden: was.hidden, drawers }
+    : { ...fresh, drawers };
+}
+
+/**
+ * A drawn cabinet's folders with the divider levels its new levels give
+ * them: nothing redrawn, every part, pin and range of its own kept (only
+ * levels 4 and 5 changed). A folder whose dividers were set by hand — no
+ * longer what the old levels wrote — keeps them.
+ */
+function newDividers(
+  c: Cabinet,
+  before: readonly CabinetLevel[],
+  after: readonly CabinetLevel[],
+): Cabinet {
+  const was = dividerLevelsOf(before);
+  const now = dividerLevelsOf(after);
+  return {
+    ...c,
+    drawers: c.drawers.map((d) => ({
+      ...d,
+      folders: d.folders.map((f) =>
+        same(f.dividers?.levels ?? ['year'], was)
+          ? { ...f, dividers: { levels: [...now], ranges: f.dividers?.ranges ?? [] } }
+          : f,
+      ),
+    })),
+  };
+}
+
+const same = (a: readonly string[], b: readonly string[]) =>
+  a.length === b.length && a.every((x, i) => x === b[i]);
+
+/** What a redraw is refused with: the ask, in words. */
+export class RedrawRefused extends Error {}
+
+/**
+ * A layout redrawn by levels (0.9.0-dev.90), over what is there (`base`),
+ * never saved: POST /cabinet/preview, and the client's fake.
+ *
+ *  - The default's levels 4 and 5 only: no folder redrawn; each drawn
+ *    folder's divider levels rewritten.
+ *  - Its levels 2 and 3: every drawn cabinet that follows the default is
+ *    drawn again; one with its own arrangement is kept as it is.
+ *  - Its first level (or a layout arranged by hand before): every drawn
+ *    cabinet drawn again, their own arrangements let go.
+ *  - One cabinet's own levels (`ask.cabinet`, null for the default's
+ *    again): that cabinet alone, its levels 4 and 5 alone only rewriting
+ *    its dividers.
+ *
+ * A cabinet arranged by hand is always kept, where it was. Wherever the same
+ * cabinet, drawer or folder is drawn again, it keeps its id, name and
+ * hidden flag — a folder its pins and its own date ranges too. Kept and
+ * redrawn cabinets stay where the person put them; a new one goes in its
+ * level's order among the drawn ones, else first.
+ */
+export function redrawCabinet(
+  base: CabinetLayout | null,
+  ask: Pick<CabinetPreviewAsk, 'levels' | 'cabinet'>,
+  groups: readonly CabinetGroup[],
+  names: CabinetNames,
+  newId: () => string,
+): CabinetDrawn {
+  const wrong = levelsProblem(ask.levels);
+  if (wrong) throw new RedrawRefused(wrong);
+  const levels = [...ask.levels];
+  const before = base ? clone(base) : { levels: null, cabinets: [] };
+  const old = before.levels;
+  const byHand = old === null;
+  // A layout arranged by hand: every cabinet is the person's own, marks and all.
+  if (byHand) for (const c of before.cabinets) delete c.drawn;
+  const defs = levelDefs(drawnNames(names));
+  const ownOf = (cabs: readonly Cabinet[]) =>
+    new Map(
+      cabs.flatMap((c) =>
+        c.drawn?.levels && c.drawn.value !== null ? [[c.drawn.value, c.drawn.levels] as const] : [],
+      ),
+    );
+  const documents = total(groups);
+  const done = (
+    cabinets: Cabinet[],
+    counts: Record<string, number>,
+    capped = false,
+  ): CabinetDrawn => {
+    const layout: CabinetLayout = { levels, cabinets };
+    // What no folder of the drawn cabinets holds, as the whole drawing would leave out.
+    let n = 0;
+    const whole = drawCabinet(levels, groups, names, () => `left-${++n}`, ownOf(cabinets));
+    return {
+      layout,
+      counts,
+      documents,
+      left_out: whole.left_out,
+      ...(capped || whole.capped ? { capped: true } : {}),
+    };
+  };
+
+  if (ask.cabinet) {
+    // One cabinet's own arrangement: over a layout drawn by these very levels.
+    if (old === null || !same(old, levels)) {
+      throw new RedrawRefused(
+        'Use the arrangement for every cabinet first, then arrange one cabinet.',
+      );
+    }
+    const at = before.cabinets.findIndex((c) => c.id === ask.cabinet?.id);
+    const was = before.cabinets[at];
+    if (!was) {
+      throw new RedrawRefused(
+        'That cabinet isn’t there any more: it may have been changed in another window. Load your cabinet again and try once more.',
+      );
+    }
+    if (!was.drawn || was.drawn.value === null) {
+      throw new RedrawRefused('That cabinet was arranged by hand, so it has no levels of its own.');
+    }
+    const own = ask.cabinet.levels;
+    // Its levels as they are: nothing to redraw.
+    if (same(own ?? [], was.drawn.levels ?? [])) return done(before.cabinets, {});
+    if (own !== null) {
+      const ownWrong = ownLevelsProblem(own, levels);
+      if (ownWrong) throw new RedrawRefused(ownWrong);
+    }
+    const effOld = cabinetLevels(before, was) as CabinetLevel[];
+    const effNew = own ? [levels[0] as CabinetLevel, ...own] : levels;
+    const drawn: DrawnFrom = own
+      ? { value: was.drawn.value, levels: [...own] }
+      : { value: was.drawn.value };
+    const cabinets = [...before.cabinets];
+    if (same(nodeLevels(effOld), nodeLevels(effNew))) {
+      cabinets[at] = { ...newDividers(was, effOld, effNew), drawn };
+      return done(cabinets, {});
+    }
+    const pen = penOf(defs, newId);
+    const value = was.drawn.value;
+    const fresh = cabinetOf(
+      pen,
+      levels,
+      value,
+      groupsUnder(pen, levels, value, groups),
+      own ?? undefined,
+    );
+    const kept = new Kept([{ cabinet: was, levels: effOld }], true);
+    cabinets[at] = keepWhatFits(fresh, levels, kept, pen.counts);
+    return done(cabinets, pen.counts, pen.capped);
+  }
+
+  // The same levels: nothing to redraw, everything as it is.
+  if (old !== null && same(old, levels)) return done(before.cabinets, {});
+
+  // The default: levels 4 and 5 alone redraw nothing.
+  if (old !== null && same(nodeLevels(old), nodeLevels(levels))) {
+    const out = { levels, cabinets: before.cabinets };
+    return done(
+      before.cabinets.map((c) => {
+        const was = cabinetLevels(before, c);
+        const now = cabinetLevels(out, c);
+        return was && now ? newDividers(c, was, now) : c;
+      }),
+      {},
+    );
+  }
+  const firstKept =
+    old !== null &&
+    old.length >= LEVEL_LIMITS.nodes &&
+    levels.length >= LEVEL_LIMITS.nodes &&
+    old[0] === levels[0];
+  // Own arrangements stay while the cabinet level does; else they are let go.
+  const ownKept = firstKept ? ownOf(before.cabinets.filter((c) => c.drawn)) : new Map();
+  const drawing = drawCabinet(levels, groups, names, newId, ownKept);
+  const counts = drawing.counts;
+  const replaced = before.cabinets.filter(
+    (c) => c.drawn && !(c.drawn.value !== null && ownKept.has(c.drawn.value)),
+  );
+  const bothTwo =
+    old !== null && old.length <= LEVEL_LIMITS.fewest && levels.length <= LEVEL_LIMITS.fewest;
+  const kept = new Kept(
+    replaced.map((c) => ({ cabinet: c, levels: cabinetLevels(before, c) ?? [] })),
+    firstKept || bothTwo,
+  );
+  const fresh = drawing.layout.cabinets
+    .filter((c) => !(c.drawn?.value != null && ownKept.has(c.drawn.value)))
+    .map((c) => keepWhatFits(c, levels, kept, counts));
+  // Where each goes: a redrawn one in the place of the one it took, kept
+  // ones where they were, the rest in their level's order among the drawn.
+  const byId = new Map(fresh.map((c) => [c.id, c]));
+  const out: Cabinet[] = [];
+  for (const c of before.cabinets) {
+    if (!c.drawn || (c.drawn.value !== null && ownKept.has(c.drawn.value))) out.push(c);
+    else {
+      const now = byId.get(c.id);
+      if (now) {
+        out.push(now);
+        byId.delete(c.id);
+      }
+    }
+  }
+  const first = defs[levels[0] as CabinetLevel];
+  for (const c of fresh.filter((x) => byId.has(x.id))) {
+    const v = c.drawn?.value ?? null;
+    const at =
+      v === null || levels.length <= LEVEL_LIMITS.fewest
+        ? -1
+        : out.findIndex((x) => x.drawn?.value != null && first.order(v, x.drawn.value) < 0);
+    // Else after the last drawn one; with none drawn yet, before those arranged by hand.
+    const last = out.reduce((n, x, i) => (x.drawn ? i : n), -1);
+    out.splice(at !== -1 ? at : last + 1, 0, c);
+  }
+  return done(out, counts, drawing.capped);
+}
+
+// ------------------------------------------------------------- growing
 
 /**
  * The node of `list` for value `v` of a level: one whose every folder asks
@@ -240,7 +744,7 @@ function drawnName(name: string): string {
  */
 function nodeFor<T>(
   list: readonly T[],
-  level: Level,
+  level: LevelDef,
   v: string,
   foldersOf: (x: T) => readonly CabinetFolder[],
 ): T | undefined {
@@ -263,7 +767,7 @@ function putInOrder<T>(
   list: T[],
   item: T,
   value: string,
-  level: Level,
+  level: LevelDef,
   foldersOf: (x: T) => readonly CabinetFolder[],
 ): void {
   const at = list.findIndex((x) => {
@@ -274,10 +778,9 @@ function putInOrder<T>(
   else list.splice(at, 0, item);
 }
 
-const foldersOfCabinet = (c: Cabinet) => c.drawers.flatMap((d) => d.folders);
 const foldersOfDrawer = (d: CabinetDrawer) => d.folders;
 /** As JSON, in UTF-8 bytes, as Postgres keeps a layout: a character of Chinese is three. */
-function bytesOf(x: unknown): number {
+export function bytesOf(x: unknown): number {
   let n = 0;
   for (const ch of JSON.stringify(x)) {
     const c = ch.codePointAt(0) ?? 0;
@@ -287,19 +790,20 @@ function bytesOf(x: unknown): number {
 }
 
 /**
- * A drawn cabinet kept up to date (19 Nov 2026): a layout drawn by "Arrange
- * by" is a snapshot of the topics, years and people there were when it was
- * drawn, so a paper of a new topic, year or person had no folder, and the
- * cabinet held fewer than the table. Given the papers no folder of it holds
- * (`groups`, counted as `drawCabinet`'s are), this adds their folders where
- * the drawing would have put them — into the cabinet and drawer already
- * there for their topic, person or year (found by what its folders ask, so
- * a renamed or merged one is still found), else a new one, in the drawing's
- * order — and leaves every other folder as it was. Folders are added one at
- * a time, up to what a cabinet may hold (`CABINET_LIMITS`): those past it
- * are not, and their papers stay in no folder. A layout arranged by hand
- * (`arranged_by` null) is never changed. A paper with no topic (or, by
- * kind, no kind) still has no folder.
+ * A drawn cabinet kept up to date (19 Nov 2026): a layout drawn by levels
+ * is a snapshot of the topics, years and people there were when it was
+ * drawn, so a paper of a new topic, year or person had no folder. Given the
+ * papers no folder of it holds (`groups`, counted as `drawCabinet`'s are),
+ * this adds their folders where the drawing would have put them — into the
+ * drawn cabinet of their value (found by `drawn.value`, so a renamed or
+ * empty one is still found), with its own levels if it has any, and the
+ * drawer already there for theirs (found by what its folders ask), else new
+ * ones, in the drawing's order — and leaves every other folder as it was.
+ * Levels 4 and 5 never need growing: dividers are worked out as a folder
+ * opens. Folders are added one at a time, up to what a cabinet may hold
+ * (`CABINET_LIMITS`): those past it are not, and their papers stay in no
+ * folder. A layout arranged by hand (`levels` null), and every cabinet
+ * arranged by hand, is never changed.
  */
 export function addToDrawing(
   layout: CabinetLayout,
@@ -307,65 +811,84 @@ export function addToDrawing(
   names: CabinetNames,
   newId: () => string,
 ): { layout: CabinetLayout; added: number; left: number } {
-  const by = layout.arranged_by;
-  if (by === null || groups.length === 0) return { layout, added: 0, left: 0 };
-  const drawn = drawCabinet(by, groups, names, newId);
-  const lv = levels(by, names);
-  const out = JSON.parse(JSON.stringify(layout)) as CabinetLayout;
+  const levels = layout.levels;
+  if (!Array.isArray(levels) || levelsProblem(levels) !== null || groups.length === 0) {
+    return { layout, added: 0, left: 0 };
+  }
+  const two = levels.length <= LEVEL_LIMITS.fewest;
+  const own = new Map(
+    two
+      ? []
+      : layout.cabinets.flatMap((c) =>
+          c.drawn?.levels &&
+          c.drawn.value !== null &&
+          ownLevelsProblem(c.drawn.levels, levels) === null
+            ? [[c.drawn.value, c.drawn.levels] as const]
+            : [],
+        ),
+  );
+  const drawn = drawCabinet(levels, groups, names, newId, own);
+  const defs = levelDefs(names);
+  const out = clone(layout);
   let bytes = bytesOf(out);
   let added = 0;
   let left = 0;
-  const three = lv.length === 3;
-  const [cabinetLevel, drawerLevel, folderLevel] = three ? lv : [undefined, lv[0], lv[1]];
-  const only = (level: Level, f: CabinetFolder) => level.values(f.filter)[0] as string;
+  const first = defs[levels[0] as CabinetLevel];
+  const only = (level: CabinetLevel, f: CabinetFolder) => defs[level].values(f.filter)[0] as string;
   for (const dc of drawn.layout.cabinets) {
+    const value = dc.drawn?.value ?? null;
+    const mine = value === null ? undefined : own.get(value);
+    const eff = two ? levels : mine ? [levels[0] as CabinetLevel, ...mine] : levels;
+    const drawerLevel = eff[two ? 0 : 1] as CabinetLevel;
+    const folderLevel = eff[two ? 1 : 2] as CabinetLevel;
     for (const dd of dc.drawers) {
       for (const df of dd.folders) {
-        // Its cabinet: the topic's (or person's) own, else a new one; by
-        // kind, the one that holds its person's drawer, else the first.
-        let cabinet: Cabinet | undefined;
+        // Its cabinet: the drawn one of its value, else a new one.
+        let cabinet = out.cabinets.find((c) => c.drawn && (c.drawn.value ?? null) === value);
         let newCabinet = false;
-        let drawer: CabinetDrawer | undefined;
-        if (cabinetLevel) {
-          cabinet = nodeFor(out.cabinets, cabinetLevel, only(cabinetLevel, df), foldersOfCabinet);
-          drawer = cabinet
-            ? nodeFor(cabinet.drawers, drawerLevel, only(drawerLevel, df), foldersOfDrawer)
-            : undefined;
-        } else {
-          for (const c of out.cabinets) {
-            drawer = nodeFor(c.drawers, drawerLevel, only(drawerLevel, df), foldersOfDrawer);
-            if (drawer) {
-              cabinet = c;
-              break;
-            }
-          }
-          cabinet ??=
-            out.cabinets.find((c) =>
-              c.drawers.some((d) => d.folders.some((f) => drawerLevel.values(f.filter).length > 0)),
-            ) ?? out.cabinets[0];
-        }
         if (!cabinet) {
-          cabinet = { id: dc.id, name: dc.name, hidden: false, drawers: [] };
-          if (cabinetLevel) {
-            putInOrder(
-              out.cabinets,
-              cabinet,
-              only(cabinetLevel, df),
-              cabinetLevel,
-              foldersOfCabinet,
-            );
-          } else out.cabinets.push(cabinet);
+          cabinet = {
+            id: dc.id,
+            name: dc.name,
+            hidden: false,
+            drawn: clone(dc.drawn),
+            drawers: [],
+          };
+          const at =
+            value === null
+              ? -1
+              : out.cabinets.findIndex(
+                  (c) => c.drawn?.value != null && first.order(value, c.drawn.value) < 0,
+                );
+          if (at === -1) out.cabinets.push(cabinet);
+          else out.cabinets.splice(at, 0, cabinet);
           newCabinet = true;
         }
+        let drawer = nodeFor(
+          cabinet.drawers,
+          defs[drawerLevel],
+          only(drawerLevel, df),
+          foldersOfDrawer,
+        );
         let newDrawer = false;
         if (!drawer) {
           drawer = { id: dd.id, name: dd.name, hidden: false, folders: [] };
-          putInOrder(cabinet.drawers, drawer, only(drawerLevel, df), drawerLevel, foldersOfDrawer);
+          putInOrder(
+            cabinet.drawers,
+            drawer,
+            only(drawerLevel, df),
+            defs[drawerLevel],
+            foldersOfDrawer,
+          );
           newDrawer = true;
         }
-        putInOrder(drawer.folders, df, only(folderLevel, df), folderLevel, (f: CabinetFolder) => [
-          f,
-        ]);
+        putInOrder(
+          drawer.folders,
+          df,
+          only(folderLevel, df),
+          defs[folderLevel],
+          (f: CabinetFolder) => [f],
+        );
         // What it adds, as JSON: the new cabinet, else the new drawer, else the folder.
         const more = bytesOf(newCabinet ? cabinet : newDrawer ? drawer : df) + 1;
         if (bytes + more <= CABINET_LIMITS.layout_bytes && layoutProblemOf(out) === null) {

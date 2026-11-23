@@ -196,10 +196,10 @@ import type {
   NeutralWordingInput,
   NeutralWordingView,
   AlsoIn,
-  ArrangeBy,
   CabinetCounts,
   CabinetFromFolders,
   CabinetPreview,
+  CabinetPreviewAsk,
   CabinetPinned,
   CabinetSave,
   CabinetView,
@@ -1162,11 +1162,18 @@ export function createApi(http: Http) {
      */
     saveCabinet: (token: string, body: CabinetSave) =>
       request<CabinetView>('/api/v1/cabinet', { method: 'PUT', body, token }),
-    /** A layout drawn from what the caller can see (Arrange by): shown, not saved. */
-    previewCabinet: (token: string, arrangeBy: ArrangeBy) =>
+    /**
+     * A layout drawn by levels from what the caller can see (0.9.0-dev.90,
+     * `features.cabinet_levels`): the default levels, or one cabinet's own
+     * (`cabinet`, its levels null for the default's again), over `layout`
+     * (the one saved when absent) — shown, not saved, with its `size`. Keep
+     * it with `saveCabinet`. Levels that are not 2 to 5, each once, or a
+     * cabinet's that are not below it, are `422 cabinet_levels`.
+     */
+    previewCabinet: (token: string, ask: CabinetPreviewAsk) =>
       request<CabinetPreview>('/api/v1/cabinet/preview', {
         method: 'POST',
-        body: { arrange_by: arrangeBy },
+        body: ask,
         token,
       }),
     /**

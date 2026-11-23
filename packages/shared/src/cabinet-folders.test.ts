@@ -15,7 +15,7 @@ const ids = () => {
 };
 
 const MINE: CabinetLayout = {
-  arranged_by: 'person_kind',
+  levels: ['person', 'kind'],
   cabinets: [
     {
       id: 'study',
@@ -68,7 +68,7 @@ describe('a folder tree, as cabinet folders (C4)', () => {
       ],
       ids(),
     );
-    expect(got.layout.arranged_by).toBeNull();
+    expect(got.layout.levels).toBeNull();
     expect(got.layout.cabinets.map((c) => c.name)).toEqual([FOLDERS_CABINET]);
     const [cab] = got.layout.cabinets;
     expect(
@@ -92,7 +92,7 @@ describe('a folder tree, as cabinet folders (C4)', () => {
     const before = JSON.stringify(MINE);
     const got = addFolderTree(MINE, [{ path: 'Taxes', documents: 1 }], ids());
     expect(JSON.stringify(MINE)).toBe(before);
-    expect(got.layout.arranged_by).toBe('person_kind');
+    expect(got.layout.levels).toEqual(['person', 'kind']);
     expect(got.layout.cabinets[0]).toEqual(MINE.cabinets[0]);
     expect(got.layout.cabinets[1]?.name).toBe(FOLDERS_CABINET);
   });
@@ -120,7 +120,7 @@ describe('a folder tree, as cabinet folders (C4)', () => {
 
   it('counts a folder asked for by a hidden folder as there already, and never adds into a hidden cabinet', () => {
     const hidden: CabinetLayout = {
-      arranged_by: null,
+      levels: null,
       cabinets: [
         {
           id: 'old',
@@ -186,7 +186,7 @@ describe('a folder tree, as cabinet folders (C4)', () => {
 
     // A folder of the person's own of that name already: the new one is "(2)".
     const theirs: CabinetLayout = {
-      arranged_by: null,
+      levels: null,
       cabinets: [
         {
           id: 'mf',
@@ -227,7 +227,7 @@ describe('a folder tree, as cabinet folders (C4)', () => {
 
   it('compares folders by the keys it is given, as the vault lowers them', () => {
     const layout: CabinetLayout = {
-      arranged_by: null,
+      levels: null,
       cabinets: [
         {
           id: 'c',

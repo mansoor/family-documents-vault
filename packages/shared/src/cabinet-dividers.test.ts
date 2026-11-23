@@ -10,7 +10,7 @@ import {
   dividersProblemOf,
   rangesNewestFirst,
   schoolStages,
-  shownDividerMode,
+  dividerDims,
   shownDividers,
   type FolderDividers,
 } from './cabinet-dividers.js';
@@ -18,8 +18,11 @@ import { layoutProblemOf, type CabinetLayout } from './cabinet.js';
 
 /** Dividers in a cabinet's folder (0.9.0, C2): the rules the vault, the fakes and the web share. */
 
+/** A paper of a day, as the dividers read it. */
+const paper = (day: string) => ({ day, type_key: null, category: null, person: 'me' });
+
 const SCHOOL: FolderDividers = {
-  years: true,
+  levels: ['year'],
   ranges: [
     { name: 'Elementary', from: '2014-09-01', to: '2020-08-31' },
     { name: 'College', from: '2027-09-01', to: null },
@@ -30,18 +33,23 @@ const SCHOOL: FolderDividers = {
 describe('dividers', () => {
   it('are years unless turned off, and ranges replace them', () => {
     expect(dividerMode(undefined)).toBe('years');
-    expect(dividerMode({ years: false, ranges: [] })).toBe('none');
-    expect(dividerMode({ years: false, ranges: SCHOOL.ranges })).toBe('ranges');
+    expect(dividerMode({ levels: ['kind', 'year'], ranges: [] })).toBe('levels');
+    expect(dividerMode({ levels: [], ranges: [] })).toBe('none');
+    expect(dividerMode({ levels: [], ranges: SCHOOL.ranges })).toBe('ranges');
   });
 
   it('put each day behind one divider: its year, its range, or Other years', () => {
-    expect(dividerKeyOf(undefined, '2025-03-01')).toBe('year:2025');
-    expect(dividerKeyOf({ years: false, ranges: [] }, '2025-03-01')).toBe('all');
-    expect(dividerKeyOf(SCHOOL, '2020-08-31')).toBe('range:0');
-    expect(dividerKeyOf(SCHOOL, '2020-09-01')).toBe('range:2');
-    expect(dividerKeyOf(SCHOOL, '2040-01-01')).toBe('range:1');
-    expect(dividerKeyOf(SCHOOL, '2024-01-01')).toBe('other');
-    expect(dividerKeyOf(SCHOOL, '2001-01-01')).toBe('other');
+    expect(dividerKeyOf({ filter: {}, dividers: undefined }, paper('2025-03-01'))).toBe(
+      'year:2025',
+    );
+    expect(
+      dividerKeyOf({ filter: {}, dividers: { levels: [], ranges: [] } }, paper('2025-03-01')),
+    ).toBe('all');
+    expect(dividerKeyOf({ filter: {}, dividers: SCHOOL }, paper('2020-08-31'))).toBe('range:0');
+    expect(dividerKeyOf({ filter: {}, dividers: SCHOOL }, paper('2020-09-01'))).toBe('range:2');
+    expect(dividerKeyOf({ filter: {}, dividers: SCHOOL }, paper('2040-01-01'))).toBe('range:1');
+    expect(dividerKeyOf({ filter: {}, dividers: SCHOOL }, paper('2024-01-01'))).toBe('other');
+    expect(dividerKeyOf({ filter: {}, dividers: SCHOOL }, paper('2001-01-01'))).toBe('other');
   });
 
   it('are listed newest first, whatever order they were made in', () => {
@@ -55,7 +63,7 @@ describe('dividers', () => {
   it('refuse ranges that share a day, are not ranges, or are too many, each by its code', () => {
     expect(dividersProblemOf(SCHOOL)).toBeNull();
     const code = (ranges: FolderDividers['ranges']) =>
-      dividersProblemOf({ years: true, ranges })?.code;
+      dividersProblemOf({ levels: ['year'], ranges })?.code;
     expect(
       code([
         { name: 'A', from: '2014-01-01', to: '2020-12-31' },
@@ -99,7 +107,7 @@ describe('dividers', () => {
 
   it('are checked with the layout, the folder named', () => {
     const layout: CabinetLayout = {
-      arranged_by: null,
+      levels: null,
       cabinets: [
         {
           id: 'c',
@@ -116,7 +124,7 @@ describe('dividers', () => {
                   name: 'School',
                   hidden: false,
                   filter: {},
-                  dividers: { years: true, ranges: [{ name: 'A', from: null, to: null }] },
+                  dividers: { levels: ['year'], ranges: [{ name: 'A', from: null, to: null }] },
                 },
               ],
             },
@@ -139,14 +147,14 @@ describe('dividers', () => {
     expect(isDay('0000-01-01')).toBe(false);
     expect(isDay('9999-12-31')).toBe(true);
     expect(
-      dividersProblemOf({ years: true, ranges: [{ name: 'A', from: '0000-01-01', to: null }] })
+      dividersProblemOf({ levels: ['year'], ranges: [{ name: 'A', from: '0000-01-01', to: null }] })
         ?.code,
     ).toBe('cabinet_divider_dates');
   });
 
   it('give a shared year, typed as years on both sides, to the later range: the owner’s own example', () => {
     const owner: FolderDividers = {
-      years: true,
+      levels: ['year'],
       ranges: [
         { name: 'Elementary', from: '2014', to: '2020' },
         { name: 'Middle school', from: '2020', to: '2023' },
@@ -161,10 +169,10 @@ describe('dividers', () => {
       { from: '2023-01-01', to: '2026-12-31' },
       { from: '2027-01-01', to: null },
     ]);
-    expect(dividerKeyOf(owner, '2019-12-31')).toBe('range:0');
-    expect(dividerKeyOf(owner, '2020-01-01')).toBe('range:1');
-    expect(dividerKeyOf(owner, '2026-06-01')).toBe('range:2');
-    expect(dividerKeyOf(owner, '2031-06-01')).toBe('range:3');
+    expect(dividerKeyOf({ filter: {}, dividers: owner }, paper('2019-12-31'))).toBe('range:0');
+    expect(dividerKeyOf({ filter: {}, dividers: owner }, paper('2020-01-01'))).toBe('range:1');
+    expect(dividerKeyOf({ filter: {}, dividers: owner }, paper('2026-06-01'))).toBe('range:2');
+    expect(dividerKeyOf({ filter: {}, dividers: owner }, paper('2031-06-01'))).toBe('range:3');
     expect(daySpanWords(resolvedRanges(owner)[0] as { from: string; to: string })).toBe(
       '1 Jan 2014 – 31 Dec 2019',
     );
@@ -172,7 +180,7 @@ describe('dividers', () => {
     // Typed as full dates, the same overlap is refused.
     expect(
       dividersProblemOf({
-        years: true,
+        levels: ['year'],
         ranges: [
           { name: 'Elementary', from: '2014', to: '2020-12-31' },
           { name: 'Middle school', from: '2020', to: '2023' },
@@ -181,7 +189,7 @@ describe('dividers', () => {
     ).toBe('cabinet_divider_overlap');
     expect(
       dividersProblemOf({
-        years: true,
+        levels: ['year'],
         ranges: [
           { name: 'Elementary', from: '2014', to: '2020' },
           { name: 'Middle school', from: '2020-01-01', to: '2023' },
@@ -191,8 +199,10 @@ describe('dividers', () => {
   });
 
   it('put a year outside 1000 to 9999 behind Other years', () => {
-    expect(dividerKeyOf(undefined, '0500-01-01')).toBe('other');
-    expect(dividerKeyOf(undefined, '1000-01-01')).toBe('year:1000');
+    expect(dividerKeyOf({ filter: {}, dividers: undefined }, paper('0500-01-01'))).toBe('other');
+    expect(dividerKeyOf({ filter: {}, dividers: undefined }, paper('1000-01-01'))).toBe(
+      'year:1000',
+    );
   });
 });
 
@@ -210,7 +220,7 @@ describe('school stages', () => {
     expect(schoolStages('2009-09-01')?.at(-1)?.from).toBe('2014-09-01');
     expect(schoolStages('2009-09-02')?.at(-1)?.from).toBe('2015-09-01');
     const stages = schoolStages('2016-04-02');
-    expect(stages && dividersProblemOf({ years: true, ranges: stages })).toBeNull();
+    expect(stages && dividersProblemOf({ levels: ['year'], ranges: stages })).toBeNull();
     expect(schoolStages('not a day')).toBeNull();
   });
 });
@@ -234,14 +244,14 @@ describe('a level with one group, passed over', () => {
 
   it('never divides a year folder by year: the repeated “2026” in a 2026 drawer', () => {
     const folder = { filter: { member_id: 'me', ...year2026 } };
-    expect(shownDividerMode(folder)).toBe('none');
+    expect(dividerDims(folder)).toEqual([]);
     expect(keys(shownDividers(folder, counts({ 'year:2026': 4 })))).toEqual([['all', 4]]);
     // Nothing behind it yet: still one plain list, empty.
     expect(keys(shownDividers(folder, counts({})))).toEqual([['all', 0]]);
     // Its own ranges are kept, a year folder or not; and dividers turned off stay off.
     const ranged = { ...folder, dividers: SCHOOL };
-    expect(shownDividerMode(ranged)).toBe('ranges');
-    expect(shownDividerMode({ ...folder, dividers: { years: false, ranges: [] } })).toBe('none');
+    expect(dividerDims(ranged)).toEqual(['ranges']);
+    expect(dividerDims({ ...folder, dividers: { levels: [], ranges: [] } })).toEqual([]);
   });
 
   it('hides year dividers with only one year to show, in a folder arranged by hand too', () => {
@@ -271,6 +281,7 @@ describe('a level with one group, passed over', () => {
       from: '2026-01-01',
       to: '2026-12-31',
       count: 3,
+      path: [{ level: 'year', key: 'year:2026', name: '2026' }],
     });
     // Nothing at all: no dividers, as before.
     expect(shownDividers(byHand, counts({}))).toEqual([]);
@@ -279,7 +290,10 @@ describe('a level with one group, passed over', () => {
   it('never passes over a folder’s own ranges, even one of them, even empty', () => {
     const one = {
       filter: year2026,
-      dividers: { years: true, ranges: [{ name: 'College', from: '2027-09-01', to: null }] },
+      dividers: {
+        levels: ['year' as const],
+        ranges: [{ name: 'College', from: '2027-09-01', to: null }],
+      },
     };
     expect(keys(shownDividers(one, counts({})))).toEqual([['range:0', 0]]);
     expect(

@@ -1,15 +1,23 @@
 import {
   ARRANGE_BY,
+  ARRANGE_BY_LEVELS,
+  CABINET_LEVELS,
   CABINET_LIMITS,
   CABINET_NODE_ID,
+  CABINET_TOO_BIG,
   DIVIDER_LIMITS,
   DOCUMENT_PAGE_MAX,
+  layoutSize,
+  LEVEL_LIMITS,
   PIN_LIMITS,
+  type CabinetLayout,
+  type CabinetLevel,
 } from '@fdv/shared';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { parse } from '../auth/routes.js';
 import type { Principal } from '../auth/service.js';
+import { ApiError } from '../errors.js';
 import type { CabinetService } from './service.js';
 
 /**
@@ -19,6 +27,12 @@ import type { CabinetService } from './service.js';
  */
 const id = z.string().regex(CABINET_NODE_ID, 'Each part of a cabinet needs its own id.');
 const name = z.string().max(CABINET_LIMITS.name * 4);
+/**
+ * A level a cabinet is arranged by (0.9.0-dev.90). How many, and each once,
+ * are checked again, in words, by `layoutProblemOf` (code `cabinet_levels`).
+ */
+const level = z.enum(CABINET_LEVELS);
+const levels = z.array(level).max(LEVEL_LIMITS.most);
 /** A divider's day, or open: checked as a real day, in words, by `dividersProblemOf`. */
 const dividerDay = z.string().max(10).nullable();
 /**
@@ -28,7 +42,8 @@ const dividerDay = z.string().max(10).nullable();
  */
 const dividers = z
   .object({
-    years: z.boolean(),
+    // Up to two levels inside the folder (0.9.0-dev.90).
+    levels: z.array(level).max(DIVIDER_LIMITS.levels),
     ranges: z
       .array(
         z
@@ -54,15 +69,31 @@ const folder = z
 const drawer = z
   .object({ id, name, hidden: z.boolean(), folders: z.array(folder).max(CABINET_LIMITS.folders) })
   .strict();
+/** How a cabinet was drawn (0.9.0-dev.90): its value, and its own levels below it. */
+const drawn = z
+  .object({ value: z.string().max(200).nullable(), levels: levels.optional() })
+  .strict();
 const cabinet = z
-  .object({ id, name, hidden: z.boolean(), drawers: z.array(drawer).max(CABINET_LIMITS.drawers) })
+  .object({
+    id,
+    name,
+    hidden: z.boolean(),
+    drawers: z.array(drawer).max(CABINET_LIMITS.drawers),
+    drawn: drawn.optional(),
+  })
   .strict();
 const layoutBody = z
   .object({
-    arranged_by: z.enum(ARRANGE_BY).nullable(),
+    // Absent or null: arranged by hand (0.9.0-dev.90).
+    levels: levels.nullable().optional(),
+    // What older apps still send (deprecated): ignored.
+    arranged_by: z.string().max(40).nullable().optional(),
     cabinets: z.array(cabinet).max(CABINET_LIMITS.cabinets),
   })
   .strict();
+/** A layout as it is sent, as the service takes it: its levels null where none were sent. */
+const layoutOf = (l: z.infer<typeof layoutBody>): CabinetLayout =>
+  ({ ...l, levels: l.levels ?? null }) as CabinetLayout;
 const saveBody = z
   .object({
     layout: layoutBody,
@@ -79,7 +110,8 @@ const pinsBody = z
   .strict();
 const dividerQuery = z
   .object({
-    divider: z.string().min(1).max(40),
+    // A step for each divider level (0.9.0-dev.90): `person:<id>/kind:<key>/year:2025`.
+    divider: z.string().min(1).max(400),
     cursor: z.string().max(8192).optional(),
     limit: z.coerce.number().int().min(1).max(DOCUMENT_PAGE_MAX).optional(),
   })
@@ -90,7 +122,20 @@ const pageQuery = z
     limit: z.coerce.number().int().min(1).max(DOCUMENT_PAGE_MAX).optional(),
   })
   .strict();
-const previewBody = z.object({ arrange_by: z.enum(ARRANGE_BY) }).strict();
+/**
+ * POST /cabinet/preview (0.9.0-dev.90): the default levels; and one
+ * cabinet's own (null: the default again); drawn over `layout`, else the
+ * arrangement saved. `arrange_by`, one of an older vault's three ways, is
+ * still taken (deprecated) for its levels.
+ */
+const previewBody = z
+  .object({
+    levels: levels.optional(),
+    arrange_by: z.enum(ARRANGE_BY).optional(),
+    cabinet: z.object({ id, levels: levels.nullable() }).strict().optional(),
+    layout: layoutBody.optional(),
+  })
+  .strict();
 
 /**
  * My cabinet (0.9.0, C1, `features.cabinets`): the caller's own, whoever
@@ -108,13 +153,43 @@ export function registerCabinet(app: FastifyInstance, cabinet: CabinetService) {
 
   app.put('/api/v1/cabinet', auth, async (req) => {
     const body = parse(saveBody, req.body ?? {});
-    return cabinet.save(principal(req), body.layout, body.version, body.pins_moved ?? []);
+    return cabinet.save(principal(req), layoutOf(body.layout), body.version, body.pins_moved ?? []);
   });
 
   app.post('/api/v1/cabinet/preview', auth, async (req, reply) => {
     void reply.header('cache-control', 'no-store');
     const body = parse(previewBody, req.body ?? {});
-    return cabinet.preview(principal(req), body.arrange_by);
+    const chosen =
+      body.levels ?? (body.arrange_by ? ARRANGE_BY_LEVELS[body.arrange_by] : undefined);
+    if (!chosen) {
+      throw new ApiError(
+        422,
+        'validation_failed',
+        'Choose the levels to arrange your cabinet by.',
+        {
+          detail: 'levels',
+        },
+      );
+    }
+    // The arrangement drawn over: never more than a cabinet may hold, as
+    // PUT /cabinet would keep it — what the person has is within it already.
+    const over = body.layout ? layoutOf(body.layout) : undefined;
+    if (over) {
+      const size = layoutSize(over);
+      if (
+        Buffer.byteLength(JSON.stringify(over)) > CABINET_LIMITS.layout_bytes ||
+        size.cabinets > CABINET_LIMITS.cabinets ||
+        size.folders > CABINET_LIMITS.folders_total ||
+        size.nodes > CABINET_LIMITS.nodes
+      ) {
+        throw new ApiError(422, 'cabinet_too_big', CABINET_TOO_BIG, { detail: 'layout' });
+      }
+    }
+    return cabinet.preview(principal(req), {
+      levels: [...chosen] as CabinetLevel[],
+      ...(body.cabinet ? { cabinet: body.cabinet } : {}),
+      ...(over ? { layout: over } : {}),
+    });
   });
 
   // Bring your tree (0.9.0, C4, `features.source_folders`): drawn, not saved.

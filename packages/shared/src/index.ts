@@ -57,6 +57,7 @@ export * from './cabinet.js';
 export * from './cabinet-draw.js';
 export * from './cabinet-dividers.js';
 export * from './cabinet-folders.js';
+export * from './cabinet-size.js';
 export * from './caregivers.js';
 export * from './emergency.js';
 export * from './zip-download.js';
