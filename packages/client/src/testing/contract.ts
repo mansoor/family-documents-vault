@@ -14,6 +14,7 @@ import {
   SESSION_LOCKED_CODE,
   shareEndWords,
   type BatchReadFailure,
+  type CabinetLevel,
   type CreatedUploadRequest,
   type DetailProposal,
   type PaperReading,
@@ -4631,12 +4632,13 @@ export const contractScenarios: Scenario[] = [
         filter: { category: 'bills' },
       });
       const layout = (name: string, folders = [folder('ctr-bills', name)]) => ({
-        levels: null,
+        levels: ['topic', 'year', 'person'] as CabinetLevel[],
         cabinets: [
           {
             id: 'ctr-cab',
             name: 'Contract cabinet',
             hidden: false,
+            drawn: { value: 'bills' },
             drawers: [{ id: 'ctr-drawer', name: 'Top drawer', hidden: false, folders }],
           },
         ],
@@ -4773,24 +4775,13 @@ export const contractScenarios: Scenario[] = [
       for (const was of before.layout?.cabinets ?? []) {
         expect(drawn.layout.cabinets).toContainEqual(was);
       }
-      // Kept to the version it was drawn on; and the folders fill themselves.
-      const kept = await api.saveCabinet(token, { layout: drawn.layout, version: drawn.version });
-      const counts = await api.cabinetCounts(token);
-      for (const f of drawer?.folders ?? []) expect(counts.counts[f.id]).toBe(1);
-      // A drawing kept once is not kept over a cabinet changed since.
-      const stale = await refusal(
+      // Not kept (0.9.0-dev.94): every cabinet is drawn by the arrangement's
+      // levels, and "My folders" is not, so the layout is refused, nothing saved.
+      const loose = await refusal(
         api.saveCabinet(token, { layout: drawn.layout, version: drawn.version }),
       );
-      expect([stale.status, stale.code]).toEqual([409, 'conflict']);
-      // Drawn again: those folders are there already, and nothing is added for them.
-      const again = await api.cabinetFromFolders(token);
-      expect(again.version).toBe(kept.version);
-      expect(again.already).toBeGreaterThanOrEqual(2);
-      expect(
-        again.layout.cabinets
-          .flatMap((x) => x.drawers.flatMap((d) => d.folders))
-          .filter((f) => f.filter.source_folder?.toLowerCase() === 'contract tree'),
-      ).toHaveLength(1);
+      expect([loose.status, loose.code]).toEqual([422, 'cabinet_levels']);
+      expect(await api.cabinet(token)).toEqual(before);
 
       // Forgotten, never written.
       const written = await refusal(
@@ -4803,11 +4794,7 @@ export const contractScenarios: Scenario[] = [
         'Contract tree/Bills 2026',
       );
 
-      // The cabinet as it was, and the papers in the Trash.
-      await api.saveCabinet(token, {
-        layout: before.layout ?? { levels: null, cabinets: [] },
-        version: kept.version,
-      });
+      // The papers in the Trash.
       await api.removeBatch(token, b.id);
       await api.deleteDocument(token, a.document_id);
       await api.deleteDocument(token, c.document_id);
@@ -4888,12 +4875,13 @@ export const contractScenarios: Scenario[] = [
       // A folder of my own, divided by kind and then year: one flat list of
       // leaves, each named by its steps, an older app's list as it is.
       const layout = {
-        levels: null,
+        levels: ['person', 'topic', 'year', 'kind'] as CabinetLevel[],
         cabinets: [
           {
             id: 'ctr-levels',
             name: 'Contract levels',
             hidden: false,
+            drawn: { value: me.member_id },
             drawers: [
               {
                 id: 'ctr-levels-d',
@@ -4946,12 +4934,11 @@ export const contractScenarios: Scenario[] = [
       );
       expect(stranger.status).toBe(404);
 
-      // The cabinet as it was, and the papers in the Trash.
+      // The cabinet as it was, where there was one, and the papers in the Trash.
       const now = await api.cabinet(token);
-      await api.saveCabinet(token, {
-        layout: before.layout ?? { levels: null, cabinets: [] },
-        version: now.version,
-      });
+      if (before.layout) {
+        await api.saveCabinet(token, { layout: before.layout, version: now.version });
+      }
       for (const d of [bank14, bank15, card15]) await api.deleteDocument(token, d.id);
     },
   },

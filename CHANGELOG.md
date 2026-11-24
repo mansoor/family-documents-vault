@@ -6,6 +6,15 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.9.0-dev.94] - 2026-11-23 — one cabinet structure
+
+### Changed
+
+- **One set of cabinets.** My cabinet now always follows the arrangement you chose in Arrange my cabinet: choose Person › Topic › Year and every cabinet is a person, with their topics and years inside. Cabinets from before you chose levels no longer sit beside them with an "Arranged by hand" badge, and the papers in them are no longer counted twice. Names you gave, folders and drawers you hid, your own date ranges and pinned papers are kept, as before, wherever the same cabinet, drawer or folder is drawn again.
+- **A cabinet's own arrangement changes only what is inside it.** From a cabinet's ⋯ menu in Arrange my cabinet, the cabinet level stays the one your default starts with, shown and fixed, and you choose only the levels below it. If you later change the default's first level, every cabinet follows the default again.
+- **Cancel and Use this arrangement are always in reach.** They now sit in a bar at the bottom of the screen while you scroll through the levels, your cabinets and "Your cabinet will look like this", on a computer and on a phone.
+- **"Keep my folder tree" is no longer offered** for now, because it made a cabinet of its own beside your arrangement. The folder each paper came from is still kept and shown on its page, and you can still find papers by it in Documents.
+
 ## [0.9.0-dev.93] - 2026-11-23 — a clean first start
 
 ### Fixed

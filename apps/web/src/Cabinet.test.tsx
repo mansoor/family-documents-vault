@@ -536,12 +536,13 @@ describe('levels with one group, passed over while browsing', () => {
 describe('what the cabinet holds in all (19 Nov 2026)', () => {
   /** Identity for everyone; Mansoor's financial; his passport pinned there too; a scan with no topic. */
   const HELD: CabinetLayout = {
-    levels: null,
+    levels: ['topic', 'year', 'person'],
     cabinets: [
       {
         id: 'c',
         name: 'Papers',
         hidden: false,
+        drawn: { value: 'c' },
         drawers: [
           {
             id: 'd',
@@ -705,6 +706,106 @@ describe('arranging my cabinet', () => {
     expect(state.cabinet?.layout?.cabinets[1]?.name).toBe('Aisha K');
   });
 
+  it('keeps Cancel and Use this arrangement in a bar at the foot, last in the page, each working', async () => {
+    const state = at('/documents?show=cabinet&arrange=1', {
+      cabinet: { layout: LAYOUT, version: 2, updated_at: new Date().toISOString() },
+    });
+    const bar = await screen.findByRole('region', { name: 'Save or cancel this arrangement' });
+    expect(bar).toHaveClass('arrange-bar');
+    const arrange = screen.getByRole('heading', { name: 'Arrange my cabinet' }).closest('section');
+    // After the drawing, so Tab reaches it last; the only Use this arrangement there is.
+    expect(arrange?.lastElementChild).toBe(bar);
+    expect(
+      screen
+        .getByRole('region', { name: 'Your cabinet will look like this' })
+        .compareDocumentPosition(bar) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(screen.getAllByRole('button', { name: 'Use this arrangement' })).toHaveLength(1);
+    expect(within(bar).getByRole('button', { name: 'Cancel' })).toBeVisible();
+    // Use this arrangement, from the bar: saved.
+    fireEvent.change(screen.getByRole('textbox', { name: 'Name of the cabinet Aisha' }), {
+      target: { value: 'Aisha K' },
+    });
+    fireEvent.click(within(bar).getByRole('button', { name: 'Use this arrangement' }));
+    await waitFor(() => expect(state.cabinetSaves).toHaveLength(1));
+    expect(state.cabinetSaves?.[0]?.layout.cabinets[1]?.name).toBe('Aisha K');
+    expect(await screen.findByRole('list', { name: 'Your cabinets' })).toBeVisible();
+    // Cancel, from the bar: back to the cabinet, nothing more saved.
+    fireEvent.click(screen.getByRole('button', { name: 'Arrange my cabinet' }));
+    const again = await screen.findByRole('region', { name: 'Save or cancel this arrangement' });
+    fireEvent.click(within(again).getByRole('button', { name: 'Cancel' }));
+    expect(await screen.findByRole('list', { name: 'Your cabinets' })).toBeVisible();
+    expect(screen.queryByRole('region', { name: 'Save or cancel this arrangement' })).toBeNull();
+    expect(state.cabinetSaves).toHaveLength(1);
+  });
+
+  it('keeps the bar’s height on the screen as it changes, so a part tabbed to stops above it', async () => {
+    const watchers: Array<() => void> = [];
+    class Watch {
+      constructor(cb: ResizeObserverCallback) {
+        watchers.push(() => cb([], this));
+      }
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    }
+    vi.stubGlobal('ResizeObserver', Watch);
+    let height = 72;
+    const rect = vi
+      .spyOn(HTMLElement.prototype, 'getBoundingClientRect')
+      .mockImplementation(function (this: HTMLElement) {
+        return { height: this.classList.contains('arrange-bar') ? height : 0 } as DOMRect;
+      });
+    try {
+      at('/documents?show=cabinet&arrange=1', {
+        cabinet: { layout: LAYOUT, version: 2, updated_at: new Date().toISOString() },
+      });
+      const bar = await screen.findByRole('region', { name: 'Save or cancel this arrangement' });
+      const arrange = bar.closest('section') as HTMLElement;
+      await waitFor(() => expect(arrange.style.getPropertyValue('--arrange-bar-h')).toBe('72px'));
+      // Taller: a refusal said in it, or its buttons on two rows.
+      height = 131.4;
+      act(() => {
+        for (const w of watchers) w();
+      });
+      expect(arrange.style.getPropertyValue('--arrange-bar-h')).toBe('132px');
+    } finally {
+      rect.mockRestore();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('says a refused save in the bar, beside its buttons', async () => {
+    const state = at('/documents?show=cabinet&arrange=1', {
+      cabinet: { layout: LAYOUT, version: 2, updated_at: new Date().toISOString() },
+    });
+    const bar = await screen.findByRole('region', { name: 'Save or cancel this arrangement' });
+    state.cabinet = { layout: LAYOUT, version: 3, updated_at: new Date().toISOString() };
+    fireEvent.click(within(bar).getByRole('button', { name: 'Use this arrangement' }));
+    expect(await within(bar).findByRole('alert')).toHaveTextContent(/changed somewhere else/);
+  });
+
+  it('reads a layout with no levels as no arrangement yet: the first drawing, nothing of it kept', async () => {
+    const state = at('/documents?show=cabinet', {
+      cabinet: {
+        layout: { ...LAYOUT, levels: null },
+        version: 4,
+        updated_at: new Date().toISOString(),
+      },
+      cabinetPreview: () => PREVIEW,
+    });
+    expect(await screen.findByRole('heading', { name: 'Your cabinet is empty' })).toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: 'Arrange my cabinet' }));
+    await waitFor(() => expect(state.cabinetPreviewAsks).toHaveLength(1));
+    expect(state.cabinetPreviewAsks?.[0]?.layout).toBeUndefined();
+    expect(await screen.findByText(/4 documents in 4 folders/)).toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: 'Use this arrangement' }));
+    await waitFor(() => expect(state.cabinetSaves).toHaveLength(1));
+    // Made over the version there, every cabinet drawn.
+    expect(state.cabinetSaves?.[0]?.version).toBe(4);
+    expect(state.cabinetSaves?.[0]?.layout.cabinets.every((c) => c.drawn)).toBe(true);
+  });
+
   it('is accessible while arranging', async () => {
     at('/documents?show=cabinet&arrange=1', { cabinetPreview: () => PREVIEW });
     expect(await screen.findByText(/4 documents in 4 folders/)).toBeVisible();
@@ -715,12 +816,13 @@ describe('arranging my cabinet', () => {
 describe('a folder in the table, whole (the review)', () => {
   /** A merged folder (two people, two kinds) and one of two statuses. */
   const MERGED: CabinetLayout = {
-    levels: null,
+    levels: ['topic', 'year', 'person'],
     cabinets: [
       {
         id: 'c',
         name: 'Family',
         hidden: false,
+        drawn: { value: 'c' },
         drawers: [
           {
             id: 'd',
@@ -916,12 +1018,13 @@ describe('dividers and pins (C2)', () => {
   type Folder = CabinetLayout['cabinets'][number]['drawers'][number]['folders'][number];
   /** One cabinet, one drawer: every paper, Aisha's, and money. */
   const FOLDERS = (dividers?: Folder['dividers']): CabinetLayout => ({
-    levels: null,
+    levels: ['topic', 'year', 'person'],
     cabinets: [
       {
         id: 'c',
         name: 'Home',
         hidden: false,
+        drawn: { value: 'c' },
         drawers: [
           {
             id: 'd',
@@ -1174,12 +1277,13 @@ describe('dividers and pins (C2)', () => {
   it('moves a folder’s pins with it when it is merged into the one above', async () => {
     const state = at('/documents?show=cabinet&arrange=1', {
       ...cabinet({
-        levels: null,
+        levels: ['topic', 'year', 'person'],
         cabinets: [
           {
             id: 'c',
             name: 'Home',
             hidden: false,
+            drawn: { value: 'c' },
             drawers: [
               {
                 id: 'd',
@@ -1212,8 +1316,8 @@ describe('levels you choose (0.9.0-dev.90)', () => {
       cabinet: { layout, version: 2, updated_at: new Date().toISOString() },
       ...over,
     });
-  /** A cabinet kept from a folder tree: arranged by hand. */
-  const HAND = {
+  /** A cabinet no drawing made, as no release keeps one: never read. */
+  const LOOSE = {
     id: 'c-hand',
     name: 'My folders',
     hidden: false,
@@ -1231,8 +1335,8 @@ describe('levels you choose (0.9.0-dev.90)', () => {
       .getAllByRole('listitem')
       .map((li) => li.textContent?.replace(/[↑↓×⋮]/g, '').trim());
 
-  it('chooses and orders the levels with ↑ and ↓, the focus kept, and keeps a cabinet arranged by hand', async () => {
-    const state = saved({ ...LAYOUT, cabinets: [...LAYOUT.cabinets, HAND] });
+  it('chooses and orders the levels with ↑ and ↓, the focus kept, every cabinet drawn by them', async () => {
+    const state = saved({ ...LAYOUT, cabinets: [...LAYOUT.cabinets, LOOSE] });
     await screen.findByRole('list', { name: 'Levels, in order' });
     expect(levelsShown()).toEqual([
       '1Personwhose it isCabinet',
@@ -1250,24 +1354,19 @@ describe('levels you choose (0.9.0-dev.90)', () => {
     await waitFor(() =>
       expect(state.cabinetPreviewAsks?.at(-1)?.levels).toEqual(['topic', 'person', 'year']),
     );
+    // One structure: the cabinet no drawing made is not there to draw over.
     expect(state.cabinetPreviewAsks?.at(-1)?.layout?.cabinets.map((c) => c.id)).toEqual([
       'c-me',
       'c-aisha',
-      'c-hand',
     ]);
     expect(
       await screen.findByRole('textbox', { name: 'Name of the cabinet Identity' }),
     ).toBeVisible();
-    // The one arranged by hand is kept, and said to be.
-    const hand = screen
-      .getByRole('textbox', { name: 'Name of the cabinet My folders' })
-      .closest('.arrange-row') as HTMLElement;
-    expect(within(hand).getByText('Arranged by hand')).toBeVisible();
+    expect(screen.queryByRole('textbox', { name: 'Name of the cabinet My folders' })).toBeNull();
+    expect(screen.queryByText('Arranged by hand')).toBeNull();
+    expect(screen.queryByText(/beside the drawn ones/)).toBeNull();
     const scopes = screen.getByRole('list', { name: 'What to arrange' });
-    expect(within(scopes).getByText('Arranged by hand')).toBeVisible();
-    expect(
-      screen.getByText(/arranged by hand stays as it is, beside the drawn ones/),
-    ).toBeVisible();
+    expect(within(scopes).queryByText('My folders')).toBeNull();
     // A fourth level is a divider, and costs no folders.
     fireEvent.click(screen.getByRole('button', { name: '+ Kind' }));
     expect(levelsShown()[3]).toBe('4Kindbank statement, payslip…Divider');
@@ -1294,7 +1393,8 @@ describe('levels you choose (0.9.0-dev.90)', () => {
     await waitFor(() => expect(state.cabinetSaves).toHaveLength(1));
     const sent = state.cabinetSaves?.[0]?.layout;
     expect(sent?.levels).toEqual(['topic', 'person']);
-    expect(sent?.cabinets.find((c) => c.id === 'c-hand')).toEqual(HAND);
+    expect(sent?.cabinets.some((c) => c.id === 'c-hand')).toBe(false);
+    expect(sent?.cabinets.every((c) => c.drawn)).toBe(true);
     // The bar says how it is arranged.
     expect(await screen.findByText(/Arranged by Topic › Person/)).toBeVisible();
   });
@@ -1409,14 +1509,11 @@ describe('levels you choose (0.9.0-dev.90)', () => {
             },
           ],
         },
-        HAND,
       ],
     };
     const state = saved(BY_TOPIC);
     const scopes = await screen.findByRole('list', { name: 'What to arrange' });
     expect(within(scopes).getByText('Follows the default')).toBeVisible();
-    // Only a drawn cabinet has a menu.
-    expect(within(scopes).queryByRole('button', { name: 'More for My folders' })).toBeNull();
     const more = within(scopes).getByRole('button', { name: 'More for Financial' });
     fireEvent.click(more);
     const menu = await screen.findByRole('menu', { name: 'Financial' });
@@ -1439,7 +1536,16 @@ describe('levels you choose (0.9.0-dev.90)', () => {
       '2Yearissued, else addedDrawer',
       '3Personwhose it isFolder',
     ]);
+    // Fixed: never moved or removed; only the levels below it are chosen.
     expect(screen.queryByRole('button', { name: 'Move Topic up' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Move Topic down' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Remove Topic' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '+ Topic' })).toBeNull();
+    expect(
+      screen.getByText(
+        /If the default’s first level changes, this cabinet follows the default again\./,
+      ),
+    ).toBeVisible();
     fireEvent.click(screen.getByRole('button', { name: 'Move Person up' }));
     await waitFor(() =>
       expect(state.cabinetPreviewAsks?.at(-1)).toMatchObject({
@@ -1476,7 +1582,7 @@ describe('levels you choose (0.9.0-dev.90)', () => {
     // Browsing, its card says so.
     const cards = await screen.findByRole('list', { name: 'Your cabinets' });
     expect(within(cards).getByText('Own arrangement')).toBeVisible();
-    expect(within(cards).getByText('Arranged by hand')).toBeVisible();
+    expect(screen.queryByText('Arranged by hand')).toBeNull();
   });
 
   it('browses a folder divided by two levels: each kind a tab, its years inside it', async () => {
@@ -1487,6 +1593,7 @@ describe('levels you choose (0.9.0-dev.90)', () => {
           id: 'c',
           name: 'Home',
           hidden: false,
+          drawn: { value: 'me' },
           drawers: [
             {
               id: 'd',
@@ -1551,24 +1658,6 @@ describe('levels you choose: focus, scope and words (the review)', () => {
       cabinet: { layout, version: 2, updated_at: new Date().toISOString() },
       ...over,
     });
-  const bigHand = {
-    id: 'c-hand',
-    name: 'My folders',
-    hidden: false,
-    drawers: [
-      {
-        id: 'd-hand',
-        name: 'Scans',
-        hidden: false,
-        folders: Array.from({ length: 45 }, (_, i) => ({
-          id: `f-hand-${i}`,
-          name: `Scan ${i}`,
-          hidden: false,
-          filter: { tag: `scan-${i}` },
-        })),
-      },
-    ],
-  };
 
   it('keeps the focus on a level that is there after adding, removing and moving one down', async () => {
     const wide = (n: number, levels: CabinetLayout['levels']): CabinetLayout => ({
@@ -1629,14 +1718,14 @@ describe('levels you choose: focus, scope and words (the review)', () => {
     ).toBeInTheDocument();
   });
 
-  it('never warns of a cabinet arranged by hand, nor of one with its own arrangement, for the default', async () => {
+  it('never warns of a cabinet with its own arrangement, for the default', async () => {
     const own: CabinetLayout['cabinets'][number] = {
       ...(LAYOUT.cabinets[1] as CabinetLayout['cabinets'][number]),
       drawn: { value: AISHA.id, levels: ['kind', 'year'] },
     };
     savedAt({
       ...LAYOUT,
-      cabinets: [LAYOUT.cabinets[0] as CabinetLayout['cabinets'][number], own, bigHand],
+      cabinets: [LAYOUT.cabinets[0] as CabinetLayout['cabinets'][number], own],
     });
     await screen.findByRole('list', { name: 'Levels, in order' });
     expect(screen.queryByText('That is a lot of folders.')).toBeNull();

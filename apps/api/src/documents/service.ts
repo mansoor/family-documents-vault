@@ -124,6 +124,8 @@ import {
   placeColumns,
   placeOf,
   placeRefused,
+  ownFolderIds,
+  placeIsOwn,
   placeView,
   type PlacedFolder,
 } from './original-place.js';
@@ -1283,7 +1285,9 @@ export class DocumentService {
       physical_location: seesLocation(p.role) ? row.physical_location : null,
       // Its place in a cabinet (0.9.0, C3): to the same people, on the same
       // terms; the folder's id only to whoever it is theirs.
-      original_place: seesLocation(p.role) ? placeView(p, row) : null,
+      original_place: seesLocation(p.role)
+        ? placeView(p, row, placeIsOwn(p, row) ? await ownFolderIds(trx, p) : undefined)
+        : null,
       // The folder it came from (0.9.0, C4): the household's own filing,
       // to the same people, on the same terms.
       source_folder: seesLocation(p.role) ? (row.source_folder ?? null) : null,

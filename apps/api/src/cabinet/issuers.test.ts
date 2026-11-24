@@ -17,7 +17,7 @@ import {
 import FormData from 'form-data';
 import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { createHarness, type Harness } from '../test-harness.js';
+import { asArranged, createHarness, type Harness } from '../test-harness.js';
 
 /**
  * Who issued it as a cabinet level (0.9.0-dev.91), through the API as each
@@ -75,7 +75,9 @@ describe.skipIf(!testAdminUrl())('who issued it, as a cabinet level', () => {
   const mine = (who: Person) => ok<CabinetView>(call(who, 'GET', '/api/v1/cabinet'));
   const saved = async (who: Person, layout: CabinetLayout) => {
     const at = await mine(who);
-    return ok<CabinetView>(call(who, 'PUT', '/api/v1/cabinet', { layout, version: at.version }));
+    return ok<CabinetView>(
+      call(who, 'PUT', '/api/v1/cabinet', { layout: asArranged(layout), version: at.version }),
+    );
   };
   const fresh = (who: Person, levels: CabinetLevel[]) =>
     ok<CabinetPreview>(

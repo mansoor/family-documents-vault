@@ -16,7 +16,7 @@ import {
 } from '@fdv/shared';
 import { sql } from 'kysely';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { createHarness, type Harness } from '../test-harness.js';
+import { asArranged, createHarness, type Harness } from '../test-harness.js';
 
 /**
  * My cabinet (0.9.0, C1; 0097), through the API as each member of a
@@ -89,7 +89,7 @@ describe.skipIf(!testAdminUrl())('my cabinet', () => {
     );
   const mine = (who: Person) => ok<CabinetView>(call(who, 'GET', '/api/v1/cabinet'));
   const save = (who: Person, layout: CabinetLayout, version: number) =>
-    call(who, 'PUT', '/api/v1/cabinet', { layout, version });
+    call(who, 'PUT', '/api/v1/cabinet', { layout: asArranged(layout), version });
   const saved = async (who: Person, layout: CabinetLayout) => {
     const at = await mine(who);
     return ok<CabinetView>(save(who, layout, at.version));
@@ -278,7 +278,7 @@ describe.skipIf(!testAdminUrl())('my cabinet', () => {
     it('by person, then topic, then year: the caller first, every year newest first', async () => {
       const p = await preview('owner', ['person', 'topic', 'year']);
       expect(p.layout.levels).toEqual(['person', 'topic', 'year']);
-      // What older apps read: arranged by hand, as far as they know.
+      // What older apps read (deprecated): always null.
       expect(p.layout.arranged_by).toBeNull();
       const shape = p.layout.cabinets.map((c) => ({
         name: c.name,
@@ -680,7 +680,10 @@ describe.skipIf(!testAdminUrl())('my cabinet', () => {
         },
       ];
       for (const layout of bad) {
-        const r = await call('adult', 'PUT', '/api/v1/cabinet', { layout, version: at });
+        const r = await call('adult', 'PUT', '/api/v1/cabinet', {
+          layout: asArranged(layout as CabinetLayout),
+          version: at,
+        });
         expect(r.statusCode, r.body.slice(0, 200)).toBe(422);
       }
     });
@@ -832,8 +835,10 @@ describe.skipIf(!testAdminUrl())('my cabinet', () => {
             household_id: hh,
             member_id: member('adult'),
             layout: JSON.stringify({
-              levels: null,
-              cabinets: [{ id: 'm', name: 'Mine 1', hidden: false, drawers: [] }],
+              levels: ['topic', 'year', 'person'],
+              cabinets: [
+                { id: 'm', name: 'Mine 1', hidden: false, drawers: [], drawn: { value: 'm' } },
+              ],
             }),
           })
           .onConflict((oc) =>
@@ -841,15 +846,19 @@ describe.skipIf(!testAdminUrl())('my cabinet', () => {
               .columns(['household_id', 'member_id'])
               .doUpdateSet({
                 layout: JSON.stringify({
-                  levels: null,
-                  cabinets: [{ id: 'm', name: 'Mine 2', hidden: false, drawers: [] }],
+                  levels: ['topic', 'year', 'person'],
+                  cabinets: [
+                    { id: 'm', name: 'Mine 2', hidden: false, drawers: [], drawn: { value: 'm' } },
+                  ],
                 }),
               })
               .where('cabinet_layout.version', '>', 0),
           )
           .execute(),
       );
-      expect((await mine('adult')).layout?.cabinets.map((x) => x.name)).toEqual(['Mine 2']);
+      const names = (await mine('adult')).layout?.cabinets.map((x) => x.name);
+      expect(names).toContain('Mine 2');
+      expect(names).not.toContain('Mine 1');
     });
 
     it('gives a caller who says nothing, or a share link, no row', async () => {

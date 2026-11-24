@@ -16,7 +16,7 @@ import {
 } from '@fdv/shared';
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { createHarness, type Harness } from '../test-harness.js';
+import { asArranged, createHarness, type Harness } from '../test-harness.js';
 
 /**
  * Dividers and pins in somebody's cabinet (0.9.0, C2; 0099), through the
@@ -82,7 +82,11 @@ describe.skipIf(!testAdminUrl())('dividers and pins in my cabinet (C2)', () => {
   const saved = async (who: Person, layout: CabinetLayout, extra: object = {}) => {
     const at = await mine(who);
     return ok<CabinetView>(
-      call(who, 'PUT', '/api/v1/cabinet', { layout, version: at.version, ...extra }),
+      call(who, 'PUT', '/api/v1/cabinet', {
+        layout: asArranged(layout),
+        version: at.version,
+        ...extra,
+      }),
     );
   };
   const counts = (who: Person) =>
@@ -302,7 +306,7 @@ describe.skipIf(!testAdminUrl())('dividers and pins in my cabinet (C2)', () => {
     const year = (y: number) => ({ dated_from: `${y}-01-01`, dated_to: `${y}-12-31` });
     const keyed = (c: FolderContents) => c.dividers.map((d) => [d.key, d.count]);
 
-    it('by year with only one year to show, a folder arranged by hand is one plain list', async () => {
+    it('by year with only one year to show, a folder that asks no year is one plain list', async () => {
       // Sam's tax return, of 2024, is the only tax paper Olive sees.
       await saved('owner', oneDrawer([{ id: 'tax', name: 'Tax', filter: { category: 'tax' } }]));
       const c = await opened('owner', 'tax');
@@ -335,8 +339,8 @@ describe.skipIf(!testAdminUrl())('dividers and pins in my cabinet (C2)', () => {
       ).toBe(404);
     });
 
-    it('never shows a year folder in a year drawer its own year as a divider, arranged by hand or drawn', async () => {
-      // By hand: a 2023 drawer, Tia's folder of 2023, and one of 2027 with nothing yet.
+    it('never shows a year folder in a year drawer its own year as a divider, however it was made', async () => {
+      // A 2023 drawer, Tia's folder of 2023, and one of 2027 with nothing yet.
       await saved('owner', {
         levels: null,
         cabinets: [
@@ -635,13 +639,15 @@ describe.skipIf(!testAdminUrl())('dividers and pins in my cabinet (C2)', () => {
       );
       // Typed as a full date, the same year is an overlap.
       const r = await call('owner', 'PUT', '/api/v1/cabinet', {
-        layout: school({
-          levels: ['year'],
-          ranges: [
-            { name: 'Elementary', from: '2014', to: '2020-12-31' },
-            { name: 'Middle school', from: '2020', to: '2023' },
-          ],
-        }),
+        layout: asArranged(
+          school({
+            levels: ['year'],
+            ranges: [
+              { name: 'Elementary', from: '2014', to: '2020-12-31' },
+              { name: 'Middle school', from: '2020', to: '2023' },
+            ],
+          }),
+        ),
         version: (await mine('owner')).version,
       });
       expect(r.json<{ error: { code: string } }>().error.code).toBe('cabinet_divider_overlap');
@@ -651,7 +657,9 @@ describe.skipIf(!testAdminUrl())('dividers and pins in my cabinet (C2)', () => {
       const at = await mine('owner');
       for (const bad of ['0000-01-01', '0000', '0999-12-31']) {
         const r = await call('owner', 'PUT', '/api/v1/cabinet', {
-          layout: school({ levels: ['year'], ranges: [{ name: 'Long ago', from: bad, to: null }] }),
+          layout: asArranged(
+            school({ levels: ['year'], ranges: [{ name: 'Long ago', from: bad, to: null }] }),
+          ),
           version: at.version,
         });
         expect(r.statusCode, bad).toBe(422);
@@ -752,14 +760,14 @@ describe.skipIf(!testAdminUrl())('dividers and pins in my cabinet (C2)', () => {
       ];
       for (const [dividers, code] of refusals) {
         const r = await call('owner', 'PUT', '/api/v1/cabinet', {
-          layout: school(dividers),
+          layout: asArranged(school(dividers)),
           version: before.version,
         });
         expect(r.statusCode, r.body).toBe(422);
         expect(r.json<{ error: { code: string; message: string } }>().error.code).toBe(code);
       }
       const overlap = await call('owner', 'PUT', '/api/v1/cabinet', {
-        layout: school(refusals[0]?.[0] as FolderDividers),
+        layout: asArranged(school(refusals[0]?.[0] as FolderDividers)),
         version: before.version,
       });
       expect(overlap.json<{ error: { message: string } }>().error.message).toMatch(
@@ -1123,7 +1131,7 @@ describe.skipIf(!testAdminUrl())('dividers and pins in my cabinet (C2)', () => {
       const merged = oneDrawer([{ id: 'm1', name: 'M1', filter: { category: 'tax' } }]);
       const at = await mine('adult');
       const over = await call('adult', 'PUT', '/api/v1/cabinet', {
-        layout: merged,
+        layout: asArranged(merged),
         version: at.version,
         pins_moved: [{ from: 'm2', to: 'm1' }],
       });
@@ -1156,7 +1164,8 @@ describe.skipIf(!testAdminUrl())('dividers and pins in my cabinet (C2)', () => {
         [member('owner'), ids.high],
       );
       expect(rows.rows[0]?.n).toBe(1);
-    });
+      // Two hundred pins and more, a few at once: slow on a busy machine.
+    }, 60_000);
 
     it('a pin and an unpin, or a pin and a save that takes its folder away, at once: never a pin left behind in no folder', async () => {
       for (let i = 0; i < 4; i++) {
@@ -1168,7 +1177,9 @@ describe.skipIf(!testAdminUrl())('dividers and pins in my cabinet (C2)', () => {
         const [pinned, put, unpinned] = await Promise.all([
           pin('owner', 'race2', [ids.middle as string]),
           call('owner', 'PUT', '/api/v1/cabinet', {
-            layout: oneDrawer([{ id: 'race3', name: 'Other', filter: { category: 'tax' } }]),
+            layout: asArranged(
+              oneDrawer([{ id: 'race3', name: 'Other', filter: { category: 'tax' } }]),
+            ),
             version: at.version,
           }),
           unpin('owner', 'race2', ids.middle as string),

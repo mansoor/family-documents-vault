@@ -16,7 +16,7 @@ import {
 import FormData from 'form-data';
 import { sql } from 'kysely';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { createHarness, type Harness } from '../test-harness.js';
+import { asArranged, createHarness, type Harness } from '../test-harness.js';
 
 /**
  * Bring your tree (0.9.0, C4; 0105): the folder a paper came from — Add →
@@ -108,8 +108,7 @@ describe.skipIf(!testAdminUrl())('the folder a paper came from (C4)', () => {
         [id],
       )
     ).rows.map((r) => r.detail);
-  const mine: CabinetLayout = {
-    levels: null,
+  const mine: CabinetLayout = asArranged({
     cabinets: [
       {
         id: 'mine',
@@ -125,7 +124,7 @@ describe.skipIf(!testAdminUrl())('the folder a paper came from (C4)', () => {
         ],
       },
     ],
-  };
+  });
 
   beforeAll(async () => {
     h = await createHarness({ rateLimitPerMinute: 100_000 });
@@ -219,7 +218,7 @@ describe.skipIf(!testAdminUrl())('the folder a paper came from (C4)', () => {
     expect(await searched('viewer', 'Taxes')).toEqual([]);
   });
 
-  it('draws the caller’s own folders into their cabinet, beside what is there, and saves nothing', async () => {
+  it('draws the caller’s own folders beside their cabinet, saves nothing, and is not kept', async () => {
     const before = await ok<CabinetView>(call('owner', 'GET', '/api/v1/cabinet'));
     // Asked cheaply with the counts: there are folders to add.
     const told = await ok<CabinetCounts>(call('owner', 'GET', '/api/v1/cabinet/counts'));
@@ -265,25 +264,19 @@ describe.skipIf(!testAdminUrl())('the folder a paper came from (C4)', () => {
     // Nothing kept until it is saved.
     expect(await ok<CabinetView>(call('owner', 'GET', '/api/v1/cabinet'))).toEqual(before);
 
-    // Kept to the version it was drawn on; its folders fill themselves.
-    const kept = await ok<CabinetView>(
-      call('owner', 'PUT', '/api/v1/cabinet', { layout: got.layout, version: got.version }),
-    );
-    const counts = await ok<CabinetCounts>(call('owner', 'GET', '/api/v1/cabinet/counts'));
-    expect(counts.new_folders).toBe(false);
-    for (const [id, n] of Object.entries(got.counts)) expect(counts.counts[id], id).toBe(n);
-    // Never over a cabinet changed since.
-    const stale = await call('owner', 'PUT', '/api/v1/cabinet', {
+    // Not kept (0.9.0-dev.94): "My folders" is no cabinet drawn by the
+    // arrangement's levels, so the layout is refused, nothing saved.
+    const loose = await call('owner', 'PUT', '/api/v1/cabinet', {
       layout: got.layout,
       version: got.version,
     });
-    expect(stale.statusCode).toBe(409);
-    // Drawn again: nothing new.
-    const again = await ok<CabinetFromFolders>(drawn('owner'));
-    expect(again.version).toBe(kept.version);
-    expect(again.added).toEqual({ cabinets: 0, drawers: 0, folders: 0 });
-    expect(again.already).toBe(3);
-    expect(again.layout).toEqual(kept.layout);
+    expect([loose.statusCode, loose.json<{ error: { code: string } }>().error.code]).toEqual([
+      422,
+      'cabinet_levels',
+    ]);
+    expect(await ok<CabinetView>(call('owner', 'GET', '/api/v1/cabinet'))).toEqual(before);
+    const counts = await ok<CabinetCounts>(call('owner', 'GET', '/api/v1/cabinet/counts'));
+    expect(counts.new_folders).toBe(true);
     // Somebody else's folders are theirs: the adult's own, a teen's none.
     expect((await ok<CabinetFromFolders>(drawn('adult'))).folders).toEqual([
       { path: 'Sam box', documents: 1 },
@@ -295,8 +288,7 @@ describe.skipIf(!testAdminUrl())('the folder a paper came from (C4)', () => {
     expect((await drawn('viewer')).statusCode).toBe(403);
     const saved = await call('viewer', 'PUT', '/api/v1/cabinet', {
       version: 0,
-      layout: {
-        levels: null,
+      layout: asArranged({
         cabinets: [
           {
             id: 'c',
@@ -314,7 +306,7 @@ describe.skipIf(!testAdminUrl())('the folder a paper came from (C4)', () => {
             ],
           },
         ],
-      },
+      }),
     });
     expect(saved.statusCode).toBe(422);
   });

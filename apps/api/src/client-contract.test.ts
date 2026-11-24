@@ -49,8 +49,10 @@ const tagBefore = (a: string, b: string): boolean => {
  * What an older client's run leaves out, and why: the scenarios a later
  * release changed on purpose, each announced in docs/api-changelog.md. An
  * older client's scenarios are frozen at its tag; the server is this
- * commit's. None is the phone's: it is never a connected app, and its own
- * scenarios all still run.
+ * commit's. None is the phone's own doing: the two of 0.9.0-dev.94 save a
+ * cabinet arranged by no levels, which PUT /cabinet now refuses — a write
+ * only the web makes, never the phone app, which only reads My cabinet. Every
+ * other scenario of the phone's still runs.
  */
 const CHANGED_ON_PURPOSE: readonly { before: string; scenario: RegExp; why: string }[] = [
   {
@@ -62,6 +64,16 @@ const CHANGED_ON_PURPOSE: readonly { before: string; scenario: RegExp; why: stri
     before: 'v0.9.0-dev.79',
     scenario: /^a new vault says what it is/,
     why: 'it negotiated as a made-up app 0.1.0, below min_client_version (asked below as the app)',
+  },
+  {
+    before: 'v0.9.0-dev.94',
+    scenario: /^where the original is, as a folder of my cabinet/,
+    why: 'it saved a cabinet layout without levels, which PUT /cabinet refuses (422 cabinet_levels)',
+  },
+  {
+    before: 'v0.9.0-dev.94',
+    scenario: /^the folder a paper came from: kept as it is filed/,
+    why: 'it saved the folder tree’s "My folders" cabinet, drawn by no levels, which PUT /cabinet refuses',
   },
 ];
 const leftOut = (name: string): boolean =>

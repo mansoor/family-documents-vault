@@ -191,24 +191,24 @@ describe('redrawing', () => {
       levels: [],
       ranges: [{ name: 'Spring', from: `${year}-03-01`, to: `${year}-05-31` }],
     };
-    // And a cabinet arranged by hand, first.
-    l.cabinets.unshift({
-      id: 'hand',
-      name: 'My folders',
-      hidden: false,
-      drawers: [
-        {
-          id: 'hand-d',
-          name: 'Scans',
-          hidden: false,
-          folders: [
-            { id: 'hand-f', name: 'Scans', hidden: false, filter: { source_folder: 'Scans' } },
-          ],
-        },
-      ],
-    });
     return l;
   };
+  /** A cabinet not drawn by the levels, as no release keeps any more. */
+  const loose = (): Cabinet => ({
+    id: 'loose',
+    name: 'My folders',
+    hidden: false,
+    drawers: [
+      {
+        id: 'loose-d',
+        name: 'Scans',
+        hidden: false,
+        folders: [
+          { id: 'loose-f', name: 'Scans', hidden: false, filter: { source_folder: 'Scans' } },
+        ],
+      },
+    ],
+  });
 
   it('keeps names, hidden folders, ranges and ids wherever the same folder is drawn again', () => {
     const before = base();
@@ -229,9 +229,8 @@ describe('redrawing', () => {
     expect(same.dividers?.ranges).toEqual(was.dividers?.ranges);
     // Its name was given at the folder's level then (Year), and is Topic's now: drawn afresh.
     expect(same.name).toBe('Tax');
-    // The cabinets, by the same first level, keep their ids; the one arranged by hand is where it was.
+    // The cabinets, by the same first level, keep their ids.
     expect(after.layout.cabinets.map((c) => c.id)).toEqual(before.cabinets.map((c) => c.id));
-    expect(after.layout.cabinets[0]).toEqual(before.cabinets[0]);
     expect(after.counts[was.id]).toBe(2);
     // Back again, by Person › Topic › Year: the folder's name from Topic is drawn afresh as its year.
     const back = redrawCabinet(
@@ -336,12 +335,7 @@ describe('redrawing', () => {
       ids('p'),
     ).layout;
     expect(person.cabinets.filter((c) => c.drawn?.levels)).toEqual([]);
-    expect(person.cabinets.map((c) => c.name)).toEqual([
-      'Olive',
-      'Sam',
-      'The household',
-      'My folders',
-    ]);
+    expect(person.cabinets.map((c) => c.name)).toEqual(['Olive', 'Sam', 'The household']);
     // The default again.
     const back = redrawCabinet(
       own,
@@ -407,11 +401,56 @@ describe('redrawing', () => {
     expect(refused({ levels: ['topic'] as CabinetLevel[] })).toThrow(RedrawRefused);
   });
 
-  it('keeps cabinets arranged by hand beside the drawn ones, never replacing them', () => {
-    const byHand: CabinetLayout = { ...base(), levels: null };
-    // Arranged by hand before: every cabinet is the person's own, marks and all.
+  it('keeps one structure: a cabinet not drawn by the levels is let go, a drawn one’s own changes kept', () => {
+    const before = base();
+    before.cabinets.unshift(loose());
+    const was = folders(before).find((f) => f.name === 'Tax this year') as CabinetFolder;
+    // The same levels, levels 4 and 5, levels 2 and 3, the first: never kept.
+    for (const levels of [
+      ['person', 'topic', 'year'],
+      ['person', 'topic', 'year', 'kind'],
+      ['person', 'year', 'topic'],
+      ['topic', 'year', 'person'],
+    ] as CabinetLevel[][]) {
+      const after = redrawCabinet(before, { levels }, HOUSEHOLD, names, ids('n')).layout;
+      expect(after.cabinets.every((c) => c.drawn)).toBe(true);
+      expect(after.cabinets.some((c) => c.id === 'loose')).toBe(false);
+      expect(folders(after).some((f) => f.id === 'loose-f')).toBe(false);
+    }
+    // A drawn folder's name, hidden flag and ranges kept, its level the same.
+    const four = redrawCabinet(
+      before,
+      { levels: ['person', 'topic', 'year', 'kind'] },
+      HOUSEHOLD,
+      names,
+      ids('f'),
+    ).layout;
+    const same = folders(four).find((f) => f.id === was.id) as CabinetFolder;
+    expect(same.name).toBe('Tax this year');
+    expect(same.hidden).toBe(true);
+    expect(same.dividers?.ranges).toEqual(was.dividers?.ranges);
+    // A renamed, hidden cabinet drawn again by the same first level: kept as it was set.
+    const olive = before.cabinets.find((c) => c.name === 'Olive') as Cabinet;
+    olive.name = 'Olive’s papers';
+    olive.hidden = true;
+    const redrawn = redrawCabinet(
+      before,
+      { levels: ['person', 'year', 'topic'] },
+      HOUSEHOLD,
+      names,
+      ids('r'),
+    ).layout;
+    expect(redrawn.cabinets.find((c) => c.id === olive.id)).toMatchObject({
+      name: 'Olive’s papers',
+      hidden: true,
+    });
+  });
+
+  it('draws afresh over a layout with no levels: nothing of it kept', () => {
+    const noLevels: CabinetLayout = { ...base(), levels: null };
+    noLevels.cabinets.push(loose());
     const after = redrawCabinet(
-      byHand,
+      noLevels,
       { levels: ['person', 'kind'] },
       HOUSEHOLD,
       names,
@@ -419,31 +458,9 @@ describe('redrawing', () => {
     ).layout;
     expect(after.cabinets.map((c) => [c.name, c.drawn ?? null])).toEqual([
       ['My cabinet', { value: null }],
-      ['My folders', null],
-      ['Olive', null],
-      ['Sam', null],
-      ['The household', null],
     ]);
-    // Drawn again by other levels, the one by hand is still there, where it was.
-    const again = redrawCabinet(
-      after,
-      { levels: ['topic', 'year', 'person'] },
-      HOUSEHOLD,
-      names,
-      ids('m'),
-    ).layout;
-    expect(again.cabinets.filter((c) => !c.drawn).map((c) => c.name)).toEqual([
-      'My folders',
-      'Olive',
-      'Sam',
-      'The household',
-    ]);
-    expect(again.cabinets.map((c) => c.name).slice(0, 4)).toEqual([
-      'Identity',
-      'Financial',
-      'Tax',
-      'Bills & utilities',
-    ]);
+    const fresh = redrawCabinet(null, { levels: ['person', 'kind'] }, HOUSEHOLD, names, ids('n'));
+    expect(after).toEqual(fresh.layout);
   });
 });
 
@@ -581,23 +598,8 @@ describe('growing a drawing by its levels', () => {
     ]);
   });
 
-  it('writes levels 4 and 5 on a new folder, and never touches a cabinet arranged by hand', () => {
+  it('writes levels 4 and 5 on a new folder, and grows nothing over no levels', () => {
     const drawn = drawCabinet(['person', 'topic', 'year', 'kind'], HOUSEHOLD, names, ids()).layout;
-    // A cabinet by hand that asks what the new paper is: never grown.
-    const hand: Cabinet = {
-      id: 'hand',
-      name: 'Olive by hand',
-      hidden: false,
-      drawers: [
-        {
-          id: 'hd',
-          name: 'All',
-          hidden: false,
-          folders: [{ id: 'hf', name: 'Hers', hidden: false, filter: { member_id: 'olive' } }],
-        },
-      ],
-    };
-    drawn.cabinets.push(hand);
     const kept = addToDrawing(
       drawn,
       [{ person: 'olive', category: 'tax', type_key: 'tax_form', year: year + 1, n: 1 }],
@@ -607,12 +609,11 @@ describe('growing a drawing by its levels', () => {
     expect(kept.added).toBe(1);
     const folder = byName(kept.layout, 'Olive', 'Tax', String(year + 1)) as CabinetFolder;
     expect(folder.dividers).toEqual({ levels: ['kind'], ranges: [] });
-    expect(kept.layout.cabinets.find((c) => c.id === 'hand')).toEqual(hand);
-    // A layout by hand: nothing at all.
-    const byHand = { ...drawn, levels: null };
+    // A layout with no levels: nothing at all.
+    const noLevels = { ...drawn, levels: null };
     expect(
       addToDrawing(
-        byHand,
+        noLevels,
         [{ person: 'olive', category: 'tax', type_key: 'tax_form', year: year + 2, n: 1 }],
         names,
         ids(),

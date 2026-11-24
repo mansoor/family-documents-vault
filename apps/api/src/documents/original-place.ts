@@ -1,6 +1,7 @@
 import type { Db } from '@fdv/db';
 import {
   cabinetName,
+  drawnCabinets,
   PLACE_NOT_IN_CABINET,
   seesLocation,
   type CabinetLayout,
@@ -31,9 +32,9 @@ export interface PlacedFolder {
 export function foldersWithPaths(
   layout: CabinetLayout | null | undefined,
 ): Array<PlacedFolder & { shown: boolean }> {
-  // Only a layout the API checked is saved; anything else holds no folders.
-  if (!Array.isArray(layout?.cabinets)) return [];
-  return layout.cabinets.flatMap((c) =>
+  // Only a layout the API checked is saved; anything else holds no folders,
+  // nor does a cabinet not drawn by its levels (0.9.0-dev.94).
+  return drawnCabinets(layout).flatMap((c) =>
     c.drawers.flatMap((d) =>
       d.folders.map((f) => {
         // As a save keeps a name (trimmed, at most 80): a layout saved
@@ -65,7 +66,12 @@ export function touchedSince(since: string, alias = 'document'): RawBuilder<bool
     or ${sql.ref(`${alias}.place_changed_at`)} > ${at})`;
 }
 
-/** A document's place as the vault answers it to somebody who sees where originals are kept. */
+/**
+ * A document's place as the vault answers it to somebody who sees where
+ * originals are kept. Its folder's id only to whoever it is theirs, and only
+ * while it is a folder of their cabinet as it reads (`folders`, 0.9.0-dev.94):
+ * never a way to a folder that is not there.
+ */
 export function placeView(
   p: Pick<Principal, 'memberId'>,
   row: {
@@ -73,17 +79,56 @@ export function placeView(
     original_place_by: string | null;
     original_place_folder: string | null;
   },
+  folders?: ReadonlySet<string>,
 ): OriginalPlace | null {
   const names = row.original_place;
   if (!names || names.length !== 3) return null;
+  const id = row.original_place_folder;
   return {
     path: [names[0] as string, names[1] as string, names[2] as string],
     // Only to whoever it is theirs: nobody else's folder id, ever.
     folder_id:
-      row.original_place_by !== null && row.original_place_by === p.memberId
-        ? row.original_place_folder
+      row.original_place_by !== null &&
+      row.original_place_by === p.memberId &&
+      id !== null &&
+      (folders === undefined || folders.has(id))
+        ? id
         : null,
   };
+}
+
+/** Whether a place's folder id would be given to its reader: theirs, asking for their folders. */
+export function placeIsOwn(
+  p: Pick<Principal, 'memberId'>,
+  row: { original_place_by: string | null; original_place_folder: string | null },
+): boolean {
+  return row.original_place_by === p.memberId && row.original_place_folder !== null;
+}
+
+/** Each reader's folders, read once a transaction however many papers a list gives. */
+const OWN_FOLDERS = new WeakMap<object, Map<string, Promise<Set<string>>>>();
+
+/**
+ * The ids of every folder of the caller's cabinet as it reads, hidden or
+ * shown (0.9.0-dev.94: the cabinets drawn by its levels alone): what a
+ * place's folder id must be one of to be given.
+ */
+export function ownFolderIds(trx: Db, p: Pick<Principal, 'householdId' | 'memberId'>) {
+  const byReader = OWN_FOLDERS.get(trx) ?? new Map<string, Promise<Set<string>>>();
+  OWN_FOLDERS.set(trx, byReader);
+  const key = `${p.householdId}:${p.memberId}`;
+  let ids = byReader.get(key);
+  if (!ids) {
+    ids = trx
+      .selectFrom('cabinet_layout')
+      .select('layout')
+      .where('household_id', '=', p.householdId)
+      .where('member_id', '=', p.memberId)
+      .executeTakeFirst()
+      .then((row) => new Set(foldersWithPaths(row?.layout as CabinetLayout).map((f) => f.id)));
+    byReader.set(key, ids);
+  }
+  return ids;
 }
 
 /** The columns a place is written as; none clears all three. Either way, the place changed now. */

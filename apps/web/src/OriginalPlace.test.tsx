@@ -54,12 +54,13 @@ afterEach(() => {
 
 /** Study cabinet › Drawer 2 › Identity (the passport's question) and Bank. */
 const LAYOUT: CabinetLayout = {
-  levels: null,
+  levels: ['topic', 'year', 'person'],
   cabinets: [
     {
       id: 'c-study',
       name: 'Study cabinet',
       hidden: false,
+      drawn: { value: 'c-study' },
       drawers: [
         {
           id: 'd-two',

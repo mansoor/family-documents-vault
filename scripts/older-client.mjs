@@ -24,10 +24,13 @@
 // Apps that share a tag share a run, which sends the oldest one's User-Agent.
 //
 // An older client's run leaves out only the scenarios a later release
-// changed on purpose — a connected app's (which the phone never is), and
-// the first negotiation's made-up app version — each listed, with its release
-// and why, in CHANGED_ON_PURPOSE in client-contract.test.ts. Never add one
-// there to make a phone's scenario pass: fix the server, or raise the minimum.
+// changed on purpose — a connected app's (which the phone never is), the
+// first negotiation's made-up app version, and, since v0.9.0-dev.94, two
+// cabinet scenarios that save a layout drawn by no levels (writes only the
+// web makes; the phone only reads My cabinet) — each listed, with its
+// release and why, in CHANGED_ON_PURPOSE in client-contract.test.ts. Never
+// add one there to make a phone's scenario pass: fix the server, or raise
+// the minimum.
 //
 // Every tag's client is extracted side by side, and one vitest run takes
 // them all as projects of one install, in parallel.

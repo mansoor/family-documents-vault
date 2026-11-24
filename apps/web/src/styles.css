@@ -8510,6 +8510,47 @@ html:has(.shell-phone):has(.has-toast) {
   gap: 8px;
 }
 
+/* Arrange my cabinet's Cancel and Use this arrangement: a bar kept at the
+   foot of the window (above a phone's bar at the bottom) while the levels,
+   the cabinets and the drawing scroll under it. Last in the page, so at its
+   end it sits below the last row, never over it; a part tabbed to stops
+   short of it (WCAG 2.4.11) by the bar's own height as it is now
+   (--arrange-bar-h, set as it changes: a refusal in it, two rows of
+   buttons on a phone), and a phone's bar under it. */
+.arrange {
+  padding-bottom: 16px;
+}
+
+.arrange :is(input, button, select, a, [tabindex]) {
+  scroll-margin-bottom: calc(var(--arrange-bar-h, 96px) + var(--phone-bottom, 0px) + 16px);
+}
+
+.arrange-bar {
+  position: sticky;
+  bottom: var(--phone-bottom, 0px);
+  z-index: 4;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 0 calc(12px + env(safe-area-inset-bottom));
+  background: var(--bg);
+  border-top: 1px solid var(--border);
+}
+
+.shell-phone .arrange-bar {
+  padding-bottom: 12px;
+}
+
+.arrange-bar .actions {
+  flex-wrap: wrap;
+}
+
+@media (max-width: 480px) {
+  .arrange-bar .actions .btn {
+    flex: 1 1 auto;
+  }
+}
+
 .also-in {
   list-style: none;
   margin: 0;
@@ -9255,7 +9296,6 @@ button.arrange-scope {
   color: var(--accent);
 }
 
-.badge-hand,
 .badge-default {
   background: var(--surface);
   color: var(--ink-soft);

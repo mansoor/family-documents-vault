@@ -10,7 +10,7 @@ import {
 } from '@fdv/shared';
 import { sql } from 'kysely';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { createHarness, type Harness } from '../test-harness.js';
+import { asArranged, createHarness, type Harness } from '../test-harness.js';
 
 /**
  * Where the original is, as a place in somebody's cabinet (0.9.0, C3;
@@ -64,7 +64,9 @@ describe.skipIf(!testAdminUrl())('where the original is, in a cabinet', () => {
     });
   const save = async (who: Person, layout: CabinetLayout) => {
     const at = await ok<CabinetView>(call(who, 'GET', '/api/v1/cabinet'));
-    return ok<CabinetView>(call(who, 'PUT', '/api/v1/cabinet', { layout, version: at.version }));
+    return ok<CabinetView>(
+      call(who, 'PUT', '/api/v1/cabinet', { layout: asArranged(layout), version: at.version }),
+    );
   };
   /** A cabinet of one drawer and these folders, the last one hidden when asked. */
   const layout = (
@@ -383,13 +385,13 @@ describe.skipIf(!testAdminUrl())('where the original is, in a cabinet', () => {
     it('refuses " › " in a new name, and keeps one a name had before', async () => {
       const at = await ok<CabinetView>(call('owner', 'GET', '/api/v1/cabinet'));
       const joined = await call('owner', 'PUT', '/api/v1/cabinet', {
-        layout: layout('Study lockbox', [{ id: 'rcpt', name: 'Tax › 2025' }]),
+        layout: asArranged(layout('Study lockbox', [{ id: 'rcpt', name: 'Tax › 2025' }])),
         version: at.version,
       });
       expect(joined.statusCode).toBe(422);
       expect(joined.body).toContain('“ › ”');
       // Kept before (a layout saved by an older build): saved again as it was.
-      const kept = layout('Study lockbox', [{ id: 'rcpt', name: 'Old › name' }]);
+      const kept = asArranged(layout('Study lockbox', [{ id: 'rcpt', name: 'Old › name' }]));
       await admin.query('update cabinet_layout set layout = $1::jsonb where member_id = $2', [
         JSON.stringify(kept),
         member('owner'),

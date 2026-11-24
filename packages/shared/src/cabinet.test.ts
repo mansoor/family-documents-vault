@@ -2,16 +2,20 @@ import { describe, expect, it } from 'vitest';
 import {
   CABINET_LIMITS,
   CABINET_TOO_BIG,
+  drawnCabinets,
   folderQuestionWords,
   layoutProblem,
   mergedName,
   mergeFolderFilters,
   rangeWords,
+  structureProblem,
+  type Cabinet,
   type CabinetDrawer,
   type CabinetFolder,
   type CabinetLayout,
+  type CabinetLevel,
 } from './cabinet.js';
-import { addToDrawing, drawCabinet, type CabinetGroup } from './cabinet-draw.js';
+import { addToDrawing, drawCabinet, redrawCabinet, type CabinetGroup } from './cabinet-draw.js';
 
 /** My cabinet (0.9.0, C1): what the vault, the client's fake and the web share. */
 
@@ -195,14 +199,14 @@ describe('a drawn cabinet kept up to date', () => {
     ]);
   });
 
-  it('never changes a cabinet arranged by hand, nor files a paper with no topic', () => {
+  it('never changes a layout with no levels, nor files a paper with no topic', () => {
     const drawn = drawCabinet(['topic', 'year', 'person'], BEFORE, names, ids()).layout;
     const later: CabinetGroup[] = [
       { person: 'sam', category: 'financial', type_key: 'bank_statement', year, n: 1 },
     ];
-    const byHand = { ...drawn, levels: null };
-    expect(addToDrawing(byHand, later, names, newIds())).toEqual({
-      layout: byHand,
+    const noLevels = { ...drawn, levels: null };
+    expect(addToDrawing(noLevels, later, names, newIds())).toEqual({
+      layout: noLevels,
       added: 0,
       left: 0,
     });
@@ -384,6 +388,102 @@ describe('a layout', () => {
       }));
     }
     expect(layoutProblem(big)).toBe(CABINET_TOO_BIG);
+  });
+});
+
+describe('one structure (0.9.0-dev.94)', () => {
+  const cabinet = (id: string, drawn?: Cabinet['drawn']): Cabinet => ({
+    id,
+    name: id,
+    hidden: false,
+    drawers: [],
+    ...(drawn ? { drawn } : {}),
+  });
+
+  it('reads a layout without levels as no cabinets, and only drawn cabinets of one with them', () => {
+    const loose = { levels: null, cabinets: [cabinet('a'), cabinet('b', { value: 'tax' })] };
+    expect(drawnCabinets(loose)).toEqual([]);
+    expect(drawnCabinets({ cabinets: [cabinet('b', { value: 'tax' })] })).toEqual([]);
+    expect(drawnCabinets(null)).toEqual([]);
+    const mixed = {
+      levels: ['topic', 'year', 'person'],
+      cabinets: [cabinet('a'), cabinet('b', { value: 'tax' }), cabinet('c', { value: null })],
+    };
+    expect(drawnCabinets(mixed).map((c) => c.id)).toEqual(['b', 'c']);
+  });
+
+  it('refuses a layout without levels, or with a cabinet not drawn by them, in words', () => {
+    expect(structureProblem({ levels: null, cabinets: [] })).toMatch(/Choose the levels/);
+    expect(structureProblem({ cabinets: [] })).toMatch(/Choose the levels/);
+    expect(
+      structureProblem({
+        levels: ['topic', 'year', 'person'],
+        cabinets: [cabinet('Tax', { value: 'tax' }), cabinet('My folders')],
+      }),
+    ).toMatch(/^The cabinet “My folders”: /);
+    expect(
+      structureProblem({
+        levels: ['topic', 'year', 'person'],
+        cabinets: [cabinet('Tax', { value: 'tax' })],
+      }),
+    ).toBeNull();
+  });
+
+  it('refuses what no drawing makes: a value twice, none of three levels, one of two', () => {
+    const three = ['topic', 'year', 'person'];
+    expect(
+      structureProblem({
+        levels: three,
+        cabinets: [cabinet('Tax', { value: 'tax' }), cabinet('Taxes', { value: 'tax' })],
+      }),
+    ).toMatch(/^The cabinet “Taxes”: Another cabinet is drawn for the same papers/);
+    expect(
+      structureProblem({ levels: three, cabinets: [cabinet('Mine', { value: null })] }),
+    ).toMatch(/^The cabinet “Mine”: /);
+    expect(
+      structureProblem({ levels: three, cabinets: [cabinet('Empty', { value: '' })] }),
+    ).toMatch(/^The cabinet “Empty”: /);
+    expect(
+      structureProblem({ levels: ['person', 'kind'], cabinets: [cabinet('Me', { value: 'me' })] }),
+    ).toMatch(/^The cabinet “Me”: /);
+    expect(
+      structureProblem({
+        levels: ['person', 'kind'],
+        cabinets: [cabinet('A', { value: null }), cabinet('B', { value: null })],
+      }),
+    ).toMatch(/^The cabinet “B”: /);
+  });
+
+  it('takes every drawing, redrawing and growing as it comes', () => {
+    const orders: CabinetLevel[][] = [
+      ['person', 'kind'],
+      ['topic', 'person'],
+      ['person', 'topic', 'year'],
+      ['topic', 'year', 'person'],
+      ['year', 'kind', 'person', 'topic'],
+      ['kind', 'person', 'year', 'topic', 'issuer'],
+    ];
+    let before: CabinetLayout | null = null;
+    for (const levels of orders) {
+      const drawn = drawCabinet(levels, HOUSEHOLD, names, ids()).layout;
+      expect(structureProblem(drawn), levels.join()).toBeNull();
+      const redrawn: CabinetLayout = redrawCabinet(
+        before,
+        { levels },
+        HOUSEHOLD,
+        names,
+        ids(),
+      ).layout;
+      expect(structureProblem(redrawn), levels.join()).toBeNull();
+      const grown = addToDrawing(
+        redrawn,
+        [{ person: 'sam', category: 'financial', type_key: 'payslip', year: year + 1, n: 1 }],
+        names,
+        ids(),
+      ).layout;
+      expect(structureProblem(grown), levels.join()).toBeNull();
+      before = redrawn;
+    }
   });
 });
 

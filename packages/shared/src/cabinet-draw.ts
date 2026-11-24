@@ -12,6 +12,7 @@ import {
   CABINET_LEVELS,
   CABINET_LIMITS,
   cabinetName,
+  drawnCabinets,
   LEVEL_LIMITS,
   layoutProblemOf,
   levelsProblem,
@@ -188,8 +189,8 @@ export function dividerLevelsOf(levels: readonly CabinetLevel[]): CabinetLevel[]
 
 /**
  * The levels a drawn cabinet follows, all of them from its own first: the
- * default's, or its own below the default's first level. Null for a cabinet
- * arranged by hand, or any in a layout arranged by hand.
+ * default's, or its own below the default's first level. Null for a layout
+ * without levels, or a cabinet not drawn by them.
  */
 export function cabinetLevels(
   layout: Pick<CabinetLayout, 'levels'>,
@@ -607,17 +608,18 @@ export class RedrawRefused extends Error {}
  *    folder's divider levels rewritten.
  *  - Its levels 2 and 3: every drawn cabinet that follows the default is
  *    drawn again; one with its own arrangement is kept as it is.
- *  - Its first level (or a layout arranged by hand before): every drawn
- *    cabinet drawn again, their own arrangements let go.
+ *  - Its first level (or no levels before): every cabinet drawn again,
+ *    their own arrangements let go — the cabinets themselves change.
  *  - One cabinet's own levels (`ask.cabinet`, null for the default's
- *    again): that cabinet alone, its levels 4 and 5 alone only rewriting
- *    its dividers.
+ *    again): that cabinet alone, below the default's first level, its
+ *    levels 4 and 5 alone only rewriting its dividers.
  *
- * A cabinet arranged by hand is always kept, where it was. Wherever the same
+ * One structure (0.9.0-dev.94): every cabinet is drawn, and one not drawn
+ * by the levels — or any, over no levels — is not kept. Wherever the same
  * cabinet, drawer or folder is drawn again, it keeps its id, name and
  * hidden flag — a folder its pins and its own date ranges too. Kept and
  * redrawn cabinets stay where the person put them; a new one goes in its
- * level's order among the drawn ones, else first.
+ * level's order among them, else last.
  */
 export function redrawCabinet(
   base: CabinetLayout | null,
@@ -629,11 +631,10 @@ export function redrawCabinet(
   const wrong = levelsProblem(ask.levels);
   if (wrong) throw new RedrawRefused(wrong);
   const levels = [...ask.levels];
-  const before = base ? clone(base) : { levels: null, cabinets: [] };
+  const before: CabinetLayout = base ? clone(base) : { levels: null, cabinets: [] };
+  // Only drawn cabinets, and none over no levels: one structure.
+  before.cabinets = drawnCabinets(before);
   const old = before.levels;
-  const byHand = old === null;
-  // A layout arranged by hand: every cabinet is the person's own, marks and all.
-  if (byHand) for (const c of before.cabinets) delete c.drawn;
   const defs = levelDefs(drawnNames(names));
   const ownOf = (cabs: readonly Cabinet[]) =>
     new Map(
@@ -675,7 +676,9 @@ export function redrawCabinet(
       );
     }
     if (!was.drawn || was.drawn.value === null) {
-      throw new RedrawRefused('That cabinet was arranged by hand, so it has no levels of its own.');
+      throw new RedrawRefused(
+        'A cabinet can have its own arrangement only while your cabinet is arranged by three levels or more.',
+      );
     }
     const own = ask.cabinet.levels;
     // Its levels as they are: nothing to redraw.
@@ -729,12 +732,11 @@ export function redrawCabinet(
     levels.length >= LEVEL_LIMITS.nodes &&
     old[0] === levels[0];
   // Own arrangements stay while the cabinet level does; else they are let go.
-  const ownKept = firstKept ? ownOf(before.cabinets.filter((c) => c.drawn)) : new Map();
+  const ownKept = firstKept ? ownOf(before.cabinets) : new Map();
   const drawing = drawCabinet(levels, groups, names, newId, ownKept);
   const counts = drawing.counts;
-  const replaced = before.cabinets.filter(
-    (c) => c.drawn && !(c.drawn.value !== null && ownKept.has(c.drawn.value)),
-  );
+  const ownOne = (c: Cabinet) => c.drawn?.value != null && ownKept.has(c.drawn.value);
+  const replaced = before.cabinets.filter((c) => !ownOne(c));
   const bothTwo =
     old !== null && old.length <= LEVEL_LIMITS.fewest && levels.length <= LEVEL_LIMITS.fewest;
   const kept = new Kept(
@@ -742,14 +744,14 @@ export function redrawCabinet(
     firstKept || bothTwo,
   );
   const fresh = drawing.layout.cabinets
-    .filter((c) => !(c.drawn?.value != null && ownKept.has(c.drawn.value)))
+    .filter((c) => !ownOne(c))
     .map((c) => keepWhatFits(c, levels, kept, counts));
   // Where each goes: a redrawn one in the place of the one it took, kept
-  // ones where they were, the rest in their level's order among the drawn.
+  // ones where they were, the rest in their level's order among them.
   const byId = new Map(fresh.map((c) => [c.id, c]));
   const out: Cabinet[] = [];
   for (const c of before.cabinets) {
-    if (!c.drawn || (c.drawn.value !== null && ownKept.has(c.drawn.value))) out.push(c);
+    if (ownOne(c)) out.push(c);
     else {
       const now = byId.get(c.id);
       if (now) {
@@ -765,9 +767,8 @@ export function redrawCabinet(
       v === null || levels.length <= LEVEL_LIMITS.fewest
         ? -1
         : out.findIndex((x) => x.drawn?.value != null && first.order(v, x.drawn.value) < 0);
-    // Else after the last drawn one; with none drawn yet, before those arranged by hand.
-    const last = out.reduce((n, x, i) => (x.drawn ? i : n), -1);
-    out.splice(at !== -1 ? at : last + 1, 0, c);
+    // Else last.
+    out.splice(at !== -1 ? at : out.length, 0, c);
   }
   return done(out, counts, drawing.capped);
 }
@@ -797,8 +798,8 @@ function nodeFor<T>(
 /**
  * `item`, put among `list` where its level's order puts it: before the
  * first whose value comes after its own. One that asks nothing of the
- * level (a node arranged by hand) is passed over; with none after it, it
- * goes last.
+ * level (a drawer merged by hand, say) is passed over; with none after it,
+ * it goes last.
  */
 function putInOrder<T>(
   list: T[],
@@ -839,8 +840,7 @@ export function bytesOf(x: unknown): number {
  * Levels 4 and 5 never need growing: dividers are worked out as a folder
  * opens. Folders are added one at a time, up to what a cabinet may hold
  * (`CABINET_LIMITS`): those past it are not, and their papers stay in no
- * folder. A layout arranged by hand (`levels` null), and every cabinet
- * arranged by hand, is never changed.
+ * folder. A layout without levels is never changed.
  */
 export function addToDrawing(
   layout: CabinetLayout,
@@ -954,9 +954,9 @@ export function addToDrawing(
  * survivor should have (the one the reader knows the group by), else the
  * first in order. The survivor keeps its id, name and place; a folder its
  * dividers (taking the other's own ranges where it has none), shown if
- * either was; each merged folder's pins go to it (`moved`). Only drawn
- * cabinets, and only parts that differ by issuer alone: anything arranged
- * by hand is left as it is. Separating them needs nothing here: the papers
+ * either was; each merged folder's pins go to it (`moved`). Only parts that
+ * differ by issuer alone: a part merged or renamed by hand otherwise is
+ * left as it is. Separating them needs nothing here: the papers
  * that leave a group are in no folder, and the drawing grows one for them.
  */
 export function mergeSameIssuers(
@@ -968,6 +968,7 @@ export function mergeSameIssuers(
   const moved: Array<{ from: string; to: string }> = [];
   if (!Array.isArray(levels)) return { layout, moved, changed: false };
   const out = clone(layout);
+  out.cabinets = drawnCabinets(out);
   let changed = false;
   /** A question with its issuers as their groups: the same papers, the same question. */
   const canon = (f: FolderFilter): FolderFilter =>
@@ -1039,13 +1040,12 @@ export function mergeSameIssuers(
     const vs = d.folders.map((f) => f.filter.issuer);
     return vs[0] !== undefined && vs.every((v) => v === vs[0]) ? vs[0] : undefined;
   };
-  const drawn = out.cabinets.filter((c) => c.drawn);
   /** Cabinets another was merged into: their drawers of one value are merged in turn. */
   const joined = new Set<Cabinet>();
   // Cabinets of one issuer's group, where Who issued it makes the cabinets.
   if (levels[0] === 'issuer' && levels.length > LEVEL_LIMITS.fewest) {
     const kept = mergeAll(
-      drawn,
+      out.cabinets,
       (c) => (c.drawn?.value ? rootOf(c.drawn.value) : undefined),
       (c) => c.drawn?.value ?? undefined,
       (c) => c.drawn?.value ?? undefined,
@@ -1055,10 +1055,9 @@ export function mergeSameIssuers(
         joined.add(s);
       },
     );
-    out.cabinets = out.cabinets.filter((c) => !c.drawn || kept.includes(c));
+    out.cabinets = out.cabinets.filter((c) => kept.includes(c));
   }
   for (const c of out.cabinets) {
-    if (!c.drawn) continue;
     const eff = cabinetLevels(out, c) ?? [];
     const drawerLevel = eff[eff.length <= LEVEL_LIMITS.fewest ? 0 : 1];
     // Drawers of one issuer's group, where Who issued it makes the drawers.
