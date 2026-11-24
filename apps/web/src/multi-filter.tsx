@@ -370,11 +370,11 @@ export function ChipRow(props: {
   return (
     <div ref={row} className="filter-chips" role="group" aria-label={props.label ?? 'Chosen'}>
       {props.chips.map((c, i) => (
-        <span key={c.key} className="folder-chip">
+        <span key={c.key} className="folder-chip filter-badge">
           {c.words}
           <button
             type="button"
-            className="btn btn-quiet btn-small chip-x"
+            className="chip-x"
             aria-label={`Take off the filter ${c.words}`}
             onClick={() => {
               pending.current = i;
@@ -388,7 +388,7 @@ export function ChipRow(props: {
       {props.chips.length > 0 && (
         <button
           type="button"
-          className="btn btn-quiet btn-small"
+          className="chips-clear"
           onClick={() => {
             // Past the last chip: none is left to take the focus but the filters.
             pending.current = Number.MAX_SAFE_INTEGER;

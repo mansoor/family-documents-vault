@@ -6,6 +6,16 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.9.0-dev.100] - 2026-11-24 — smaller filter badges, and tabs that don't scroll up and down
+
+### Changed
+
+- **The filters you have chosen show as small badges** on Documents, a collection's documents and Activity: each its words and a small × to take it off, and **Clear all** a link after them, no longer a row of buttons. They still answer a finger's press around them.
+
+### Fixed
+
+- **The tabs on People (Family, Outside the family) and the Inbox no longer show a scroll bar** beside them. They still scroll sideways when there are too many to fit.
+
 ## [0.9.0-dev.99] - 2026-11-24 — Print from the Documents table
 
 ### Added
