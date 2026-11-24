@@ -64,7 +64,7 @@ export const COLUMNS: readonly Column[] = [
   { key: 'issued', label: 'Issued', width: 100, end: true },
   { key: 'expires', label: 'Expires', width: 100, end: true },
   { key: 'status', label: 'Status', width: 120 },
-  { key: 'visibility', label: 'Who can see it', head: 'Who sees it', width: 92 },
+  { key: 'visibility', label: 'Visibility', width: 92 },
   { key: 'location', label: 'Location', width: 104 },
   { key: 'original_place', label: 'Filed in', width: 140 },
   { key: 'collections', label: 'Collections', width: 96 },
@@ -541,7 +541,7 @@ export function bulkOffer(who: Chooser, docs: readonly DocumentView[]): BulkOffe
   }
   if (n > 0 && mayChangeVisibilityAtAll(who.role) && visibility.length === 0) {
     notes.push(
-      'Who can see it is offered when it can be changed the same way for every one you chose.',
+      'Visibility is offered when it can be changed the same way for every one you chose.',
     );
   }
   // A paper seen as its person's caregiver (0.9.0, H1b) goes in no
@@ -549,7 +549,7 @@ export function bulkOffer(who: Chooser, docs: readonly DocumentView[]): BulkOffe
   const caregiver = docs.filter((d) => d.caregiver === true).length;
   if (caregiver > 0) {
     notes.push(
-      `${caregiver === 1 ? 'One paper you chose is' : `${caregiver} papers you chose are`} shared with you as a caregiver: Add to a collection and Who can see it are offered when none is.`,
+      `${caregiver === 1 ? 'One paper you chose is' : `${caregiver} papers you chose are`} shared with you as a caregiver: Add to a collection and Visibility are offered when none is.`,
     );
   }
   return {

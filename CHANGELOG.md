@@ -6,6 +6,21 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.9.0-dev.96] - 2026-11-24 — Visibility, a note's Essential and Sensitive, and printing what is Sensitive
+
+### Changed
+
+- **"Who can see it" is now called Visibility**, everywhere it means who in the family may open a document or a note: the button under a document or a note and the panel it opens, the ⋯ menu, the Documents table's column, sort and filter, the Visibility button when you choose several documents, adding and editing a document, a batch's review, a file sent to you in the Inbox, the kinds of document editor ("Visibility of a new one") and a printed details sheet. Who can see your emergency information and who can see identity details keep their own names: they are about something else.
+- **Messages that send you to it use the new name too**, such as "Change its visibility first." when an Only me document can't be shared outside the family, "You can change its visibility before you save." on a sensitive paper of your own, and "Choose this one’s visibility." for a kind kept private to its person.
+- **The Visibility button no longer shows Everyone, Adults or Only me beside its name.** The document's details already say it, under its title, and so does a note's line under its name.
+- **A note is made Essential the way a document is.** Make it Essential, or Stop it being Essential, now sits in the note's row of actions beside Print, and acts at once. Stopping it being Essential still asks you to confirm it's you first. Anybody who can read the note sees "Essential" in the line under its name.
+- **A note's Sensitive switch is now under its words while you write it**, at the far end of the row with Save and Cancel. It is saved when you press Save, together with the words, and Cancel puts it back as it was. If you reload the page before saving, your choice comes back with the rest of your unsaved note, and saving never undoes Sensitive that somebody else set while you were writing. When you are only reading the note, "Sensitive" is shown in the line under its name. The rules are the same as before: a teen can make their own note sensitive but only an adult can make it not sensitive, and if links outside the family still give the note, you are told so after saving.
+- **The "Essential and sensitive" button under a note is gone**, as both now live where you would look for them.
+
+### Added
+
+- **Printing something Sensitive says so.** A Sensitive note or document still prints, with nothing more asked of you, but first it says: "This is marked Sensitive. Keep the printout somewhere safe and shred it when you no longer need it." For a note this is a small question with Print and Cancel; for a document it is at the top of the dialog where you choose what to print. Cancel prints nothing. The printout's heading says Sensitive too ("Note · Everyone in the family · Sensitive", "Document · Sensitive"), even when only a document's pages are printed.
+
 ## [0.9.0-dev.95] - 2026-11-24 — turn a PDF's pages with the wheel and keys
 
 ### Added

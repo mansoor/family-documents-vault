@@ -1,8 +1,8 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode, type RefObject } from 'react';
 import { useApp } from './app-context.js';
 import { exactWords, useFamilyZone } from './family-time.js';
 import { applyTheme } from './theme.js';
-import { OnTop } from './ui.js';
+import { ConfirmDialog, OnTop } from './ui.js';
 
 /**
  * Printing (0.9.0; the owner's backlog of 19 Nov 2026: "There's no print
@@ -18,7 +18,16 @@ import { OnTop } from './ui.js';
  * it (no link, no PIN, no code). A footer says whose vault it is and when
  * it was printed, on the family's clock. As the wallet card and the folder
  * labels print.
+ *
+ * Anything Sensitive (the owner's choice of 24 Nov 2026) still prints, with
+ * no more asked of who is printing: its heading says Sensitive, and before
+ * it is printed one notice says to keep the printout safe and shred it,
+ * with Print and Cancel — Cancel printing nothing.
  */
+
+/** Said before anything Sensitive is printed. */
+export const SENSITIVE_PRINT_NOTICE =
+  'This is marked Sensitive. Keep the printout somewhere safe and shred it when you no longer need it.';
 
 /** The page's class while it is printed. */
 export const PRINTING = 'printing';
@@ -124,6 +133,29 @@ export function PrintOut(props: {
         </footer>
       </div>
     </OnTop>
+  );
+}
+
+/**
+ * The notice before a Sensitive note is printed: Print goes on, Cancel
+ * prints nothing. The app's own "are you sure?", so its focus starts on
+ * Cancel and goes back to Print once it is answered.
+ */
+export function SensitivePrintNotice(props: {
+  returnFocus?: RefObject<HTMLElement | null>;
+  onPrint: () => void;
+  onCancel: () => void;
+}) {
+  return (
+    <ConfirmDialog
+      title="Before you print"
+      confirmLabel="Print"
+      {...(props.returnFocus ? { returnFocus: props.returnFocus } : {})}
+      onConfirm={props.onPrint}
+      onCancel={props.onCancel}
+    >
+      <p>{SENSITIVE_PRINT_NOTICE}</p>
+    </ConfirmDialog>
   );
 }
 

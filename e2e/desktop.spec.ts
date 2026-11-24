@@ -774,7 +774,7 @@ test('a document, a collection and the activity log print alone, with no app aro
   await expect(root).toBeHidden();
   await asPrinted(async () => {
     await expect(root.locator('h1')).toHaveText(title);
-    await expect(root.locator('.print-facts')).toContainText('Who can see it');
+    await expect(root.locator('.print-facts')).toContainText('Visibility');
     await expect(root.locator('.print-facts')).toContainText(`Drawer ${run}`);
   });
 

@@ -186,7 +186,7 @@ describe('a paper seen as a caregiver (0.9.0, H1b)', () => {
     ).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /Share a link/ })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /Collections/ })).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /Who can see it/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Visibility/ })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /Move to the Trash/ })).not.toBeInTheDocument();
     expect(screen.queryByText('Add a new version')).not.toBeInTheDocument();
     await expectAccessible();

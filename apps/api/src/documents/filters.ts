@@ -226,7 +226,8 @@ export function filtersOf(raw: RawFilters): {
   const visibilities = valuesOf(raw.visibility);
   if (visibilities) {
     for (const v of visibilities)
-      if (!VISIBILITIES.includes(v)) refuse('visibility', 'That is not who can see a document.');
+      if (!VISIBILITIES.includes(v))
+        refuse('visibility', 'That is not a visibility a document can have.');
     if (visibilities.length === 1) single.visibility = visibilities[0] as Visibility;
     else many.visibilities = visibilities as Visibility[];
   }

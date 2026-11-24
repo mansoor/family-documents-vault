@@ -104,7 +104,7 @@ export const CHECKLIST_OTHERS_MAX = 5;
  * link made from the collection, or keeping up with it, sends it.
  */
 export const CHECKLIST_ONLY_ME_NOTE =
-  'Only me: in this collection only you would see it, and its links never send it. Change who can see it first if others need it.';
+  'Only me: in this collection only you would see it, and its links never send it. Change its visibility first if others need it.';
 
 /** Said beside a match with no date, or no year, to tell it by. */
 export const CHECKLIST_NO_DATE_NOTE = 'No date on it: check its year';

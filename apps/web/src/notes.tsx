@@ -214,6 +214,23 @@ export function secretNoteWarning(
     : 'This looks like a password or a PIN. Everyone who can see this note can read and search it: keep passwords and PINs in a password manager, or make the note Only me.';
 }
 
+/**
+ * What a save that changed Sensitive says: and, made sensitive while links
+ * outside the family still give it, that it is still shared and where to
+ * end them.
+ */
+function sensitiveSaid(on: boolean, saved: DocumentView): string {
+  const links = saved.warnings?.find((w) => w.code === 'sensitive_still_shared')?.links ?? 0;
+  return [
+    on ? 'This note is sensitive now.' : 'This note is not sensitive any more.',
+    links > 0
+      ? `It is still shared outside the family by ${links === 1 ? 'a link' : `${links} links`}: end ${links === 1 ? 'it' : 'them'} in Share a link if ${links === 1 ? 'it' : 'they'} should stop.`
+      : null,
+  ]
+    .filter(Boolean)
+    .join(' ');
+}
+
 /** A note being written. */
 interface Editing extends NoteDraft {
   /**
@@ -236,6 +253,20 @@ const wordsNow = (doc: Pick<DocumentView, 'notes'>) => doc.notes ?? '';
 /** Whether this edit changed a note's title (one kept on its own): only then is it sent. */
 const titleChanged = (e: Pick<NoteDraft, 'title' | 'baseTitle'>) =>
   e.title !== undefined && e.title.trim() !== (e.baseTitle ?? '').trim();
+
+/**
+ * Whether Sensitive was switched from what the note was as the edit began
+ * (24 Nov 2026): only then is it sent, saved with the words.
+ */
+const sensitiveChanged = (e: Pick<NoteDraft, 'sensitive' | 'baseSensitive'>) =>
+  e.sensitive !== undefined && e.sensitive !== (e.baseSensitive ?? false);
+
+/**
+ * Whether a draft holds anything the note does not: its words, its title or
+ * its Sensitive changed. One that holds nothing is not brought back.
+ */
+const holdsChanges = (e: NoteDraft) =>
+  e.text !== e.baseText || titleChanged(e) || sensitiveChanged(e);
 
 /**
  * Somebody else's change met: their note's words, or — when this edit
@@ -308,12 +339,24 @@ export function NotesSection(props: {
    * again, rather than an editor begun with nothing in it.
    */
   onConfirm?: () => void;
+  /**
+   * A note kept on its own, where the vault offers Sensitive: its switch at
+   * the end of the Save and Cancel row while it is written (the owner's
+   * request of 24 Nov 2026), saved with the words. A teen may make a note
+   * sensitive, never not.
+   */
+  sensitiveOffered?: boolean;
 }) {
   const { doc, mayEdit } = props;
   const variant = props.variant ?? 'document';
   const own = variant === 'note';
   const { guarded, session } = useApp();
   const info = session.info;
+  // Sensitive, for a note kept on its own where the vault offers it: as
+  // the note is now, and whether a teen must keep it so.
+  const sensitiveNow = doc.sensitive_effective === true;
+  const sensitiveShown = own && props.sensitiveOffered === true;
+  const teenKeeps = (info?.role ?? storedRole()) === 'teen' && sensitiveNow;
   const householdId = info?.household_id ?? null;
   const memberId = info?.member_id ?? null;
   const who: DraftOwner | null =
@@ -323,10 +366,14 @@ export function NotesSection(props: {
   // A draft kept from before a reload opens the editor with it (A32).
   const [editing, setEditing] = useState<Editing | null>(() => {
     const kept = mayEdit && who ? draftOf(doc, who) : null;
-    return kept ? fromDraft(doc, kept) : null;
+    // Nothing in it the note does not have: no draft to bring back.
+    if (kept && who && !holdsChanges(kept)) forgetDraft(doc.id, who);
+    return kept && holdsChanges(kept) ? fromDraft(doc, kept) : null;
   });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // What a save of Sensitive came to: said once the editor has gone.
+  const [said, setSaid] = useState<string | null>(null);
   const opener = useRef<HTMLButtonElement>(null);
   const conflict = useRef<HTMLParagraphElement>(null);
   /** Where focus goes once the editor has gone. */
@@ -397,19 +444,28 @@ export function NotesSection(props: {
   /** A draft of this, kept — only for a document everyone in the family sees. */
   const persist = (e: Editing) => {
     if (!who) return;
-    keepDraft(known.current, who, {
+    const draft: NoteDraft = {
       text: e.text,
       baseText: e.baseText,
       baseEtag: e.baseEtag,
       baseStamp: e.baseStamp,
       ...(e.title !== undefined ? { title: e.title, baseTitle: e.baseTitle ?? '' } : {}),
-    });
+      ...(e.sensitive !== undefined ? { sensitive: e.sensitive } : {}),
+      ...(e.baseSensitive !== undefined ? { baseSensitive: e.baseSensitive } : {}),
+    };
+    // Nothing changed after all: no draft to come back to after a reload.
+    if (holdsChanges(draft)) keepDraft(known.current, who, draft);
+    else forgetDraft(doc.id, who);
   };
 
-  const write = (change: { text?: string; title?: string }) => {
+  const write = (change: { text?: string; title?: string; sensitive?: boolean }) => {
     setEditing((was) => {
       if (!was) return was;
       const next = { ...was, ...change, changed: true };
+      // Switched back to how it began: no change of Sensitive to send.
+      if (change.sensitive !== undefined && change.sensitive === (was.baseSensitive ?? false)) {
+        delete next.sensitive;
+      }
       persist(next);
       return next;
     });
@@ -417,6 +473,7 @@ export function NotesSection(props: {
 
   const start = () => {
     setError(null);
+    setSaid(null);
     const text = wordsNow(doc);
     setEditing({
       text,
@@ -424,6 +481,7 @@ export function NotesSection(props: {
       baseEtag: doc.etag,
       baseStamp: doc.notes_updated_at ?? null,
       ...(own ? { title: doc.title ?? '', baseTitle: doc.title ?? '' } : {}),
+      ...(own ? { baseSensitive: doc.sensitive_effective === true } : {}),
       sendEtag: doc.etag,
       restored: false,
       theirs: null,
@@ -446,6 +504,18 @@ export function NotesSection(props: {
     // The title only when this edit changed it: never somebody else's,
     // renamed meanwhile, put back by a save of the words (the N1 review).
     const title = own && titleChanged(began) ? (began.title ?? '').trim() || null : undefined;
+    // Sensitive only when this edit switched it from how the note was as
+    // it began, and the note is not so already — never somebody else's
+    // change put back by a switch left alone — and never made not
+    // sensitive by a teen: saved with the words, in the same save.
+    const sensitiveFor = (current: DocumentView): boolean | undefined => {
+      if (!sensitiveShown || !sensitiveChanged(began)) return undefined;
+      const isNow = current.sensitive_effective === true;
+      if (began.sensitive === isNow) return undefined;
+      if (began.sensitive === false && (info?.role ?? storedRole()) === 'teen') return undefined;
+      return began.sensitive;
+    };
+    let current = doc;
     setBusy(true);
     setError(null);
     let etag = began.sendEtag;
@@ -455,17 +525,23 @@ export function NotesSection(props: {
           // An Only me or an Essential note asks to confirm it's you first,
           // once in five minutes (0.9.0-dev.87); cancelled, nothing is saved,
           // and the words stay in the editor.
+          const sensitive = sensitiveFor(current);
           const saved = await guarded((t) =>
             api.updateDocument(
               t,
               doc.id,
-              { notes, ...(title !== undefined ? { title } : {}) },
+              {
+                notes,
+                ...(title !== undefined ? { title } : {}),
+                ...(sensitive !== undefined ? { sensitive } : {}),
+              },
               etag,
             ),
           );
           if (!saved) return;
           close();
           props.onSaved(saved);
+          if (sensitive !== undefined) setSaid(sensitiveSaid(sensitive, saved));
           return;
         } catch (err) {
           if (!(err instanceof ApiRequestError && err.status === 409)) throw err;
@@ -488,6 +564,7 @@ export function NotesSection(props: {
           }
           // The document changed, not its note: saved again from it, once.
           etag = now.etag;
+          current = now;
           setEditing((e) => e && { ...e, sendEtag: now.etag });
         }
       }
@@ -516,6 +593,7 @@ export function NotesSection(props: {
       ? theirs.notes_updated_by_name
       : 'Someone else';
   const tooLong = editing !== null && editing.text.length > NOTES_MAX;
+  const sensitiveSwitched = editing?.sensitive ?? sensitiveNow;
   const secret = editing ? secretNoteWarning(editing.text, doc.visibility) : null;
 
   // Its words withheld (0.9.0-dev.87): never an editor begun with nothing
@@ -635,13 +713,31 @@ export function NotesSection(props: {
           <ErrorNote message={error} />
           {/* Saving over somebody else's note is the choice above, not this. */}
           {!theirs && (
-            <div className="row">
+            <div className="row note-save-row">
               <Button onClick={() => void save()} disabled={busy || tooLong}>
                 {busy ? 'Saving…' : own ? 'Save' : 'Save note'}
               </Button>
               <Button kind="quiet" onClick={close} disabled={busy}>
                 Cancel
               </Button>
+              {/* Sensitive, at the row's far end: saved with Save, put back by Cancel. */}
+              {sensitiveShown && (
+                <span className="note-sensitive" title={SENSITIVE_MEANS}>
+                  {teenKeeps ? (
+                    <span className="muted">
+                      {SENSITIVE_LABEL}. {TEEN_KEEPS_SENSITIVE}
+                    </span>
+                  ) : (
+                    <Switch
+                      id={`${id}-sensitive`}
+                      label={SENSITIVE_LABEL}
+                      word={SENSITIVE_LABEL}
+                      checked={sensitiveSwitched}
+                      onChange={(on) => write({ sensitive: on })}
+                    />
+                  )}
+                </span>
+              )}
             </div>
           )}
         </div>
@@ -651,6 +747,9 @@ export function NotesSection(props: {
           {/* The note's words above, what the vault says of it below. */}
           <hr className="note-divider" />
           {!editing && stamp && <p className="muted note-stamp">{stamp}</p>}
+          <p className="muted" role="status">
+            {said}
+          </p>
         </>
       )}
     </section>
@@ -681,127 +780,3 @@ export const NOTE_ASKS = 'This note asks you to confirm it’s you before its wo
 /** What Essential means for a note, said where it is chosen (0.9.0-dev.87). */
 export const ESSENTIAL_NOTE_MEANS =
   'An Essential note asks you to confirm it’s you before its words are shown, and the family’s phones can keep it for when there is no connection.';
-
-/**
- * A note's Essential and Sensitive (0.9.0-dev.87), with the rules and the
- * questions a document's have: each saved as it is switched, on the note as
- * it was loaded. Turning Essential off asks to confirm it's you first, as it
- * does for a document; a teen may make a note sensitive, never not.
- * Sensitive alone never asks to confirm it's you, and is never sent to a
- * cloud AI reader.
- */
-export function NoteMarks(props: {
-  doc: DocumentView;
-  mayEdit: boolean;
-  /** Where the vault offers Sensitive. */
-  sensitiveOffered: boolean;
-  onSaved: (doc: DocumentView) => void;
-  /** Changed somewhere else since it was loaded (409): it is loaded again. */
-  onStale: () => void;
-}) {
-  const { doc } = props;
-  const { guarded, session } = useApp();
-  const role = session.info?.role ?? storedRole();
-  const id = useId();
-  const [busy, setBusy] = useState(false);
-  const [problem, setProblem] = useState<string | null>(null);
-  const [said, setSaid] = useState<string | null>(null);
-  const sensitive = doc.sensitive_effective === true;
-  const teenKeeps = role === 'teen' && sensitive;
-
-  const change = async (
-    body: { is_essential?: boolean; sensitive?: boolean },
-    words: (next: DocumentView) => string,
-  ) => {
-    if (busy) return;
-    setBusy(true);
-    setProblem(null);
-    setSaid(null);
-    try {
-      const next = await guarded((t) => api.updateDocument(t, doc.id, body, doc.etag));
-      if (!next) return;
-      props.onSaved(next);
-      const shared = next.warnings?.find((w) => w.code === 'sensitive_still_shared');
-      // Made sensitive while links outside the family still give it: said,
-      // and where to end them.
-      const links = shared?.links ?? 0;
-      setSaid(
-        [
-          words(next),
-          links > 0
-            ? `It is still shared outside the family by ${links === 1 ? 'a link' : `${links} links`}: end ${links === 1 ? 'it' : 'them'} in Share a link if ${links === 1 ? 'it' : 'they'} should stop.`
-            : null,
-        ]
-          .filter(Boolean)
-          .join(' '),
-      );
-    } catch (err) {
-      if (err instanceof ApiRequestError && err.status === 409) {
-        setProblem(
-          'This note was changed somewhere else, so it has been loaded again. Try again if it still needs changing.',
-        );
-        props.onStale();
-        return;
-      }
-      setProblem(describeError(err));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  if (!props.mayEdit) {
-    return (
-      <dl className="facts">
-        <dt>Essential</dt>
-        <dd>{doc.is_essential ? 'Yes' : 'No'}</dd>
-        {props.sensitiveOffered && (
-          <>
-            <dt>{SENSITIVE_LABEL}</dt>
-            <dd>{sensitive ? 'Yes' : 'No'}</dd>
-          </>
-        )}
-      </dl>
-    );
-  }
-  return (
-    <div className="stack note-marks">
-      <Switch
-        id={`${id}-essential`}
-        label="Essential"
-        checked={doc.is_essential}
-        onChange={(on) =>
-          void change({ is_essential: on }, () =>
-            on ? 'This note is Essential now.' : 'This note is not Essential any more.',
-          )
-        }
-      />
-      <p className="muted">{ESSENTIAL_NOTE_MEANS}</p>
-      {props.sensitiveOffered &&
-        (teenKeeps ? (
-          <dl className="facts">
-            <dt>{SENSITIVE_LABEL}</dt>
-            <dd>Yes. {TEEN_KEEPS_SENSITIVE}</dd>
-          </dl>
-        ) : (
-          <>
-            <Switch
-              id={`${id}-sensitive`}
-              label={SENSITIVE_LABEL}
-              checked={sensitive}
-              onChange={(on) =>
-                void change({ sensitive: on }, () =>
-                  on ? 'This note is sensitive now.' : 'This note is not sensitive any more.',
-                )
-              }
-            />
-            <p className="muted">{SENSITIVE_MEANS}</p>
-          </>
-        ))}
-      {busy && <p className="muted">Saving…</p>}
-      <ErrorNote message={problem} />
-      <p className="muted" role="status">
-        {said}
-      </p>
-    </div>
-  );
-}

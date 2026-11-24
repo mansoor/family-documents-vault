@@ -106,22 +106,25 @@ const panelOf = (b: HTMLElement) =>
   document.getElementById(b.getAttribute('aria-controls') ?? '') as HTMLElement;
 
 describe('the row on a note', () => {
-  it('Download, Print, who can see it, Essential and sensitive, its tags, collections, a link, and the Trash at the end; none open', async () => {
+  it('Download, Print, Make it Essential, Visibility, its tags, collections, a link, and the Trash at the end; none open', async () => {
     const { row } = await openAt(state(), '/notes/note-boiler');
     await waitFor(() => expect(button(row, /^Collections: 0 collections$/)).toBeVisible());
     expect(names(row)).toEqual([
       'Download',
       'Print',
-      'Who can see itEveryone',
-      // Essential and Sensitive (0.9.0-dev.87): no pill while it is neither.
-      'Essential and sensitive',
+      // Essential acts at once, as a document's ⋯ does (24 Nov 2026).
+      'Make it Essential',
+      // Its words alone: the note's details say who sees it.
+      'Visibility',
       'Tags0',
       'Collections0',
       'Share a link',
       'Move to the Trash',
     ]);
-    // The pill says who, and is heard in full.
-    expect(button(row, /^Who can see it: Everyone in the family$/)).toBeVisible();
+    expect(button(row, /^Visibility$/)).toBeVisible();
+    expect(button(row, /^Make it Essential$/)).not.toHaveAttribute('aria-expanded');
+    // No pill on Visibility: the note's details say who sees it.
+    expect(button(row, /^Visibility$/).querySelector('.action-badge')).toBeNull();
     for (const b of within(row).getAllByRole('button', { expanded: false })) {
       expect(panelOf(b)).not.toBeVisible();
     }
@@ -160,13 +163,13 @@ describe('the row on a note', () => {
     expect(within(tagPanel).getByRole('heading', { name: 'Tags' })).toBeVisible();
     await waitFor(() => expect(within(tagPanel).getByLabelText('Add a tag')).toHaveFocus());
 
-    const who = button(row, /^Who can see it/);
+    const who = button(row, /^Visibility/);
     fireEvent.click(who);
     expect(who).toHaveAttribute('aria-expanded', 'true');
     expect(tags).toHaveAttribute('aria-expanded', 'false');
     expect(tagPanel).not.toBeVisible();
     const whoPanel = panelOf(who);
-    expect(within(whoPanel).getByRole('heading', { name: 'Who can see it' })).toBeInTheDocument();
+    expect(within(whoPanel).getByRole('heading', { name: 'Visibility' })).toBeInTheDocument();
     await waitFor(() =>
       expect(
         within(whoPanel).getByRole('button', { name: 'Everyone in the family' }),
@@ -265,7 +268,7 @@ describe('the row on a note', () => {
     expect(button(row, /^Tags/)).toHaveAttribute('aria-expanded', 'true');
   });
 
-  it('the counts and who can see it change as the sections change them', async () => {
+  it('the counts change as the sections change them; Visibility never shows its value', async () => {
     const s = state();
     const { row } = await openAt(s, '/notes/note-boiler');
 
@@ -285,24 +288,24 @@ describe('the row on a note', () => {
     fireEvent.click(await within(sheet).findByRole('button', { name: 'Done' }));
     await waitFor(() => expect(button(row, /^Collections: 1 collection$/)).toBeVisible());
 
-    // Made Only me: the pill says so.
-    const who = button(row, /^Who can see it/);
+    // Made Only me: the details say so, and the button only its name.
+    const who = button(row, /^Visibility/);
     fireEvent.click(who);
     const whoPanel = panelOf(who);
     fireEvent.click(within(whoPanel).getByRole('button', { name: 'Only me' }));
     fireEvent.click(within(whoPanel).getByRole('button', { name: 'Save' }));
     const understood = await within(whoPanel).findByRole('button', { name: 'I understand' });
-    await waitFor(() => expect(button(row, /^Who can see it: Only me$/)).toBeVisible());
-    expect(within(row).getByRole('button', { name: /^Who can see it/ })).toHaveTextContent(
-      'Only me',
+    await waitFor(() =>
+      expect(document.querySelector('.note-pane-meta')).toHaveTextContent(/^Only me · changed/),
     );
+    expect(button(row, /^Visibility$/)).toHaveTextContent(/^Visibility$/);
     fireEvent.click(understood);
-    await waitFor(() => expect(button(row, /^Who can see it/)).toHaveFocus());
-    expect(button(row, /^Who can see it/)).toHaveAttribute('aria-expanded', 'false');
+    await waitFor(() => expect(button(row, /^Visibility/)).toHaveFocus());
+    expect(button(row, /^Visibility/)).toHaveAttribute('aria-expanded', 'false');
     // Opened again, it begins afresh, at the choice.
-    fireEvent.click(button(row, /^Who can see it/));
+    fireEvent.click(button(row, /^Visibility/));
     expect(
-      within(panelOf(button(row, /^Who can see it/))).getByRole('button', { name: 'Save' }),
+      within(panelOf(button(row, /^Visibility/))).getByRole('button', { name: 'Save' }),
     ).toBeVisible();
   });
 
@@ -361,7 +364,7 @@ describe('the row on a document', () => {
       'Download',
       'Print',
       'History1',
-      'Who can see itEveryone',
+      'Visibility',
       'Tags1',
       'Collections1',
       'Share a link',
@@ -414,12 +417,13 @@ describe('the row on a document', () => {
     );
   });
 
-  it('links to its sections open them: #history, #tags, #collections, #who-can-see-it, and an id inside one', async () => {
+  it('links to its sections open them: #history, #tags, #collections, #visibility (and #who-can-see-it), and an id inside one', async () => {
     for (const [hash, name] of [
       ['#history', /^History/],
       ['#tags', /^Tags/],
       ['#collections', /^Collections/],
-      ['#who-can-see-it', /^Who can see it/],
+      ['#visibility', /^Visibility/],
+      ['#who-can-see-it', /^Visibility/],
       ['#doc-collections-h', /^Collections/],
       ['#history-h', /^History/],
     ] as const) {

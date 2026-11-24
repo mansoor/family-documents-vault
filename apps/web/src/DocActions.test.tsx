@@ -154,7 +154,7 @@ describe('quick actions on every document (5.4)', () => {
       'Read full size',
       'Edit details',
       // Their own, between Only me and Everyone (A72).
-      'Who can see it',
+      'Visibility',
       'Stop it being Essential',
       // No longer needed is set with the details, not here (0.9.0).
       'Add a new version',
@@ -164,7 +164,7 @@ describe('quick actions on every document (5.4)', () => {
 
     const theirs = await openMenu('Actions for “Council tax bill”');
     expect(offered(theirs.menu)).toEqual(['Open', 'Download', 'Read full size']);
-    for (const never of ['Share a link', 'Who can see it', 'Edit details', 'Move to the Trash']) {
+    for (const never of ['Share a link', 'Visibility', 'Edit details', 'Move to the Trash']) {
       expect(within(theirs.menu).queryByRole('menuitem', { name: never })).not.toBeInTheDocument();
     }
   });
@@ -261,7 +261,7 @@ describe('quick actions on every document (5.4)', () => {
       'Read full size',
       'Edit details',
       'Share a link',
-      'Who can see it',
+      'Visibility',
       'Stop it being Essential',
       // No longer needed is set with the details, not here (0.9.0).
       'Add a new version',
@@ -356,8 +356,8 @@ describe('quick actions on every document (5.4)', () => {
     expect(first.more).toHaveFocus();
 
     const second = await openMenu();
-    fireEvent.click(within(second.menu).getByRole('menuitem', { name: 'Who can see it' }));
-    const who = await screen.findByRole('dialog', { name: "Who can see “Mansoor's passport”" });
+    fireEvent.click(within(second.menu).getByRole('menuitem', { name: 'Visibility' }));
+    const who = await screen.findByRole('dialog', { name: "Visibility of “Mansoor's passport”" });
     fireEvent.click(within(who).getByRole('button', { name: 'Adults only' }));
     fireEvent.click(within(who).getByRole('button', { name: 'Save' }));
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
@@ -569,8 +569,10 @@ describe('quick actions on every document (5.4)', () => {
     const name = 'Actions for “Home insurance policy”';
     const searches = () => state.calls.filter((c) => c.url.startsWith('/api/v1/search?')).length;
     const { menu } = await openMenu(name);
-    fireEvent.click(await within(menu).findByRole('menuitem', { name: 'Who can see it' }));
-    const who = await screen.findByRole('dialog', { name: 'Who can see “Home insurance policy”' });
+    fireEvent.click(await within(menu).findByRole('menuitem', { name: 'Visibility' }));
+    const who = await screen.findByRole('dialog', {
+      name: 'Visibility of “Home insurance policy”',
+    });
     fireEvent.click(within(who).getByRole('button', { name: 'Only me' }));
     fireEvent.click(within(who).getByRole('button', { name: 'Save' }));
     const notice = { name: 'Only you can open this' };
@@ -621,8 +623,8 @@ describe('quick actions on every document (5.4)', () => {
     const passport = { ...PASSPORT };
     const state = home([passport, { ...COUNCIL_TAX }], 'teen');
     const { menu } = await openMenu();
-    fireEvent.click(within(menu).getByRole('menuitem', { name: 'Who can see it' }));
-    const who = await screen.findByRole('dialog', { name: "Who can see “Mansoor's passport”" });
+    fireEvent.click(within(menu).getByRole('menuitem', { name: 'Visibility' }));
+    const who = await screen.findByRole('dialog', { name: "Visibility of “Mansoor's passport”" });
     const choices = within(who)
       .getAllByRole('button')
       .map((b) => b.textContent)
@@ -646,17 +648,15 @@ describe('quick actions on every document (5.4)', () => {
     home([{ ...PASSPORT, filed_by_me: false }], 'teen');
     const { menu } = await openMenu();
     expect(offered(menu)).toContain('Edit details');
-    expect(
-      within(menu).queryByRole('menuitem', { name: 'Who can see it' }),
-    ).not.toBeInTheDocument();
+    expect(within(menu).queryByRole('menuitem', { name: 'Visibility' })).not.toBeInTheDocument();
   });
 
   it('taking a document out of Only me from the ⋯ asks to confirm it’s you', async () => {
     const passport = { ...PASSPORT, visibility: 'private' };
     home([passport], 'owner', { stepUpNeeded: true });
     const { menu } = await openMenu();
-    fireEvent.click(within(menu).getByRole('menuitem', { name: 'Who can see it' }));
-    const who = await screen.findByRole('dialog', { name: "Who can see “Mansoor's passport”" });
+    fireEvent.click(within(menu).getByRole('menuitem', { name: 'Visibility' }));
+    const who = await screen.findByRole('dialog', { name: "Visibility of “Mansoor's passport”" });
     fireEvent.click(within(who).getByRole('button', { name: 'Everyone in the family' }));
     fireEvent.click(within(who).getByRole('button', { name: 'Save' }));
     const prompt = await screen.findByRole('dialog', { name: STEP_UP });
@@ -673,7 +673,7 @@ describe('quick actions on every document (5.4)', () => {
     expect(offered(menu)).toEqual([
       'Open',
       'Edit details',
-      'Who can see it',
+      'Visibility',
       'Stop it being Essential',
       // No longer needed is set with the details, not here (0.9.0).
       'Add a new version',

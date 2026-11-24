@@ -3330,7 +3330,7 @@ export class DocumentService {
         throw new ApiError(
           409,
           'document_changed',
-          'Who can see this document changed while the file was uploading. Try again.',
+          'This document’s visibility changed while the file was uploading. Try again.',
           { retriable: true },
         );
       }

@@ -5,6 +5,7 @@ import { resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { App } from './App.js';
 import { documentFacts, printablePages } from './print-document.js';
+import { SENSITIVE_PRINT_NOTICE } from './print.js';
 import {
   fresh,
   installFakeApi,
@@ -130,6 +131,52 @@ describe('a note', () => {
       'Who to call',
     );
     expect(root).toHaveTextContent('Ring Ann at Northgate Heating first.');
+    // Not Sensitive: nothing asked before it prints, and its heading says nothing of it.
+    expect(screen.queryByText(SENSITIVE_PRINT_NOTICE)).toBeNull();
+    expect(root).not.toHaveTextContent('Sensitive');
+    await afterPrint();
+  });
+
+  const SECRET = { ...BOILER, sensitive: true, sensitive_effective: true };
+
+  it('a Sensitive note: one notice first, with Print and Cancel; Cancel prints nothing', async () => {
+    open(fresh({ notes: true, sensitive: true, documents: [{ ...SECRET }] }), '/notes/note-boiler');
+    const actions = await row('Note');
+    const button = within(actions).getByRole('button', { name: 'Print' });
+    // Pressed, as a browser does: the focus on it.
+    button.focus();
+    fireEvent.click(button);
+    const notice = await screen.findByRole('alertdialog', { name: 'Before you print' });
+    expect(notice).toHaveTextContent(SENSITIVE_PRINT_NOTICE);
+    // The app's "are you sure?": Cancel has the focus, so Enter never prints by accident.
+    await waitFor(() =>
+      expect(within(notice).getByRole('button', { name: 'Cancel' })).toHaveFocus(),
+    );
+    expect(printRoot()).toBeNull();
+    fireEvent.click(within(notice).getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull());
+    expect(print).not.toHaveBeenCalled();
+    expect(printRoot()).toBeNull();
+    await waitFor(() => expect(button).toHaveFocus());
+    // Escape is Cancel too.
+    fireEvent.click(button);
+    fireEvent.keyDown(await screen.findByRole('alertdialog', { name: 'Before you print' }), {
+      key: 'Escape',
+    });
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull());
+    expect(print).not.toHaveBeenCalled();
+  });
+
+  it('a Sensitive note: Print on the notice prints it, its heading saying Sensitive', async () => {
+    open(fresh({ notes: true, sensitive: true, documents: [{ ...SECRET }] }), '/notes/note-boiler');
+    fireEvent.click(within(await row('Note')).getByRole('button', { name: 'Print' }));
+    const notice = await screen.findByRole('alertdialog', { name: 'Before you print' });
+    fireEvent.click(within(notice).getByRole('button', { name: 'Print' }));
+    const root = await printed();
+    expect(root.querySelector('.print-about')).toHaveTextContent(
+      /^Note · Everyone in the family · Sensitive · changed /,
+    );
+    expect(root).toHaveTextContent('Ring Ann at Northgate Heating first.');
     await afterPrint();
   });
 });
@@ -181,7 +228,7 @@ describe('a document', () => {
       Issued: '14 Mar 2021',
       Expires: 'March 2031',
       Status: 'Valid for 4 years 6 months',
-      'Who can see it': 'Everyone in the family',
+      Visibility: 'Everyone in the family',
     });
     expect(root).toHaveTextContent('Bedroom safe, top shelf');
     expect(
@@ -213,6 +260,54 @@ describe('a document', () => {
     );
     expect(print).not.toHaveBeenCalled();
     expect(printRoot()).toBeNull();
+  });
+
+  it('a Sensitive document: its print dialog says first to keep the printout safe; Cancel prints nothing', async () => {
+    const s = fresh({
+      sensitive: true,
+      documents: [{ ...PASSPORT, is_essential: false, sensitive: true, sensitive_effective: true }],
+    });
+    open(s, '/documents/doc-1');
+    fireEvent.click(within(await row('Document')).getByRole('button', { name: 'Print' }));
+    const dialog = await screen.findByRole('dialog', { name: /^Print/ });
+    expect(within(dialog).getByText(SENSITIVE_PRINT_NOTICE)).toBeVisible();
+    expect(within(dialog).getByRole('button', { name: 'Print' })).toBeVisible();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: /^Print/ })).toBeNull());
+    expect(print).not.toHaveBeenCalled();
+    expect(printRoot()).toBeNull();
+    expect(s.calls.some((c) => /\/pages\/\d+$/.test(c.url))).toBe(false);
+  });
+
+  it('a Sensitive document printed: its heading says Sensitive, with its details or its pages alone', async () => {
+    const s = fresh({
+      sensitive: true,
+      documents: [{ ...PASSPORT, is_essential: false, sensitive: true, sensitive_effective: true }],
+    });
+    open(s, '/documents/doc-1');
+    fireEvent.click(within(await row('Document')).getByRole('button', { name: 'Print' }));
+    let dialog = await screen.findByRole('dialog', { name: /^Print/ });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Print' }));
+    let root = await printed();
+    expect(root.querySelector('.print-about')).toHaveTextContent(/^Document · Sensitive$/);
+    await afterPrint();
+    // Its pages alone: still said.
+    fireEvent.click(within(await row('Document')).getByRole('button', { name: 'Print' }));
+    dialog = await screen.findByRole('dialog', { name: /^Print/ });
+    fireEvent.click(within(dialog).getByRole('checkbox', { name: 'A sheet of its details' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Print' }));
+    await waitFor(() => expect(print).toHaveBeenCalledTimes(2));
+    root = printRoot() as HTMLElement;
+    expect(root.querySelector('.print-sheet')).toBeNull();
+    expect(root.querySelector('.print-about')).toHaveTextContent(/^Sensitive$/);
+    await afterPrint();
+  });
+
+  it('a document that is not Sensitive: no notice in its print dialog', async () => {
+    open(fresh({ documents: [{ ...PASSPORT, is_essential: false }] }), '/documents/doc-1');
+    fireEvent.click(within(await row('Document')).getByRole('button', { name: 'Print' }));
+    const dialog = await screen.findByRole('dialog', { name: /^Print/ });
+    expect(within(dialog).queryByText(SENSITIVE_PRINT_NOTICE)).toBeNull();
   });
 
   it('a file the vault cannot draw: its details alone, and why not its pages', async () => {
@@ -273,7 +368,7 @@ describe('a document’s details sheet and its pages, worked out', () => {
     expect(facts).toEqual(
       expect.arrayContaining([
         { label: 'Sensitive', value: 'Yes' },
-        { label: 'Who can see it', value: 'Shared with you as caregiver' },
+        { label: 'Visibility', value: 'Shared with you as caregiver' },
         { label: 'Status', value: 'Nothing to renew' },
       ]),
     );

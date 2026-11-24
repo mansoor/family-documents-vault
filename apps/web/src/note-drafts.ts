@@ -37,6 +37,13 @@ export interface NoteDraft {
   title?: string;
   /** And its title when the edit began: only a title changed is sent (the N1 review). */
   baseTitle?: string;
+  /**
+   * A note kept on its own: Sensitive as switched while it is written (24 Nov
+   * 2026), left out while it is as the edit began; and whether the note was
+   * sensitive then. Only a switch moved from that is ever sent.
+   */
+  sensitive?: boolean;
+  baseSensitive?: boolean;
 }
 
 /** Who is signed in: whose drafts these are. */
@@ -107,6 +114,8 @@ export function draftOf(doc: Whose, who: DraftOwner): NoteDraft | null {
           baseStamp: typeof kept.baseStamp === 'string' ? kept.baseStamp : null,
           ...(typeof kept.title === 'string' ? { title: kept.title } : {}),
           ...(typeof kept.baseTitle === 'string' ? { baseTitle: kept.baseTitle } : {}),
+          ...(typeof kept.sensitive === 'boolean' ? { sensitive: kept.sensitive } : {}),
+          ...(typeof kept.baseSensitive === 'boolean' ? { baseSensitive: kept.baseSensitive } : {}),
         }
       : null;
   } catch {

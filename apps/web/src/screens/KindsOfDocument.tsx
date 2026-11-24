@@ -53,7 +53,7 @@ import { Button, ConfirmDialog, ErrorNote, Field, Select, Switch, TopBar } from 
  * this screen only leaves out what would be refused.
  *
  * Four rules the editor keeps in view:
- *  - What it is, Name, Whose it is and Who can see are on every card (A10):
+ *  - What it is, Name, Whose it is and Visibility are on every card (A10):
  *    they are how the vault files, finds and protects a document.
  *  - A field is required only where the card shows it.
  *  - Letting more people see a kind's next document is an owner's decision,
@@ -76,7 +76,7 @@ const LOCKED: ReadonlyArray<{ id: string; name: string; why: string }> = [
   { id: 'type', name: 'What it is', why: 'How it is filed, and what the card asks next.' },
   { id: 'title', name: 'Name', why: 'How it is found again.' },
   { id: 'owner', name: 'Whose it is', why: 'Whose papers it is among.' },
-  { id: 'visibility', name: 'Who can see it', why: 'Who may open it.' },
+  { id: 'visibility', name: 'Visibility', why: 'Who may open it.' },
 ];
 
 /** The fixed fields a kind may ask for, in the editor's order, in the app's own words. */
@@ -1321,7 +1321,7 @@ function KindEditor(props: {
         </h2>
         <div className="field" role="group" aria-labelledby="k-visibility-l">
           <span id="k-visibility-l" className="field-label">
-            Who can see a new one
+            Visibility of a new one
           </span>
           <div className="pills">
             {VISIBILITY.map(([v, words]) => {
@@ -1801,7 +1801,7 @@ function Preview(props: {
           .filter((f) => draft.core[f].shown)
           .map((f) => row(f, props.cardName(f), needed(f, draft.core[f], props.kindKey)))}
         <li>
-          <span>Who can see it</span>
+          <span>Visibility</span>
           <span className="muted">{visibilityWords(draft.visibility)}</span>
         </li>
       </ol>

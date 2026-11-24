@@ -572,7 +572,7 @@ export function useAcceptReady(opts: {
         >
           <p>
             Each becomes a document with what its card shows: its kind, whose it is, its dates and
-            number as its pages say them, and who can see it as the batch and its kind say. The
+            number as its pages say them, and its visibility as the batch and its kind say. The
             vault checks each one again as it accepts it: one that is not Ready any more waits for
             you.
           </p>

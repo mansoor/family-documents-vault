@@ -14,6 +14,7 @@ import { flushSync } from 'react-dom';
 import { useNavigate } from 'react-router';
 import { api, ApiRequestError } from './api.js';
 import { describeError, useApp } from './app-context.js';
+import { essentialLabel } from './action-row.js';
 import { AddToCollection, collectionsOffered } from './collections.js';
 import { SharePanel } from './screens/Share.js';
 import { VisibilityControl } from './screens/Visibility.js';
@@ -157,13 +158,13 @@ function labelFor(action: DocAction, doc: DocumentView | null): string {
     case 'share':
       return 'Share a link';
     case 'visibility':
-      return 'Who can see it';
+      return 'Visibility';
     case 'collect':
       return 'Add to a collection';
     case 'uncollect':
       return 'Remove from this collection';
     case 'essential':
-      return doc?.is_essential ? 'Stop it being Essential' : 'Make it Essential';
+      return essentialLabel(doc?.is_essential === true);
     case 'version':
       return 'Add a new version';
     case 'trash':
@@ -248,7 +249,7 @@ export function DocActions(props: {
   >(null);
   // What the sheet holds is on its way: Escape leaves it open until it is done.
   const [sheetBusy, setSheetBusy] = useState(false);
-  // Who can see it was changed in the sheet, or it was put in a collection: the
+  // Visibility was changed in the sheet, or it was put in a collection: the
   // list is loaded again when the sheet closes, not under it.
   const changedInSheet = useRef(false);
   // Moving to the Trash, or out of this collection: the row is on its way out.
@@ -561,7 +562,7 @@ export function DocActions(props: {
       )}
       {sheet === 'visibility' && doc && (
         <Sheet
-          label={`Who can see “${props.title}”`}
+          label={`Visibility of “${props.title}”`}
           busy={sheetBusy}
           returnFocus={more}
           onClose={closeSheet}

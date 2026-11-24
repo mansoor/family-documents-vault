@@ -654,7 +654,7 @@ describe('the notes, listed beside the one open (1280)', () => {
   it('a note made Only me later is said to keep its title in plain (the N1 review)', async () => {
     await openAt(withNotes(), '/notes/note-stopcock');
     const pane = await screen.findByRole('article', { name: 'Where the stopcock is' });
-    fireEvent.click(within(pane).getByRole('button', { name: /^Who can see it/ }));
+    fireEvent.click(within(pane).getByRole('button', { name: /^Visibility/ }));
     expect(screen.queryByText(/not its title/)).not.toBeInTheDocument();
     fireEvent.click(within(pane).getByRole('button', { name: 'Only me' }));
     expect(screen.getByText(/not its title/)).toBeVisible();

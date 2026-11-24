@@ -715,7 +715,7 @@ function AddMany({ visit }: { visit: string }) {
               />
               <div className="field" role="group" aria-labelledby="b-vis-l">
                 <span className="field-label" id="b-vis-l">
-                  Who can see them
+                  Visibility
                 </span>
                 <div className="pills">
                   {(

@@ -184,7 +184,7 @@ describe('a collection’s documents as the Documents table (0.9.0)', () => {
       .getAllByRole('columnheader')
       .map((h) => h.textContent);
     expect(heads.some((h) => h?.startsWith('Title'))).toBe(true);
-    expect(heads).toContain('Who sees it');
+    expect(heads).toContain('Visibility');
     expect(heads).toContain('Not seen by');
     expect(heads.at(-1)).toBe('Actions');
     const row = (title: string) =>

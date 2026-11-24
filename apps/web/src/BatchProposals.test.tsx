@@ -496,7 +496,7 @@ describe('the card, filled from the pages (I2)', () => {
       ),
     ]);
     await screen.findByLabelText(/What it is/);
-    const vis = screen.getByRole('group', { name: 'Who can see it' });
+    const vis = screen.getByRole('group', { name: 'Visibility' });
     expect(within(vis).getByRole('button', { name: 'Adults only' })).toHaveAttribute(
       'aria-pressed',
       'true',
@@ -535,7 +535,7 @@ describe('the card, filled from the pages (I2)', () => {
     );
     await screen.findByLabelText(/Whose it is/);
     await screen.findByRole('option', { name: 'Aisha' });
-    const vis = () => screen.getByRole('group', { name: 'Who can see it' });
+    const vis = () => screen.getByRole('group', { name: 'Visibility' });
     expect(within(vis()).getByRole('button', { name: 'Only me' })).toHaveAttribute(
       'aria-pressed',
       'true',
@@ -555,8 +555,7 @@ describe('the card, filled from the pages (I2)', () => {
           .getAllByRole('status')
           .some(
             (s) =>
-              s.textContent ===
-              'Who can see it is now Adults only: Only me is for your own documents.',
+              s.textContent === 'Visibility is now Adults only: Only me is for your own documents.',
           ),
       ).toBe(true),
     );

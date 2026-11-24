@@ -217,7 +217,7 @@ export const PRIVATE_TO_THEM = 'Only the person a document belongs to can make i
  * came from.
  */
 export const PRIVATE_BY_DEFAULT =
-  'This kind of document is kept private to the person it belongs to. Choose who can see this one.';
+  'This kind of document is kept private to the person it belongs to. Choose this one’s visibility.';
 
 /** The longest each text field may be (POST /documents' limits). */
 const LIMITS = [

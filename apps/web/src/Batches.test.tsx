@@ -264,7 +264,7 @@ describe('Add many documents (I1)', () => {
     fireEvent.change(screen.getByLabelText('Name this batch'), { target: { value: 'Old papers' } });
     fireEvent.change(screen.getByLabelText('Whose documents'), { target: { value: 'm-0' } });
     fireEvent.change(screen.getByLabelText('Kind'), { target: { value: 'birth_certificate' } });
-    const vis = screen.getByRole('group', { name: 'Who can see them' });
+    const vis = screen.getByRole('group', { name: 'Visibility' });
     expect(within(vis).getByRole('button', { name: 'As each kind says' })).toHaveAttribute(
       'aria-pressed',
       'true',
@@ -623,7 +623,7 @@ describe('a batch’s page (I1)', () => {
     expect(screen.getByLabelText(/Number/)).toHaveValue('');
     expect(screen.getByLabelText('Notes')).toHaveValue('');
     // As each kind says: a birth certificate is for Everyone.
-    const vis = screen.getByRole('group', { name: 'Who can see it' });
+    const vis = screen.getByRole('group', { name: 'Visibility' });
     expect(within(vis).getByRole('button', { name: 'Everyone' })).toHaveAttribute(
       'aria-pressed',
       'true',
@@ -748,7 +748,7 @@ describe('many documents at once, the review (I1)', () => {
     const state = at('/add/many');
     await screen.findByRole('heading', { name: 'Add many documents' });
     await screen.findByRole('option', { name: 'Aisha' });
-    const vis = () => screen.getByRole('group', { name: 'Who can see them' });
+    const vis = () => screen.getByRole('group', { name: 'Visibility' });
     fireEvent.click(within(vis()).getByRole('button', { name: 'Only me' }));
     await waitFor(() => expect(screen.getByLabelText('Whose documents')).toHaveValue('me'));
     // Different people again: Only me goes with it.
@@ -780,7 +780,7 @@ describe('many documents at once, the review (I1)', () => {
     await screen.findByRole('option', { name: 'Aisha' });
     await waitFor(() => expect(screen.getByLabelText('Whose it is')).toHaveValue('me'));
     expect(
-      within(screen.getByRole('group', { name: 'Who can see it' })).getByRole('button', {
+      within(screen.getByRole('group', { name: 'Visibility' })).getByRole('button', {
         name: 'Only me',
       }),
     ).toHaveAttribute('aria-pressed', 'true');

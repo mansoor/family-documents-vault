@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import axe from 'axe-core';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { App } from './App.js';
@@ -10,8 +10,9 @@ import { fresh, installFakeApi, PASSPORT, signedIn, type FakeState } from './tes
  * Notes ask "Confirm it's you" as documents do (0.9.0-dev.87): an Only me or
  * an Essential note is listed by its title and date alone, and its words are
  * shown only once it is confirmed to be them — cancelled, the note says so,
- * with the way to confirm again. A note's Essential and Sensitive are offered
- * where it is written, as a document's are.
+ * with the way to confirm again. A note is made Essential, or stops being so,
+ * from its row of actions, as a document is from its ⋯; Sensitive is switched
+ * under its words while it is written, and saved with them (24 Nov 2026).
  */
 
 function atWidth(px: number) {
@@ -96,9 +97,13 @@ const withNotes = (over: Partial<FakeState> = {}) =>
     ...over,
   });
 
-async function openAt(state: FakeState, path: string) {
+async function openAt(
+  state: FakeState,
+  path: string,
+  role: 'owner' | 'adult' | 'teen' | 'viewer' = 'owner',
+) {
   installFakeApi(state);
-  signedIn('owner');
+  signedIn(role);
   window.history.replaceState({}, '', path);
   render(<App />);
   await screen.findByRole('heading', { level: 1, name: /Notes|Note|New note/ });
@@ -188,9 +193,8 @@ describe('a note’s words, kept as it changes', () => {
   it('made Essential, it keeps the words in hand where the answer withholds them, and an edit saves them', async () => {
     const state = withNotes({ withholdNoteWords: true });
     await openAt(state, '/notes/note-boiler');
-    await screen.findByRole('toolbar', { name: 'Note actions' });
-    fireEvent.click(screen.getByRole('button', { name: /Essential and sensitive/ }));
-    fireEvent.click(await screen.findByRole('switch', { name: 'Essential' }));
+    const row = await screen.findByRole('toolbar', { name: 'Note actions' });
+    fireEvent.click(within(row).getByRole('button', { name: 'Make it Essential' }));
     expect(await screen.findByText('This note is Essential now.')).toBeInTheDocument();
     const pane = screen.getByRole('article');
     expect(within(pane).getByText('Ring the heron plumber')).toBeInTheDocument();
@@ -210,34 +214,290 @@ describe('a note’s words, kept as it changes', () => {
   });
 });
 
-describe('a note’s Essential and Sensitive', () => {
-  it('offered with a document’s rules, each saved as it is switched; turning Essential off asks', async () => {
+describe('a note’s Essential', () => {
+  it('Make it Essential from the row, at once, as a document’s ⋯ does; Stop it being Essential asks to confirm it’s you first', async () => {
     const state = withNotes();
     await openAt(state, '/notes/note-boiler');
-    await screen.findByRole('toolbar', { name: 'Note actions' });
-    fireEvent.click(screen.getByRole('button', { name: /Essential and sensitive/ }));
-    const essential = await screen.findByRole('switch', { name: 'Essential' });
-    expect(essential).not.toBeChecked();
-    fireEvent.click(essential);
+    const row = await screen.findByRole('toolbar', { name: 'Note actions' });
+    // No section for it any more: an action, beside Print.
+    expect(within(row).queryByRole('button', { name: /Essential and sensitive/ })).toBeNull();
+    const make = within(row).getByRole('button', { name: 'Make it Essential' });
+    expect(make).not.toHaveAttribute('aria-expanded');
+    fireEvent.click(make);
     expect(await screen.findByText('This note is Essential now.')).toBeInTheDocument();
     await waitFor(() =>
       expect(state.calls.filter((c) => c.method === 'PATCH').map((c) => [c.url, c.body])).toEqual([
         ['/api/v1/documents/note-boiler', { is_essential: true }],
       ]),
     );
-    fireEvent.click(screen.getByRole('switch', { name: 'Sensitive' }));
+    // Its details say so, for anybody who reads it.
+    expect(document.querySelector('.note-pane-meta')).toHaveTextContent(
+      /^Everyone in the family · Essential · changed /,
+    );
+    const stop = within(row).getByRole('button', { name: 'Stop it being Essential' });
+    // Off, five minutes later: asked first, and kept Essential if not confirmed.
+    state.stepUpNeeded = true;
+    fireEvent.click(stop);
+    const asked = await screen.findByRole('dialog', { name: 'Just checking it is you' });
+    expect(asked).toHaveTextContent('to open an Essential document');
+    await expectAccessible();
+    fireEvent.click(within(asked).getByRole('button', { name: 'Cancel' }));
+    await waitFor(() =>
+      expect(screen.queryByRole('dialog', { name: 'Just checking it is you' })).toBeNull(),
+    );
+    expect(state.documents.find((d) => d.id === 'note-boiler')?.is_essential).toBe(true);
+    // Confirmed: no longer Essential.
+    fireEvent.click(within(row).getByRole('button', { name: 'Stop it being Essential' }));
+    const again = await screen.findByRole('dialog', { name: 'Just checking it is you' });
+    fireEvent.change(within(again).getByLabelText(/password/i), {
+      target: { value: 'correct horse battery' },
+    });
+    fireEvent.click(within(again).getByRole('button', { name: 'Confirm' }));
+    expect(await screen.findByText('This note is not Essential any more.')).toBeInTheDocument();
+    expect(state.documents.find((d) => d.id === 'note-boiler')?.is_essential).toBe(false);
+    expect(within(row).getByRole('button', { name: 'Make it Essential' })).toBeVisible();
+  });
+
+  it('a viewer is offered neither, and reads Essential in its details', async () => {
+    await openAt(withNotes(), '/notes/note-safe', 'viewer');
+    const row = await screen.findByRole('toolbar', { name: 'Note actions' });
+    expect(within(row).queryByRole('button', { name: /Essential/ })).toBeNull();
+    expect(document.querySelector('.note-pane-meta')).toHaveTextContent(
+      /^Everyone in the family · Essential · changed /,
+    );
+  });
+});
+
+describe('a note’s Sensitive, switched under its words', () => {
+  it('shown only while it is written, at the end of the Save and Cancel row; Cancel puts it back, Save saves it with the words', async () => {
+    const state = withNotes();
+    await openAt(state, '/notes/note-boiler');
+    const pane = await screen.findByRole('article', { name: 'Boiler' });
+    // Read, not written: no switch.
+    expect(within(pane).queryByRole('switch', { name: 'Sensitive' })).toBeNull();
+    fireEvent.click(within(pane).getByRole('button', { name: 'Edit' }));
+    const sensitive = await within(pane).findByRole('switch', { name: 'Sensitive' });
+    expect(sensitive).not.toBeChecked();
+    // Beside Save and Cancel, after them.
+    const save = within(pane).getByRole('button', { name: 'Save' });
+    const saveRow = save.closest('.row') as HTMLElement;
+    expect(saveRow).toContainElement(sensitive);
+    expect(
+      within(saveRow).getByRole('button', { name: 'Cancel' }).compareDocumentPosition(sensitive) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    // Switched, then Cancel: nothing sent, and it is as it was.
+    fireEvent.click(sensitive);
+    expect(sensitive).toBeChecked();
+    expect(state.calls.filter((c) => c.method === 'PATCH')).toEqual([]);
+    fireEvent.click(within(saveRow).getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(within(pane).queryByRole('switch')).toBeNull());
+    expect(state.calls.filter((c) => c.method === 'PATCH')).toEqual([]);
+    fireEvent.click(within(pane).getByRole('button', { name: 'Edit' }));
+    expect(await within(pane).findByRole('switch', { name: 'Sensitive' })).not.toBeChecked();
+    // Switched, then Save: one save, the words and Sensitive together.
+    fireEvent.click(within(pane).getByRole('switch', { name: 'Sensitive' }));
+    fireEvent.click(within(pane).getByRole('button', { name: 'Save' }));
     expect(await screen.findByText('This note is sensitive now.')).toBeInTheDocument();
+    expect(state.calls.filter((c) => c.method === 'PATCH').map((c) => [c.url, c.body])).toEqual([
+      ['/api/v1/documents/note-boiler', { notes: 'Ring the heron plumber', sensitive: true }],
+    ]);
     expect(state.documents.find((d) => d.id === 'note-boiler')).toMatchObject({
-      is_essential: true,
       sensitive: true,
     });
-    // Essential off, five minutes later: asked first.
-    state.stepUpNeeded = true;
-    fireEvent.click(screen.getByRole('switch', { name: 'Essential' }));
-    expect(
-      await screen.findByRole('dialog', { name: 'Just checking it is you' }),
-    ).toHaveTextContent('to open an Essential document');
+    // Its details say so; no switch once it is read again.
+    await waitFor(() => expect(within(pane).queryByRole('switch')).toBeNull());
+    expect(document.querySelector('.note-pane-meta')).toHaveTextContent(
+      /^Everyone in the family · Sensitive · changed /,
+    );
     await expectAccessible();
+  });
+
+  it('a save that leaves it as it was sends nothing about it', async () => {
+    const state = withNotes();
+    await openAt(state, '/notes/note-boiler');
+    const pane = await screen.findByRole('article', { name: 'Boiler' });
+    fireEvent.click(within(pane).getByRole('button', { name: 'Edit' }));
+    const sensitive = await within(pane).findByRole('switch', { name: 'Sensitive' });
+    fireEvent.click(sensitive);
+    fireEvent.click(sensitive);
+    fireEvent.click(within(pane).getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(within(pane).queryByRole('switch')).toBeNull());
+    expect(state.calls.filter((c) => c.method === 'PATCH').map((c) => c.body)).toEqual([
+      { notes: 'Ring the heron plumber' },
+    ]);
+  });
+
+  it('made sensitive while links outside the family still give it: said, and where to end them', async () => {
+    const state = withNotes({ liveLinks: { 'note-boiler': 2 } });
+    await openAt(state, '/notes/note-boiler');
+    const pane = await screen.findByRole('article', { name: 'Boiler' });
+    fireEvent.click(within(pane).getByRole('button', { name: 'Edit' }));
+    fireEvent.click(await within(pane).findByRole('switch', { name: 'Sensitive' }));
+    fireEvent.click(within(pane).getByRole('button', { name: 'Save' }));
+    expect(
+      await screen.findByText(
+        'This note is sensitive now. It is still shared outside the family by 2 links: end them in Share a link if they should stop.',
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it('where the household has no Sensitive, there is no switch', async () => {
+    await openAt(withNotes({ sensitive: false }), '/notes/note-boiler');
+    const pane = await screen.findByRole('article', { name: 'Boiler' });
+    fireEvent.click(within(pane).getByRole('button', { name: 'Edit' }));
+    await within(pane).findByRole('button', { name: 'Save' });
+    expect(within(pane).queryByRole('switch', { name: 'Sensitive' })).toBeNull();
+  });
+
+  it('a teen may make their own note sensitive, never not', async () => {
+    const state = withNotes();
+    await openAt(state, '/notes/note-boiler', 'teen');
+    const pane = await screen.findByRole('article', { name: 'Boiler' });
+    fireEvent.click(within(pane).getByRole('button', { name: 'Edit' }));
+    fireEvent.click(await within(pane).findByRole('switch', { name: 'Sensitive' }));
+    fireEvent.click(within(pane).getByRole('button', { name: 'Save' }));
+    expect(await screen.findByText('This note is sensitive now.')).toBeInTheDocument();
+    // Sensitive now: written again, it says so, and there is no switch to undo it.
+    fireEvent.click(within(pane).getByRole('button', { name: 'Edit' }));
+    await within(pane).findByRole('button', { name: 'Save' });
+    expect(within(pane).queryByRole('switch', { name: 'Sensitive' })).toBeNull();
+    expect(
+      within(pane).getByText('Sensitive. Only an adult can mark a document not sensitive.'),
+    ).toBeVisible();
+    fireEvent.click(within(pane).getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(within(pane).queryByRole('button', { name: 'Save' })).toBeNull());
+    expect(
+      state.calls
+        .filter((c) => c.method === 'PATCH')
+        .map((c) => (c.body as { sensitive?: unknown }).sensitive),
+    ).toEqual([true, undefined]);
+  });
+
+  /** Somebody else makes the note sensitive while it is being written. */
+  const madeSensitiveMeanwhile = (state: FakeState) =>
+    Object.assign(state.documents.find((d) => d.id === 'note-boiler') as object, {
+      sensitive: true,
+      sensitive_effective: true,
+      etag: '"boiler-sensitive"',
+    });
+  const patches = (state: FakeState) =>
+    state.calls.filter((c) => c.method === 'PATCH').map((c) => c.body);
+
+  /** The page learns of it: Make it Essential, refused for the older copy, loads the note again. */
+  async function pageLearnsOfIt() {
+    const row = screen.getByRole('toolbar', { name: 'Note actions' });
+    fireEvent.click(within(row).getByRole('button', { name: 'Make it Essential' }));
+    expect(
+      await screen.findByText(
+        'This note was changed somewhere else, so it has been loaded again. Try again if it still needs changing.',
+      ),
+    ).toBeInTheDocument();
+    await waitFor(() =>
+      expect(document.querySelector('.note-pane-meta')).toHaveTextContent(/· Sensitive ·/),
+    );
+  }
+
+  it('a teen’s switch moved and put back sends nothing about it, and an adult’s Sensitive made meanwhile stays', async () => {
+    const state = withNotes();
+    await openAt(state, '/notes/note-boiler', 'teen');
+    const pane = await screen.findByRole('article', { name: 'Boiler' });
+    fireEvent.click(within(pane).getByRole('button', { name: 'Edit' }));
+    const sensitive = await within(pane).findByRole('switch', { name: 'Sensitive' });
+    fireEvent.click(sensitive);
+    fireEvent.click(sensitive);
+    madeSensitiveMeanwhile(state);
+    await pageLearnsOfIt();
+    // Sensitive now, and a teen's to keep so.
+    expect(
+      within(pane).getByText('Sensitive. Only an adult can mark a document not sensitive.'),
+    ).toBeVisible();
+    fireEvent.click(within(pane).getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(within(pane).queryByRole('button', { name: 'Save' })).toBeNull());
+    expect(patches(state)).toEqual([{ is_essential: true }, { notes: 'Ring the heron plumber' }]);
+    expect(state.documents.find((d) => d.id === 'note-boiler')).toMatchObject({
+      sensitive: true,
+    });
+  });
+
+  it('an adult’s switch moved and put back never undoes Sensitive made meanwhile', async () => {
+    const state = withNotes();
+    await openAt(state, '/notes/note-boiler');
+    const pane = await screen.findByRole('article', { name: 'Boiler' });
+    fireEvent.click(within(pane).getByRole('button', { name: 'Edit' }));
+    const sensitive = await within(pane).findByRole('switch', { name: 'Sensitive' });
+    fireEvent.click(sensitive);
+    fireEvent.click(sensitive);
+    madeSensitiveMeanwhile(state);
+    await pageLearnsOfIt();
+    fireEvent.click(within(pane).getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(within(pane).queryByRole('button', { name: 'Save' })).toBeNull());
+    expect(patches(state)).toEqual([{ is_essential: true }, { notes: 'Ring the heron plumber' }]);
+    expect(state.documents.find((d) => d.id === 'note-boiler')).toMatchObject({
+      sensitive: true,
+    });
+  });
+
+  it('a switch left alone sends nothing about it, whatever was done meanwhile', async () => {
+    const state = withNotes();
+    await openAt(state, '/notes/note-boiler');
+    const pane = await screen.findByRole('article', { name: 'Boiler' });
+    fireEvent.click(within(pane).getByRole('button', { name: 'Edit' }));
+    await within(pane).findByRole('switch', { name: 'Sensitive' });
+    madeSensitiveMeanwhile(state);
+    fireEvent.click(within(pane).getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(within(pane).queryByRole('button', { name: 'Save' })).toBeNull());
+    // Refused once for the older copy, then saved from the note as it is now: the words alone.
+    expect(patches(state)).toEqual([
+      { notes: 'Ring the heron plumber' },
+      { notes: 'Ring the heron plumber' },
+    ]);
+    expect(state.documents.find((d) => d.id === 'note-boiler')).toMatchObject({
+      sensitive: true,
+    });
+  });
+
+  it('a switch moved and nothing else is kept as a draft through a reload; moved back, there is none', async () => {
+    const state = withNotes();
+    await openAt(state, '/notes/note-boiler');
+    let pane = await screen.findByRole('article', { name: 'Boiler' });
+    fireEvent.click(within(pane).getByRole('button', { name: 'Edit' }));
+    fireEvent.click(await within(pane).findByRole('switch', { name: 'Sensitive' }));
+    const drafts = () => Object.keys(sessionStorage).filter((k) => k.includes('note-boiler'));
+    expect(drafts()).toHaveLength(1);
+    // Reloaded: the switch as it was left, and said to be a draft brought back.
+    cleanup();
+    await openAt(state, '/notes/note-boiler');
+    pane = await screen.findByRole('article', { name: 'Boiler' });
+    expect(await within(pane).findByRole('switch', { name: 'Sensitive' })).toBeChecked();
+    expect(pane).toHaveTextContent('Your unsaved draft of this note is back.');
+    // Moved back: nothing to keep, and nothing brought back after a reload.
+    fireEvent.click(within(pane).getByRole('switch', { name: 'Sensitive' }));
+    expect(drafts()).toEqual([]);
+    cleanup();
+    await openAt(state, '/notes/note-boiler');
+    pane = await screen.findByRole('article', { name: 'Boiler' });
+    await within(pane).findByRole('button', { name: 'Edit' });
+    expect(within(pane).queryByRole('switch')).toBeNull();
+    expect(pane).not.toHaveTextContent('Your unsaved draft of this note is back.');
+    // A draft kept with nothing changed in it is not brought back either.
+    cleanup();
+    sessionStorage.setItem(
+      'fdv.note-draft.hh.me.note-boiler',
+      JSON.stringify({
+        text: 'Ring the heron plumber',
+        baseText: 'Ring the heron plumber',
+        baseEtag: '"boiler"',
+        baseStamp: null,
+        title: 'Boiler',
+        baseTitle: 'Boiler',
+      }),
+    );
+    await openAt(state, '/notes/note-boiler');
+    pane = await screen.findByRole('article', { name: 'Boiler' });
+    await within(pane).findByRole('button', { name: 'Edit' });
+    expect(pane).not.toHaveTextContent('Your unsaved draft of this note is back.');
+    expect(drafts()).toEqual([]);
   });
 
   it('a new note may start Essential and sensitive', async () => {

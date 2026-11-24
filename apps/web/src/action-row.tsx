@@ -14,10 +14,12 @@ import { TrashIcon } from './ui.js';
 /**
  * One row of actions under a note and under a document (0.9.0, the owner's
  * request of 24 Oct 2026): Download, which acts at once; Print beside it
- * (0.9.0, printing); a button for each
- * of its sections — Who can see it, Tags, Collections, Share a link, a
- * document's History — each opening that section in a panel right under
- * the row; and Move to the Trash at the far end. Edit stays where it was.
+ * (0.9.0, printing); for a note, Make it Essential or Stop it being
+ * Essential, at once, as a document's ⋯ does (the owner's request of 24 Nov
+ * 2026); a button for each of its sections — Visibility, Tags,
+ * Collections, Share a link, a document's History — each opening that
+ * section in a panel right under the row; and Move to the Trash at the far
+ * end. Edit stays where it was.
  *
  * Each section button is a disclosure (`aria-expanded`, `aria-controls`):
  * one panel open at a time, the open one folded by its own button or by
@@ -25,7 +27,8 @@ import { TrashIcon } from './ui.js';
  * goes into the panel. Which was open is remembered for each person, a
  * note's apart from a document's, on this browser; none to begin with. A
  * link to a section — `#share`, `#tags`, `#collections`, `#history`,
- * `#who-can-see-it`, or the id of anything inside one — opens it.
+ * `#visibility` (or `#who-can-see-it`, as it was called), or the id of
+ * anything inside one — opens it.
  *
  * A document's row also has Activity (0.9.0, DA), for whoever reads the
  * activity log: a section like the rest since 0.9.0-dev.67 (the owner's
@@ -46,13 +49,13 @@ import { TrashIcon } from './ui.js';
  */
 
 export type ActionSectionKey =
-  'visibility' | 'marks' | 'tags' | 'collections' | 'share' | 'history' | 'activity';
+  'visibility' | 'tags' | 'collections' | 'share' | 'history' | 'activity';
 
 export interface ActionSection {
   key: ActionSectionKey;
   label: string;
   icon: ReactNode;
-  /** Beside the label: a count, or who can see it; and how it is said. */
+  /** Beside the label: a count; and how it is said. */
   badge?: { shown: string; spoken: string } | null;
   /** For a section with no heading of its own: one for a screen reader. */
   heading?: string;
@@ -68,9 +71,6 @@ export interface ActionSection {
 const HASHES: Record<string, ActionSectionKey> = {
   'who-can-see-it': 'visibility',
   visibility: 'visibility',
-  // A note's Essential and Sensitive (0.9.0-dev.87).
-  'essential-and-sensitive': 'marks',
-  marks: 'marks',
   tags: 'tags',
   collections: 'collections',
   share: 'share',
@@ -132,6 +132,12 @@ export function ActionRow({
   onPrint?: (() => void) | null;
   /** Print's button, for its dialog to give the focus back to. */
   printRef?: RefObject<HTMLButtonElement | null>;
+  /**
+   * A note's Essential (the owner's request of 24 Nov 2026): made so, or
+   * not, at once, beside Print — for whoever may change it. Busy while the
+   * vault answers, and never pressed twice.
+   */
+  essential?: { on: boolean; busy: boolean; onToggle: () => void } | null;
   sections: ActionSection[];
   /** Move to the Trash, for whoever may; its button, for the dialog to give focus back to. */
   onTrash?: (() => void) | null;
@@ -249,7 +255,7 @@ export function ActionRow({
   };
 
   // The row's buttons, in order: one of them reached by Tab, the arrows along.
-  const first = (props.onDownload ? 1 : 0) + (props.onPrint ? 1 : 0);
+  const first = (props.onDownload ? 1 : 0) + (props.onPrint ? 1 : 0) + (props.essential ? 1 : 0);
   const count = first + sections.length + (props.onTrash ? 1 : 0);
   const current = active < count ? active : 0;
   const onToolbarKey = (e: KeyboardEvent<HTMLDivElement>) => {
@@ -298,6 +304,20 @@ export function ActionRow({
           >
             <ActionIcon name="print" />
             Print
+          </button>
+        )}
+        {props.essential && (
+          <button
+            type="button"
+            className="btn action-btn"
+            aria-disabled={props.essential.busy ? true : undefined}
+            onClick={() => {
+              if (!props.essential?.busy) props.essential?.onToggle();
+            }}
+            {...stop((props.onDownload ? 1 : 0) + (props.onPrint ? 1 : 0))}
+          >
+            <ActionIcon name="star" />
+            {essentialLabel(props.essential.on)}
           </button>
         )}
         {sections.map((s, i) => (
@@ -363,6 +383,11 @@ function PanelBody({ children }: { children: ReactNode }) {
   return <>{children}</>;
 }
 
+/** Essential's action, as a document's ⋯ and a note's row say it. */
+export function essentialLabel(on: boolean): string {
+  return on ? 'Stop it being Essential' : 'Make it Essential';
+}
+
 /** "3 tags", "1 collection": a count as it is said. */
 export function countBadge(n: number, one: string, many: string) {
   return { shown: String(n), spoken: `${n} ${n === 1 ? one : many}` };
@@ -396,7 +421,7 @@ const PATHS: Record<IconName, ReactNode> = {
       <path d="M6 14h12v7H6z" />
     </>
   ),
-  // A star: Essential, and Sensitive with it (0.9.0-dev.87).
+  // A star: Essential (0.9.0-dev.87).
   star: (
     <>
       <path d="M12 3l2.8 5.7 6.2.9-4.5 4.4 1.1 6.2L12 17.3 6.4 20.2l1.1-6.2L3 9.6l6.2-.9z" />
