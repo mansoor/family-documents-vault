@@ -2,7 +2,6 @@ import {
   can,
   NOTE_KIND,
   NOTES_MAX,
-  noteFirstWords,
   SENSITIVE_LABEL,
   SENSITIVE_MEANS,
   type DocumentView,
@@ -19,12 +18,13 @@ import {
   ESSENTIAL_NOTE_MEANS,
   keepWords,
   NOTE_ASKS,
-  NoteText,
   NotesSection,
+  noteTitle,
   ONLY_ME_TITLE,
   secretNoteWarning,
 } from '../notes.js';
-import { PrintOut, SensitivePrintNotice } from '../print.js';
+import { SensitivePrintNotice } from '../print.js';
+import { PrintNote } from '../print-document.js';
 import { release, useLeaveGuard } from '../leave-guard.js';
 import { RichTextEditor } from '../rich-text.js';
 import { storedRole } from '../session.js';
@@ -75,11 +75,6 @@ const visibilityWords: Record<Visibility, string> = {
 /** "3 Oct", or "3 Oct 2025" for another year. */
 function shortDate(iso: string): string {
   return dayWordsOf(iso, familyZoneNow(), { month: 'short', year: 'other' });
-}
-
-/** A note's name: its title, or its first words, or "Untitled note". */
-export function noteTitle(title: string | null | undefined, words?: string | null): string {
-  return title?.trim() || noteFirstWords(words) || 'Untitled note';
 }
 
 export function NotesScreen() {
@@ -642,25 +637,7 @@ function NotePane(props: {
         />
       )}
       {printing === 'print' && (
-        <PrintOut
-          title={title}
-          about={
-            <p className="print-about">
-              Note · {visibilityWords[doc.visibility]}
-              {sensitive ? ` · ${SENSITIVE_LABEL}` : ''} · changed{' '}
-              {exactWords(doc.notes_updated_at ?? doc.updated_at, data.timezone ?? undefined)}
-            </p>
-          }
-          onDone={() => setPrinting(null)}
-        >
-          <div className="print-note">
-            {doc.notes ? (
-              <NoteText source={doc.notes} headingLevel={2} />
-            ) : (
-              <p>This note has no words yet.</p>
-            )}
-          </div>
-        </PrintOut>
+        <PrintNote doc={doc} timezone={data.timezone} onDone={() => setPrinting(null)} />
       )}
       {confirming && (
         <MoveToTrashDialog

@@ -5,6 +5,7 @@ import {
   SENSITIVE_MEANS,
   TEEN_KEEPS_SENSITIVE,
   NOTES_MAX,
+  noteFirstWords,
   notesPlainText,
   noteTreeText,
   parseNotes,
@@ -37,6 +38,11 @@ import { RichTextEditor } from './rich-text.js';
 import { Button, ErrorNote, Switch, useNamedWithin } from './ui.js';
 import { storedRole } from './session.js';
 import { exactWords } from './family-time.js';
+
+/** A note's name: its title, or its first words, or "Untitled note". */
+export function noteTitle(title: string | null | undefined, words?: string | null): string {
+  return title?.trim() || noteFirstWords(words) || 'Untitled note';
+}
 
 /**
  * A note on the web (5.35, A30; 0.9.0, N1): a document's note, or a note

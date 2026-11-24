@@ -757,6 +757,7 @@ export function DocRow({
   onTrashed,
   onRemoved,
   pinned,
+  print,
 }: {
   doc: DocumentView;
   /** The vault's types, for the type's short name; the category until they arrive. */
@@ -777,6 +778,8 @@ export function DocRow({
   onRemoved?: ((removed: Removed) => void) | undefined;
   /** Pinned into the cabinet folder it is shown in (0.9.0, C2): marked, with Unpin beside it. */
   pinned?: { onUnpin: () => void; busy?: boolean } | undefined;
+  /** Print in its ⋯: the Documents list's rows, on a phone (DocActions). */
+  print?: boolean | undefined;
 }) {
   // Somebody else's Only me, seen as their caregiver (H1b), says so.
   const who =
@@ -810,6 +813,7 @@ export function DocRow({
         collection={collection}
         onTrashed={onTrashed}
         onRemoved={onRemoved}
+        print={print}
       />
       {pinned && (
         <button

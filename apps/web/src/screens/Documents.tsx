@@ -1515,11 +1515,14 @@ const MORE_WIDTH = 56;
 const HEAD_LAYER = 20;
 
 /**
- * A row's ⋯ in the table (0.9.0): what every list's ⋯ offers — on a
- * collection's page, with Remove from this collection for its maker. Its
- * menu and sheets are drawn inside the cell, so what is done in them is
- * theirs alone: never the grid's arrows, the row's click that opens the
- * document, nor its tip.
+ * A row's ⋯ in the table (0.9.0): what every list's ⋯ offers, and Print
+ * (the owner's ask of 24 Nov 2026) — on a collection's page, with Remove
+ * from this collection for its maker. Its menu and sheets are the cell's,
+ * so what is done in them is theirs alone: never the grid's arrows, the
+ * row's click that opens the document, nor its tip. Their keys, though,
+ * drawn out of the cell, reach the page — their Escape and their Tab are
+ * heard there (`useSheetFocus`) — as nothing of the table acts on a key
+ * from outside its cells.
  */
 function RowMore(props: {
   doc: DocumentView;
@@ -1532,11 +1535,14 @@ function RowMore(props: {
   const theirs = (e: SyntheticEvent) => {
     if (!(e.target as HTMLElement).matches('button.more')) e.stopPropagation();
   };
+  const theirKeys = (e: SyntheticEvent) => {
+    if (e.currentTarget.contains(e.target as Node)) theirs(e);
+  };
   return (
     <div
       className="cell-more"
       onClick={(e) => e.stopPropagation()}
-      onKeyDown={theirs}
+      onKeyDown={theirKeys}
       onFocus={theirs}
       onMouseOver={(e) => e.stopPropagation()}
     >
@@ -1553,6 +1559,7 @@ function RowMore(props: {
         onTrashed={props.onTrashed}
         onRemoved={scope ? (removed) => scope.onRemoved([removed], 'row') : undefined}
         say={props.onSay}
+        print
       />
     </div>
   );
@@ -3168,6 +3175,8 @@ function PhoneDocuments(props: {
               onChanged={changed}
               onTrashed={trashed.onTrashed}
               onRemoved={scope ? (removed) => scope.onRemoved([removed], 'row') : undefined}
+              // Print in its ⋯, as in the table's (the owner's ask of 24 Nov 2026).
+              print
             />
           ))}
       </ul>

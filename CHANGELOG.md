@@ -6,6 +6,16 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.9.0-dev.99] - 2026-11-24 — Print from the Documents table
+
+### Added
+
+- **Print is in each document's ⋯ in the Documents table**, straight after Download, and in a collection's table and the Documents list on a narrow screen too: a document or a note prints without being opened first. It is the document's own Print: "What to print" with its pages and a sheet of its details, the reminder first for anything Sensitive, and "Confirm it's you" wherever its page asks. While it is got ready, it says so, and Cancel stops it.
+
+### Fixed
+
+- **Escape now closes the ⋯ menus in the Documents table**, and what they open, and Tab stays inside them: the table had been keeping those keys to itself.
+
 ## [0.9.0-dev.98] - 2026-11-24 — password rules
 
 ### Added
