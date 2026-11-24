@@ -39,6 +39,7 @@ import { SharedScreen } from './screens/Shared.js';
 import { SharingScreen } from './screens/Sharing.js';
 import { ChangeLinkScreen } from './screens/ChangeLink.js';
 import { PrivacyScreen } from './screens/Household.js';
+import { SecurityScreen } from './screens/Security.js';
 import { TimeZoneScreen } from './screens/TimeZone.js';
 import { CaregiversScreen } from './caregivers.js';
 import { NotificationsScreen } from './screens/Notifications.js';
@@ -429,6 +430,7 @@ export function App() {
                 <Route path="appearance" element={<AppearanceScreen />} />
                 <Route path="time-zone" element={<TimeZoneScreen />} />
                 <Route path="caregivers" element={<CaregiversScreen />} />
+                <Route path="security" element={<SecurityScreen />} />
                 <Route path="privacy" element={<PrivacyScreen />} />
                 <Route path="family" element={<FamilyScreen />} />
                 <Route path="kinds" element={<KindsScreen />} />

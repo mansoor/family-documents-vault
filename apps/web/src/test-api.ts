@@ -775,7 +775,7 @@ export interface FakeState {
     saves?: Array<Record<string, unknown>>;
     turned?: boolean[];
   };
-  /** Settings → Security & health (0.9.0-dev.78): said when a test gives it, what GET answers. */
+  /** Settings → System health (0.9.0-dev.78): said when a test gives it, what GET answers. */
   health?: SecurityHealthView;
   /** An older vault, with text messages but not notifications by them (SMS2): false. */
   smsNotifications?: boolean;
@@ -1736,7 +1736,7 @@ export function installFakeApi(state: FakeState) {
           ...(state.sms ? { sms_texts: true } : {}),
           // Settings → Backups (0.9.0-dev.76): said when a test gives it.
           ...(state.offsite ? { backup_offsite: true } : {}),
-          // Settings → Security & health (0.9.0-dev.78): said when a test gives it.
+          // Settings → System health (0.9.0-dev.78): said when a test gives it.
           ...(state.health ? { security_health: true } : {}),
           // Notifications by text (0.9.0, SMS2): with them, unless a test is an older vault.
           ...(state.sms && state.smsNotifications !== false ? { sms_notifications: true } : {}),
@@ -2812,10 +2812,10 @@ export function installFakeApi(state: FakeState) {
       }
       return json({ ...base, state: 'done', [c.kind]: answer });
     }
-    // Settings → Security & health (0.9.0-dev.78): an owner's.
+    // Settings → System health (0.9.0-dev.78): an owner's.
     if (state.health && path === '/api/v1/household/health' && method === 'GET') {
       if (storedRole() !== 'owner') {
-        return refuse(403, 'forbidden', 'Only an owner can see the vault’s security and health.');
+        return refuse(403, 'forbidden', 'Only an owner can see the vault’s system health.');
       }
       return json(state.health);
     }

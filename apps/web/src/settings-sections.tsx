@@ -14,13 +14,14 @@ import { Splitter, useKeptWidth, type WidthBounds } from './splitter.js';
  *  - You: Your account, Notifications, Appearance (light, dark or Auto,
  *    on this browser, for everybody: 0.9.0), Your computers, Connected apps
  *    (0.9.0, APP1), Your data.
- *  - Household: Privacy (neutral wording in notifications and email since
+ *  - Household: Security (the two-step rule and locking after a while
+ *    away: 24 Nov 2026), Privacy (neutral wording in notifications and email since
  *    H2), Time zone, Kinds of document, Tags, Who issued it (0.9.0-dev.91:
  *    owners and adults) — an owner changes them; everybody else reads what
  *    is theirs, as before.
  *  - Server and reading, an owner's: Storage, Email in and out, Scanner
  *    folder, Reading and the check (and Text messages, Backups, and
- *    Security & health, where the vault offers them). What was the For
+ *    System health, where the vault offers them). What was the For
  *    owners page's list, each now in the menu itself; /settings/owners
  *    opens Storage.
  *
@@ -41,6 +42,7 @@ import { Splitter, useKeptWidth, type WidthBounds } from './splitter.js';
  */
 export type SectionKey =
   | 'account'
+  | 'security'
   | 'notifications'
   | 'appearance'
   | 'computers'
@@ -113,6 +115,20 @@ export function privacyRows(role: Role, caps: Capabilities | null): SettingsRow[
   return caps?.features.member_identity && can(role, 'identity.audience')
     ? [{ to: '/settings/family', title: 'Family', note: 'Who can see identity details' }]
     : [];
+}
+
+/**
+ * What Settings → Security holds for this reader (24 Nov 2026, the owner's
+ * ask): the two-step rule and the family's lock time, an owner's; each
+ * person's own lock time, everybody's where the vault locks itself.
+ */
+export function securityCards(role: Role, caps: Capabilities | null) {
+  const autoLock = caps?.features.auto_lock === true;
+  return {
+    twoStepRule: role === 'owner',
+    familyLock: role === 'owner' && autoLock,
+    myLock: autoLock,
+  };
 }
 
 /** Whether this reader manages the kinds of document (5.12): the Kinds of document section. */
@@ -226,6 +242,20 @@ export function settingsGroups(
   }
 
   const household: SettingsSection[] = [];
+  // Security (24 Nov 2026), before Privacy: sign-in rules and locking.
+  const security = securityCards(role, caps);
+  if (security.twoStepRule || security.myLock) {
+    household.push(
+      section(
+        'security',
+        '/settings/security',
+        'Security',
+        security.twoStepRule
+          ? `Two-step sign-in for adults${security.familyLock ? '; locking after a while away' : ''}`
+          : 'Locking after a while away',
+      ),
+    );
+  }
   const privacy = privacyRows(role, caps);
   if (readsOnlyMeRule(role) || privacy.length > 0 || wordingCard(role, caps)) {
     household.push(
@@ -237,9 +267,6 @@ export function settingsGroups(
           wordingCard(role, caps) ? 'Neutral wording in notifications' : null,
           readsOnlyMeRule(role) ? 'Only me documents outside the family' : null,
           endedSharingCard(role, caps) ? 'links that no longer work' : null,
-          role === 'owner' && caps?.features.auto_lock === true
-            ? 'locking after a while away'
-            : null,
           privacy.length > 0 ? 'who sees identity details' : null,
         ]
           .filter(Boolean)
@@ -346,14 +373,15 @@ export function settingsGroups(
       section('backups', '/settings/backups', 'Backups', 'Nightly backups, and a copy elsewhere'),
     );
   }
-  // Security & health (0.9.0-dev.78): backups, the activity log's check and
-  // the day's sign-ins at a look, an owner's.
+  // System health (0.9.0-dev.78; Security & health until 24 Nov 2026, kept
+  // apart from Security): backups, the activity log's check and the day's
+  // sign-ins at a look, an owner's.
   if (owner && caps?.features.security_health === true) {
     server.push(
       section(
         'health',
         '/settings/health',
-        'Security & health',
+        'System health',
         'Backups, the activity log’s check, sign-ins',
       ),
     );
@@ -549,6 +577,13 @@ const DRAWN: Record<SectionKey, ReactNode> = {
       <path d="M4.5 16.5v3h15v-3" />
     </>
   ),
+  // A shield: sign-in rules and locking (24 Nov 2026).
+  security: (
+    <>
+      <path d="M12 3.5 19 6v5.5c0 4.2-2.9 7.6-7 9-4.1-1.4-7-4.8-7-9V6z" />
+      <path d="m9 12 2.2 2.2L15.5 10" />
+    </>
+  ),
   privacy: (
     <>
       <rect x="5" y="10.5" width="14" height="10" rx="1.5" />
@@ -622,13 +657,8 @@ const DRAWN: Record<SectionKey, ReactNode> = {
       <path d="M12 3.5v9M8.5 7 12 3.5 15.5 7" />
     </>
   ),
-  // A shield with a tick: the vault's security and health at a look.
-  health: (
-    <>
-      <path d="M12 3.5 19 6v5.5c0 4.2-2.9 7.6-7 9-4.1-1.4-7-4.8-7-9V6z" />
-      <path d="m9 12 2.2 2.2L15.5 10" />
-    </>
-  ),
+  // A pulse: the vault's health, at a look (System health since 24 Nov 2026).
+  health: <path d="M3.5 12h4l2-5 4 10 2-5h5" />,
   // A heart in a hand's keeping: someone who may see your medical papers.
   caregivers: (
     <>

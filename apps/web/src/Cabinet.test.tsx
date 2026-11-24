@@ -730,8 +730,10 @@ describe('arranging my cabinet', () => {
     await waitFor(() => expect(state.cabinetSaves).toHaveLength(1));
     expect(state.cabinetSaves?.[0]?.layout.cabinets[1]?.name).toBe('Aisha K');
     expect(await screen.findByRole('list', { name: 'Your cabinets' })).toBeVisible();
-    // Cancel, from the bar: back to the cabinet, nothing more saved.
-    fireEvent.click(screen.getByRole('button', { name: 'Arrange my cabinet' }));
+    // Cancel, from the bar: back to the cabinet, nothing more saved. Arrange
+    // my cabinet is in Cabinet's ▾ beside Table.
+    fireEvent.click(screen.getByRole('button', { name: 'More for the cabinet' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Arrange my cabinet' }));
     const again = await screen.findByRole('region', { name: 'Save or cancel this arrangement' });
     fireEvent.click(within(again).getByRole('button', { name: 'Cancel' }));
     expect(await screen.findByRole('list', { name: 'Your cabinets' })).toBeVisible();

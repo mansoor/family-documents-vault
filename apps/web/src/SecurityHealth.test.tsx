@@ -12,7 +12,7 @@ import { settingsGroups } from './settings-sections.js';
 import { AISHA, fresh, installFakeApi, ME, signedIn, type FakeState } from './test-api.js';
 
 /**
- * Settings → Server and reading → Security & health (0.9.0-dev.78), an
+ * Settings → Server and reading → System health (0.9.0-dev.78), an
  * owner's: each check fine, a gentle note (a restore drill to run), or a
  * problem in plain words with where to fix it.
  */
@@ -44,29 +44,27 @@ function at(path: string, over: Partial<FakeState>, role: Role = 'owner') {
   return state;
 }
 
-describe('Settings → Security & health', () => {
+describe('Settings → System health', () => {
   it('is an owner’s section, on a vault that offers it', async () => {
     const caps = { features: { security_health: true } } as unknown as Capabilities;
     const server = (role: Role, c: Capabilities | null = caps) =>
       settingsGroups(role, c, role === 'owner')
         .find((g) => g.key === 'server')
         ?.sections.map((s) => [s.label, s.to]);
-    expect(server('owner')).toContainEqual(['Security & health', '/settings/health']);
-    expect(server('owner', null)).not.toContainEqual(['Security & health', '/settings/health']);
+    expect(server('owner')).toContainEqual(['System health', '/settings/health']);
+    expect(server('owner', null)).not.toContainEqual(['System health', '/settings/health']);
     expect(server('adult')).toBeUndefined();
     at('/settings/health', { health: FINE }, 'adult');
     expect(
-      await screen.findByText('Only an owner can see the vault’s security and health.'),
+      await screen.findByText('Only an owner can see the vault’s system health.'),
     ).toBeVisible();
   });
 
   it('all fine: says so, calmly, line by line', async () => {
     at('/settings/health', { health: FINE });
-    expect(
-      await screen.findByRole('heading', { level: 1, name: 'Security & health' }),
-    ).toBeVisible();
+    expect(await screen.findByRole('heading', { level: 1, name: 'System health' })).toBeVisible();
     expect(await screen.findByTestId('health-summary')).toHaveTextContent('All fine.');
-    const list = screen.getByRole('list', { name: 'Security and health' });
+    const list = screen.getByRole('list', { name: 'System health' });
     const labels = within(list)
       .getAllByRole('listitem')
       .map((li) => li.querySelector('.doc-title')?.textContent);

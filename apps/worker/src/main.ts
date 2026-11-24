@@ -215,7 +215,7 @@ async function main(): Promise<void> {
   await boss.schedule(JOBS.heartbeat, '* * * * *');
 
   const dbs = connections(config.DATABASE_URL, config.DATABASE_ADMIN_URL ?? config.DATABASE_URL);
-  // Settings → Security & health (0.9.0): the owners told, once a problem,
+  // Settings → System health (0.9.0): the owners told, once a problem,
   // when the backups stop or the activity log fails its check.
   const healthDbs = { admin: dbs.admin, db: dbs.app };
   const noticeVaultHealth = async () => {
@@ -238,7 +238,7 @@ async function main(): Promise<void> {
     } else {
       log('info', 'audit chains verified', { households: report.households });
     }
-    // What the check found, for Settings → Security & health.
+    // What the check found, for Settings → System health.
     const broken = new Map(report.broken.map((b) => [b.household_id, b]));
     await noteVaultCheck(
       healthDbs,
@@ -504,7 +504,7 @@ async function main(): Promise<void> {
     try {
       made = await backupDatabase(backupDeps);
     } catch (err) {
-      // Said in Settings → Security & health, and to the owners once — on
+      // Said in Settings → System health, and to the owners once — on
       // the last try alone: one a retry makes was never a problem.
       if (lastTry(job)) {
         await noteVaultCheck(healthDbs, HEALTH_EVENTS.backupFailed).catch((e: unknown) =>
@@ -514,7 +514,7 @@ async function main(): Promise<void> {
       }
       throw err;
     }
-    // Noted for Security & health; never in the way of the backup's copy,
+    // Noted for System health; never in the way of the backup's copy,
     // nor a reason to make the backup again.
     await noteVaultCheck(healthDbs, HEALTH_EVENTS.backupMade, () => ({ bytes: made.bytes })).catch(
       (e: unknown) =>

@@ -542,7 +542,7 @@ describe('the Documents table, from 768 px (R2)', () => {
       'Add to a collection',
       'Set where it’s kept',
       // A tag to many at once (0.9.0, T1): one menu button, Add and Remove in it.
-      'Tags▾',
+      'Tags',
       'Visibility',
       // No longer needed is set with a document's details, not here (0.9.0).
       'Move to the Trash',

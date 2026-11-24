@@ -135,11 +135,11 @@ export const SCREEN_RULES = {
     title: 'Backups',
     why: 'Only an owner can set up where backups are copied.',
   },
-  // Security & health (0.9.0-dev.78): an owner's.
+  // System health (0.9.0-dev.78): an owner's.
   health: {
     may: owner,
-    title: 'Security & health',
-    why: 'Only an owner can see the vault’s security and health.',
+    title: 'System health',
+    why: 'Only an owner can see the vault’s system health.',
   },
 } satisfies Record<string, ScreenRule>;
 

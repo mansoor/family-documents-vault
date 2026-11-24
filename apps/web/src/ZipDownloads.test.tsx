@@ -1,6 +1,4 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import { existsSync, readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { App } from './App.js';
 import {
@@ -18,17 +16,10 @@ import {
  * Nov 2026): Download in the Documents table's bar — one file as itself,
  * several as one ZIP — and on a collection's page, whose top row reads Add
  * documents · Fill from a checklist · Share this collection · Add managers;
- * a Sensitive document among them asks to confirm it's you. And the
- * Documents page's second control — Columns, Arrange my cabinet — sits in
- * one slot in both views.
+ * a Sensitive document among them asks to confirm it's you. And where the
+ * Documents page's controls sit (24 Nov 2026): Table and Cabinet right-most,
+ * Arrange my cabinet in Cabinet's ▾, Columns at the end of the filters.
  */
-
-const CSS = (() => {
-  const file = ['src/styles.css', 'apps/web/src/styles.css']
-    .map((p) => resolve(process.cwd(), p))
-    .find((p) => existsSync(p));
-  return file ? readFileSync(file, 'utf8') : '';
-})();
 
 /**
  * Each download the page started: a file's name (one saved from the tab),
@@ -267,8 +258,8 @@ describe('a collection’s page (DL)', () => {
   });
 });
 
-describe('the Documents page’s second control (DL)', () => {
-  it('Columns in the table and Arrange my cabinet in the cabinet sit in the same slot, right after Table and Cabinet', async () => {
+describe('the Documents page’s controls (24 Nov 2026)', () => {
+  it('Table and Cabinet right-most in the head, Arrange my cabinet in Cabinet’s ▾, Columns at the filters’ end, the count at the foot', async () => {
     at('/documents', {
       cabinets: true,
       // An arrangement kept, every cabinet in it hidden: enough to arrange again.
@@ -279,32 +270,28 @@ describe('the Documents page’s second control (DL)', () => {
       },
     });
     const tableToggle = await screen.findByRole('group', { name: 'Show documents as' });
+    const head = tableToggle.closest('.table-head') as HTMLElement;
+    // Last in the head: right-most, after the page's heading.
+    expect(head.lastElementChild).toBe(tableToggle.closest('.view-toggle-wrap'));
+    // Columns beside the Filters group, at the end of its row — not in it.
     const columns = screen.getByRole('button', { name: 'Columns' });
-    const tableSlot = columns.closest('.table-head-tool');
-    expect(tableSlot).not.toBeNull();
-    expect(tableToggle.nextElementSibling).toBe(tableSlot);
-    expect(tableSlot?.parentElement?.className).toBe('table-head');
-    // The slot is as wide as the wider control, so neither moves.
-    expect(CSS).toMatch(/\.table-head-tool\s*\{[^}]*min-width:\s*11\.5rem/);
+    const filters = screen.getByRole('group', { name: 'Filters' });
+    expect(filters.contains(columns)).toBe(false);
+    expect(columns.closest('.filters-row')).toBe(filters.parentElement);
+    // The count at the foot, before the sort.
+    const sort = await screen.findByText(/^Sorted by /);
+    const count = sort.previousElementSibling as HTMLElement;
+    expect(count).toHaveClass('table-count');
+    expect(count).toHaveTextContent(/documents?$/);
 
-    // The cabinet: the same slot, right after the same toggle, holds Arrange my cabinet.
-    fireEvent.click(within(tableToggle).getByRole('button', { name: 'Cabinet' }));
-    const cabinetToggle = await screen.findByRole('group', { name: 'Show documents as' });
-    await waitFor(() =>
-      expect(
-        within(cabinetToggle).getByRole('button', { name: 'Cabinet', pressed: true }),
-      ).toBeVisible(),
-    );
-    const arrange = await waitFor(() => {
-      const found = screen
-        .getAllByRole('button', { name: 'Arrange my cabinet' })
-        .find((b) => b.closest('.table-head-tool'));
-      expect(found).toBeDefined();
-      return found as HTMLElement;
-    });
-    const cabinetSlot = arrange.closest('.table-head-tool');
-    expect(cabinetToggle.nextElementSibling).toBe(cabinetSlot);
-    expect(cabinetSlot?.parentElement?.className).toBe('table-head');
-    expect(arrange.className).toBe(columns.className);
+    // Arrange my cabinet: in Cabinet's ▾, from the table too.
+    fireEvent.click(within(tableToggle).getByRole('button', { name: 'More for the cabinet' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Arrange my cabinet' }));
+    await waitFor(() => expect(window.location.search).toContain('arrange=1'));
+    // While arranging, the ▾ is not offered again.
+    const arranging = await screen.findByRole('group', { name: 'Show documents as' });
+    expect(within(arranging).getByRole('button', { name: 'More for the cabinet' })).toBeDisabled();
+    // Nothing in the head besides the heading and the toggle.
+    expect(screen.queryByRole('button', { name: 'Arrange my cabinet' })).toBeNull();
   });
 });

@@ -199,7 +199,7 @@ const schema = z.object({
     .max(60)
     .default(2)
     .describe(
-      'How many days without a backup is late: Settings → Security & health says so, and ' +
+      'How many days without a backup is late: Settings → System health says so, and ' +
         'the worker tells the owners. Two assumes nightly backups; raise it with ' +
         'FDV_BACKUP_CRON. The worker has the same.',
     ),

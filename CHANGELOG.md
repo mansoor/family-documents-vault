@@ -6,6 +6,16 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.9.0-dev.97] - 2026-11-24 — a tidier Documents toolbar, and Security in Settings
+
+### Changed
+
+- **Table and Cabinet sit at the right of the Documents heading**, and **Arrange my cabinet is in a small ▾ beside Cabinet**, from the table as well as the cabinet. The ▾ is part of Cabinet: when Cabinet is chosen it is highlighted with it. While you are arranging, the ▾ is not offered again.
+- **Columns is at the end of the row of filters**, where the number of documents was, and **the number of documents is in the bar at the foot of the table**, just before what it is sorted by. A collection's table is the same.
+- **Every button that opens a menu has the same small arrow**, on the same line as its words and a little apart from them: Add in the top bar, your name, the filters on Documents and Activity, Tags when documents are ticked, and Cabinet. Add and Lock in the top bar now have their icon and words lined up.
+- **Settings has a Security section, just before Privacy.** It holds whether every adult must use two-step sign-in (an owner's choice, until now in Privacy) and Lock after a while away: the family's time (an owner's, until now in Privacy) and your own shorter time (until now in Your account), side by side in one card and saved with one Save. Everybody may choose their own time there; the family's is shown beside it.
+- **Security & health is now called System health**, so it is not confused with Security. It is in the same place, under Server and reading.
+
 ## [0.9.0-dev.96] - 2026-11-24 — Visibility, a note's Essential and Sensitive, and printing what is Sensitive
 
 ### Changed

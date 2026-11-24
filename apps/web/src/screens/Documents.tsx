@@ -118,6 +118,7 @@ import {
   TopBar,
   TrashIcon,
   useSheetFocus,
+  Caret,
 } from '../ui.js';
 import { DocRow } from './Home.js';
 import {
@@ -1226,11 +1227,29 @@ function TableDocuments(props: {
             Documents
           </h1>
         )}
+        {/* Table or Cabinet, right-most (24 Nov 2026). */}
         {!scope && cabinets && <ViewToggle current="table" />}
-        {/* Columns sits where Cabinet's Arrange my cabinet does (DL): in a
-            slot of its own beside Table and Cabinet, so neither the toggle
-            nor it moves when the view changes. */}
-        <div className={!scope && cabinets ? 'table-head-tool' : 'table-head-tool-plain'}>
+      </div>
+      {/* The filters, and Columns at the row's end where the count was (the
+          count is in the bar at the foot). Columns is beside the Filters
+          group, never in it: the group takes the focus (tabIndex -1), and a
+          press on a column's name in the menu would move it there, shutting
+          the menu. */}
+      <div className="filters-row">
+        <div ref={filtersRef} className="filters" role="group" aria-label="Filters" tabIndex={-1}>
+          {filterKeys.map((k) => (
+            <TableFilter
+              key={k}
+              k={k}
+              id={`filter-${k}`}
+              view={view}
+              known={known}
+              withNotes={scope !== undefined}
+              onChange={(v) => setFilter(k, v)}
+            />
+          ))}
+        </div>
+        <div className="filters-tool">
           <ColumnsMenu
             columns={columns}
             hidden={hidden}
@@ -1238,22 +1257,6 @@ function TableDocuments(props: {
             onReset={() => keepWidths({})}
           />
         </div>
-      </div>
-      <div ref={filtersRef} className="filters" role="group" aria-label="Filters" tabIndex={-1}>
-        {filterKeys.map((k) => (
-          <TableFilter
-            key={k}
-            k={k}
-            id={`filter-${k}`}
-            view={view}
-            known={known}
-            withNotes={scope !== undefined}
-            onChange={(v) => setFilter(k, v)}
-          />
-        ))}
-        <p className="muted table-count" role="status">
-          {countWords(pages, view)}
-        </p>
       </div>
       {/* Always there, so the focus has somewhere to go when the last chip does. */}
       <ChipRow
@@ -1463,7 +1466,7 @@ function TableDocuments(props: {
       <p className="visually-hidden" role="status">
         {chosen.length > 0 ? `${chosen.length} selected` : ''}
       </p>
-      {chosen.length > 0 ? (
+      {chosen.length > 0 && (
         <BulkBar
           chosen={chosen}
           who={who}
@@ -1476,18 +1479,27 @@ function TableDocuments(props: {
           }}
           onFinished={finished}
         />
-      ) : (
-        <div className="tablefoot">
+      )}
+      {/* The bar at the foot: kept while documents are chosen, out of sight
+          and holding only the count, so its status is never taken away and
+          a new count — a filter changed — is still said. */}
+      <div className={chosen.length > 0 ? 'visually-hidden' : 'tablefoot'}>
+        {chosen.length === 0 && (
           <span>
             {selectable
               ? 'Tick documents to do something with many at once.'
               : 'Open a document to read or download it.'}
           </span>
+        )}
+        <span className="muted table-count tablefoot-count" role="status">
+          {countWords(pages, view)}
+        </span>
+        {chosen.length === 0 && (
           <span className="tablefoot-sort">
             Sorted by {SORT_LABELS[view.sort].toLowerCase()}, {words[view.dir]}
           </span>
-        </div>
-      )}
+        )}
+      </div>
       {tips.tip}
     </Wrap>
   );
@@ -2742,7 +2754,7 @@ function TagsMenu(props: {
         }}
       >
         Tags
-        <span aria-hidden="true">▾</span>
+        <Caret />
       </button>
       {menu && (
         <TagsMenuBox

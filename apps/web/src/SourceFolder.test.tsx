@@ -141,7 +141,8 @@ describe('a folder tree as my cabinet', () => {
   // levels, and "My folders" would be a cabinet beside them.
   it('is offered nowhere: not beside my cabinet, nor on an empty one, nor from its address', async () => {
     const state = at('/documents?show=cabinet');
-    expect(await screen.findByRole('button', { name: 'Arrange my cabinet' })).toBeVisible();
+    // The cabinet itself, loaded: only then is what it offers known.
+    expect(await screen.findByRole('list', { name: 'Your cabinets' })).toBeVisible();
     expect(screen.queryByRole('link', { name: 'Keep my folder tree' })).toBeNull();
     cleanup();
     at('/documents?show=cabinet', { cabinet: { layout: null, version: 0, updated_at: null } });
@@ -149,7 +150,8 @@ describe('a folder tree as my cabinet', () => {
     expect(screen.queryByRole('button', { name: 'Use my folder tree' })).toBeNull();
     cleanup();
     at('/documents?show=cabinet&from=folders');
-    expect(await screen.findByRole('button', { name: 'Arrange my cabinet' })).toBeVisible();
+    // The cabinet itself, loaded: only then is what it offers known.
+    expect(await screen.findByRole('list', { name: 'Your cabinets' })).toBeVisible();
     expect(
       screen.queryByRole('heading', { name: 'Keep this folder tree as my cabinet' }),
     ).toBeNull();

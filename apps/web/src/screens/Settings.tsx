@@ -13,7 +13,6 @@ import { ElsewhereNote, GroupName, ServerLine, useSettingsGroups } from '../sett
 import { ChangePassword } from './Password.js';
 import { dateTimeWords, dayWordsOf, useFamilyZone } from '../family-time.js';
 import { CodesByTextCard } from '../text-messages.js';
-import { MyAutoLockCard } from '../auto-lock-settings.js';
 
 /**
  * A section's page: its heading names the section. On a phone its bar has
@@ -88,7 +87,7 @@ export function SettingsScreen() {
  * passkeys, the devices signed in, and the single keys on this device.
  */
 export function AccountScreen() {
-  const { authVersion, withToken, guarded, caps } = useApp();
+  const { authVersion, withToken, guarded } = useApp();
   const {
     data: sessions,
     error: sessionsError,
@@ -133,8 +132,6 @@ export function AccountScreen() {
       <Passkeys />
       {/* A code by text at a reset and at sign-in (0.9.0, SMS3): only ever as well. */}
       <CodesByTextCard />
-      {/* Lock after a while away (0.9.0-dev.87): a shorter time of your own. */}
-      {caps?.features.auto_lock === true && <MyAutoLockCard />}
       <section aria-labelledby="devices-h">
         <h2 id="devices-h" className="section-h">
           Signed-in devices

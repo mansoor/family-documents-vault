@@ -5,7 +5,7 @@ import type pg from 'pg';
 import { queueDbOf, type OwnersAlert, type QueueDb } from '../ai-send.js';
 
 /**
- * What Settings → Security & health reads (0.9.0), written as the worker
+ * What Settings → System health reads (0.9.0), written as the worker
  * does its own work: a line in the activity log when a backup is made or
  * fails and when the restore drill is run — in the installation's own
  * household's log (the first one set up), since those are the server's —
@@ -152,7 +152,7 @@ export async function noticeHealth(deps: {
               : `The vault hasn’t made a backup for more than ${lateDays} ${lateDays === 1 ? 'day' : 'days'}.`,
             last,
             'Check that the vault’s worker is running: on the server, run docker compose ps, and docker compose logs worker to see why.',
-            'Settings → Security & health shows when it’s fixed. You won’t be told again until a backup is made.',
+            'Settings → System health shows when it’s fixed. You won’t be told again until a backup is made.',
           ].join(' '),
         });
       }
@@ -169,7 +169,7 @@ export async function noticeHealth(deps: {
                   'Restore a backup from before then, or ask whoever helps you run the vault.',
                 ]
               : ['Contact whoever runs your vault.']),
-            'Settings → Security & health shows the latest check. You won’t be told again until a check passes.',
+            'Settings → System health shows the latest check. You won’t be told again until a check passes.',
           ].join(' '),
         });
       }

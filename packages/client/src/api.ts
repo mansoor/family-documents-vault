@@ -2575,7 +2575,7 @@ export function createApi(http: Http) {
     removeOffsiteBackup: (token: string) =>
       request<OffsiteView>('/api/v1/backups/offsite', { method: 'DELETE', token }),
     /**
-     * Settings → Security & health (0.9.0, `features.security_health`): the
+     * Settings → System health (0.9.0, `features.security_health`): the
      * last backup and its copy off-site, the last restore drill, the
      * activity log's last check, and the day's failed sign-ins and sign-ins
      * used from two places. An owner's (`403` for anybody else); no passkey

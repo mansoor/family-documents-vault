@@ -8,7 +8,7 @@ import {
   type ReactNode,
   type RefObject,
 } from 'react';
-import { Check } from './ui.js';
+import { Caret, Check } from './ui.js';
 
 /**
  * Filters that take more than one choice (0.9.0-dev.92): on Documents and
@@ -312,9 +312,7 @@ export function MultiFilter(props: {
         onClick={() => setOpen((o) => !o)}
       >
         {summary}
-        <span className="multi-filter-caret" aria-hidden="true">
-          ▾
-        </span>
+        <Caret />
       </button>
       {open && (
         <div
