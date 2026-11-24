@@ -8,6 +8,7 @@ import {
   COLLECTION_HINT_TEENS,
   FOLDERS_CABINET,
   localToday,
+  PASSWORD_RULES_DEFAULT,
   onlyEveryone,
   reminderOf,
   reminderSentence,
@@ -3948,6 +3949,72 @@ export const contractScenarios: Scenario[] = [
       expect((await api.setHouseholdAutoLock(token, 15)).household).toBe(15);
       // Somebody still here: a browser's word, nothing more.
       await api.stillHere(token);
+      await api.logout(token);
+    },
+  },
+  {
+    name: 'password rules an owner sets: 10 characters and common passwords refused unless one chose otherwise, every sign-in password set held to them, and a refusal that says everything missing',
+    run: async (api, ctx) => {
+      expect((await api.capabilities()).features.password_rules).toBe(true);
+      // A fresh sign-in: looser rules ask to confirm it's you, as it was given.
+      const { access_token: token } = await signIn(api, ctx);
+      expect(await api.passwordRules(token)).toEqual({
+        ...PASSWORD_RULES_DEFAULT,
+        can_change: true,
+      });
+      const odd = await refusal(
+        api.setPasswordRules(token, { ...PASSWORD_RULES_DEFAULT, min_length: 9 }),
+      );
+      expect([odd.status, odd.code]).toEqual([422, 'validation_failed']);
+      const stricter = { ...PASSWORD_RULES_DEFAULT, min_length: 12, needs_number: true };
+      expect(await api.setPasswordRules(token, stricter)).toEqual({
+        ...stricter,
+        can_change: true,
+      });
+      // An invitation accepted is held to them, and told what is missing.
+      const person = await api.addMember(token, { display_name: 'Contract Rules' });
+      const made = await api.invite(token, {
+        member_id: person.id,
+        email: 'rules@contract.test',
+        role: 'adult',
+      });
+      const short = await refusal(
+        api.acceptInvitationLink(made.link_token, { code: made.code, password: 'short one' }),
+      );
+      expect([short.status, short.code, short.message]).toEqual([
+        400,
+        'password_rules',
+        'Use at least 12 characters, with a number.',
+      ]);
+      const noNumber = await refusal(
+        api.acceptInvitationLink(made.link_token, {
+          code: made.code,
+          password: 'no digits in this one',
+        }),
+      );
+      expect([noNumber.status, noNumber.code, noNumber.message]).toEqual([
+        400,
+        'password_rules',
+        'Add a number.',
+      ]);
+      const common = await refusal(
+        api.acceptInvitationLink(made.link_token, { code: made.code, password: 'password1234' }),
+      );
+      expect([common.status, common.code, common.message]).toEqual([
+        400,
+        'password_rules',
+        'That password is too common: choose another.',
+      ]);
+      const joined = await api.acceptInvitationLink(made.link_token, {
+        code: made.code,
+        password: 'twelve or more 4 sure',
+      });
+      expect(joined.role).toBe('adult');
+      // Back as every household starts: looser, so asked of a fresh sign-in.
+      expect(await api.setPasswordRules(token, PASSWORD_RULES_DEFAULT)).toEqual({
+        ...PASSWORD_RULES_DEFAULT,
+        can_change: true,
+      });
       await api.logout(token);
     },
   },

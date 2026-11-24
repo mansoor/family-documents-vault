@@ -87,6 +87,8 @@ import type {
   EndedSharingDays,
   AutoLock,
   AutoLockMinutes,
+  PasswordRules,
+  PasswordRulesView,
   IncomingAccepted,
   IncomingAcceptInput,
   IncomingFileView,
@@ -639,6 +641,27 @@ export function createApi(http: Http) {
       request<{ adults: boolean; can_change: boolean }>('/api/v1/household/two-step', {
         method: 'PUT',
         body: { adults },
+        token,
+      }),
+    /**
+     * The household's password rules (`features.password_rules`): what a
+     * sign-in password must be whenever one is set. Every role reads it;
+     * `can_change` for an owner. `404` from older vaults, which ask 10
+     * characters and nothing else (`PASSWORD_RULES_DEFAULT` less the
+     * common-password refusal).
+     */
+    passwordRules: (token: string) =>
+      request<PasswordRulesView>('/api/v1/household/password-rules', { token }),
+    /**
+     * An owner sets them, every field at once: `403 forbidden` to anybody
+     * else; `422 validation_failed` for a least length outside 10 to 64.
+     * Rules that let in a password the ones before refused ask to confirm
+     * it's you first (`step_up_required`, `weaken_password_rules`).
+     */
+    setPasswordRules: (token: string, rules: PasswordRules) =>
+      request<PasswordRulesView>('/api/v1/household/password-rules', {
+        method: 'PUT',
+        body: rules,
         token,
       }),
     /** The family: a guest is never among them (5.34), but for a guest themselves. */

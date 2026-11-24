@@ -21,6 +21,7 @@
     "@fdv/shared": "workspace:*",
     "@fdv/storage": "workspace:^",
     "@simplewebauthn/server": "^14",
+    "@zxcvbn-ts/language-common": "4.2.0",
     "archiver": "^8.0.0",
     "argon2": "^0.45.1",
     "fastify": "^5.12.5",

@@ -28,6 +28,7 @@ import {
 } from './shares.js';
 import { NEUTRAL_WORDING_WORDS, NEUTRAL_WORDINGS, type NeutralWording } from './wording.js';
 import { autoLockSpan, isAutoLockMinutes } from './auto-lock.js';
+import { passwordLengthWords, passwordRulesOf } from './password-rules.js';
 
 export interface ActivityEvent {
   id: number;
@@ -142,6 +143,7 @@ export function activityKind(action: string): ActivityKind {
     case 'household.ended_sharing_changed':
     case 'household.two_step_changed':
     case 'household.auto_lock_changed':
+    case 'household.password_rules_changed':
     case 'issuer.joined': // 0.9.0-dev.91: issuers said to be the same,
     case 'issuer.separated': // or separated.
     case 'ai_reader.changed':
@@ -1266,6 +1268,16 @@ export function eventWords(e: ActivityEvent): (ActivityLine & { named: boolean }
             : 'another choice';
       return line(
         `${who} changed ended links and requests from ${words(detail.was)} to ${words(detail.days)}`,
+        true,
+      );
+    }
+    // The household's password rules, as an owner set them: what they are
+    // now, the length and the mix as a password field's hint says them.
+    case 'household.password_rules_changed': {
+      const rules = passwordRulesOf(detail);
+      const length = passwordLengthWords(rules).replace(/^A/, 'a');
+      return line(
+        `${who} changed the password rules: ${length}; common passwords ${rules.refuse_common ? 'refused' : 'allowed'}`,
         true,
       );
     }

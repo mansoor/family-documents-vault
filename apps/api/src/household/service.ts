@@ -27,6 +27,10 @@ import {
   localToday,
   type EndedSharing,
   type EndedSharingDays,
+  PASSWORD_RULES_KEYS,
+  passwordRulesWeaker,
+  type PasswordRules,
+  type PasswordRulesView,
   suspensionInEffect,
   type MemberAccount,
   type MemberAccountDevice,
@@ -43,6 +47,12 @@ import {
   type RequestMeta,
 } from '../auth/service.js';
 import type { StepUpService } from '../auth/step-up.js';
+import {
+  householdPasswordRules,
+  PASSWORD_RULES_COLUMNS,
+  rowOfRules,
+  rulesOfRow,
+} from '../auth/password-rules.js';
 import { ApiError } from '../errors.js';
 import { allows, requireCapability } from '../authz.js';
 import { photoFields } from './photos.js';
@@ -576,6 +586,66 @@ export class HouseholdService {
       });
     });
     return this.twoStep(p);
+  }
+
+  /**
+   * GET /household/password-rules: what a sign-in password must be whenever
+   * one is set (`features.password_rules`). Read by everybody signed in —
+   * their own change of password is held to it — and `can_change` for an
+   * owner.
+   */
+  async passwordRules(p: Principal): Promise<PasswordRulesView> {
+    return withPrincipal(this.db, p, async (trx) => ({
+      ...(await householdPasswordRules(trx, p.householdId)),
+      can_change: p.role === 'owner',
+    }));
+  }
+
+  /**
+   * PUT /household/password-rules: an owner's (`403 forbidden` to anybody
+   * else; the database holds it to owners too, household_password_rules_rule,
+   * 0130). Rules that let in a password the ones before refused — a shorter
+   * least, or a switch turned off — ask them to confirm it's them first
+   * (`weaken_password_rules`), decided with the household's row held; stricter
+   * ones ask nothing. Passwords already set are not asked again. Each change
+   * is in the activity log, for everybody who reads it; the same again
+   * changes nothing.
+   */
+  async setPasswordRules(
+    p: Principal,
+    to: PasswordRules,
+    meta: RequestMeta,
+    stepUp: (trx: Db) => Promise<void>,
+  ): Promise<PasswordRulesView> {
+    if (p.role !== 'owner') {
+      throw new ApiError(403, 'forbidden', 'Only an owner can set the password rules.');
+    }
+    await withPrincipal(this.db, p, async (trx) => {
+      const before = await trx
+        .selectFrom('household')
+        .select([...PASSWORD_RULES_COLUMNS])
+        .where('id', '=', p.householdId)
+        .forUpdate()
+        .executeTakeFirstOrThrow();
+      const was = rulesOfRow(before);
+      if (PASSWORD_RULES_KEYS.every((k) => was[k] === to[k])) return;
+      if (passwordRulesWeaker(was, to)) await stepUp(trx);
+      await trx
+        .updateTable('household')
+        .set(rowOfRules(to))
+        .where('id', '=', p.householdId)
+        .execute();
+      await appendAudit(trx, {
+        householdId: p.householdId,
+        actorAccountId: p.accountId,
+        action: 'household.password_rules_changed',
+        objectType: 'household',
+        objectId: p.householdId,
+        detail: { ...to, was },
+        ip: meta.ip,
+      });
+    });
+    return this.passwordRules(p);
   }
 
   async updateProfile(p: Principal, input: z.infer<typeof profileBody>, meta: RequestMeta) {

@@ -629,6 +629,9 @@ const RULES: ReadonlyMap<string, Audience | typeof BY_TYPE> = new Map<
   // chosen by an owner: how the family's browsers stay safe, so for whoever
   // reads the log.
   ['household.auto_lock_changed', everyone],
+  // The household's password rules, set by an owner: what every sign-in
+  // password set from now must be, so for whoever reads the log.
+  ['household.password_rules_changed', everyone],
   ['invitation.created', BY_TYPE],
   ['invitation.accepted', BY_TYPE],
   ['invitation.revoked', BY_TYPE],

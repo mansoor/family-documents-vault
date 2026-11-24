@@ -19,6 +19,7 @@ import {
   type PasswordService,
   type ResetPreview,
 } from './passwords.js';
+import { newPasswordField } from './password-rules.js';
 
 declare module 'fastify' {
   interface FastifyRequest {
@@ -27,7 +28,8 @@ declare module 'fastify' {
 }
 
 const email = z.string().trim().toLowerCase().email().max(254);
-const password = z.string().min(10, 'Use at least 10 characters.').max(1024);
+/** The first owner's: held by the service to the rules every household starts with. */
+const password = newPasswordField;
 
 const setupBody = z.object({
   // The setup code (0.9.0): checked after the rest, so a form's own mistakes

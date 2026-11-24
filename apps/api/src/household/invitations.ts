@@ -30,6 +30,7 @@ import {
   roleSuitsAge,
   TOO_YOUNG,
   type MemberKind,
+  type PasswordRules,
   type Role,
 } from '@fdv/shared';
 import argon2 from 'argon2';
@@ -37,6 +38,13 @@ import { sql } from 'kysely';
 import { z } from 'zod';
 import type { AuthService, Principal, RequestMeta, Tokens } from '../auth/service.js';
 import { ApiError, notFound } from '../errors.js';
+import {
+  householdPasswordRules,
+  mustMeetRules,
+  newPasswordField,
+  PASSWORD_RULES_COLUMNS,
+  rulesOfRow,
+} from '../auth/password-rules.js';
 import { notSetUp, type SmsService } from '../sms/service.js';
 import {
   accessGrantBody,
@@ -130,7 +138,8 @@ export const inviteExistingBody = inviteFields.omit({
 
 export const acceptBody = z.object({
   code: z.string().trim().min(1).max(32),
-  password: z.string().min(10, 'Use at least 10 characters.').max(1024),
+  /** What it must be beyond this is the household's password rules' (mustMeetRules). */
+  password: newPasswordField,
   /**
    * The address the person will sign in with, chosen by them. Password
    * resets go to it, so it must be theirs and not whoever typed the
@@ -209,6 +218,8 @@ export interface InvitationPreview {
   /** A guest's (5.34): from outside the family, until `access_expires_at`. */
   kind: MemberKind;
   access_expires_at: string | null;
+  /** The household's password rules, which the password chosen must meet. */
+  password_rules: PasswordRules;
 }
 
 /**
@@ -873,7 +884,7 @@ export class InvitationService {
       const row = await this.live(trx, token);
       const household = await trx
         .selectFrom('household')
-        .select(['name', 'timezone'])
+        .select(['name', 'timezone', ...PASSWORD_RULES_COLUMNS])
         .where('id', '=', householdId)
         .executeTakeFirstOrThrow();
       // Removed while this was read (a guest who never signed in, 5.34's
@@ -903,6 +914,8 @@ export class InvitationService {
         // The household's clock, which a guest's end is said on (the 5.34
         // review's second round).
         timezone: householdZone(household.timezone),
+        // What the password chosen must be: the rules alone.
+        password_rules: rulesOfRow(household),
       };
     });
   }
@@ -1004,8 +1017,14 @@ export class InvitationService {
         );
       }
       await this.mustNeverHaveSignedIn(trx, row.member_id, member.display_name);
-      const passwordHash = await argon2.hash(input.password, ARGON2);
       const email = input.email ?? row.email;
+      // The household's password rules: refused, nothing is made, and the
+      // code's try was given back above.
+      await mustMeetRules(input.password, await householdPasswordRules(trx, householdId), {
+        email,
+        name: member.display_name,
+      });
+      const passwordHash = await argon2.hash(input.password, ARGON2);
       const taken = await trx
         .selectFrom('account')
         .select('id')

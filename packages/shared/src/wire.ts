@@ -8,6 +8,7 @@ import type { MemberAccess, MyRestriction, RestrictionSummary } from './restrict
 import type { CollectionAudience, Role, RoleChangeEffect } from './roles.js';
 import type { CollectionShareLock, SharePages, SharePermission } from './shares.js';
 import type { TimeZoneSource } from './time-zone.js';
+import type { PasswordRules } from './password-rules.js';
 
 /**
  * The shapes that travel over the wire, written once.
@@ -627,6 +628,11 @@ export interface InvitationPreview {
    * Absent from older vaults: say it on the browser's clock, and name it.
    */
   timezone?: string;
+  /**
+   * The household’s password rules (`features.password_rules`), which the
+   * password chosen here must meet. Absent from older vaults: 10 characters.
+   */
+  password_rules?: PasswordRules;
 }
 
 export interface ResetPreview {
@@ -648,6 +654,11 @@ export interface ResetPreview {
    * none is asked for.
    */
   text_code_to?: string | null;
+  /**
+   * The household’s password rules (`features.password_rules`), which the
+   * new password must meet. Absent from older vaults: 10 characters.
+   */
+  password_rules?: PasswordRules;
 }
 
 export interface Share {

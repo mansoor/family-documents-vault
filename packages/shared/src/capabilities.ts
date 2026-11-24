@@ -866,6 +866,18 @@ export interface CapabilityFeatures {
    * 0.9.0-dev.87 behaves so without saying it, as its `auto_lock` says.
    */
   notes_confirm?: boolean;
+  /**
+   * Password rules an owner sets (GET and PUT /household/password-rules;
+   * `PasswordRules`): the least length, 10 to 64; common and easily guessed
+   * passwords refused, on unless turned off; an uppercase letter, a
+   * lowercase letter, a number and a symbol, each off unless turned on.
+   * Asked whenever a sign-in password is set — a change, a reset link, an
+   * invitation accepted, setup — and refused `400 password_rules`, its
+   * message naming everything that is missing. A reset link's and an
+   * invitation's preview carry the rules (`password_rules`). Absent from
+   * older vaults, which ask 10 characters and nothing else.
+   */
+  password_rules?: boolean;
 }
 
 export interface CapabilityLimits {

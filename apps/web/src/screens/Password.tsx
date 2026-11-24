@@ -5,6 +5,13 @@ import { describeError, useApp, useLoad } from '../app-context.js';
 import { heldLinkToken, linkSpent, markLinkSpent } from '../link-token.js';
 import { Button, ErrorNote, Field, LoadFailed, Logo } from '../ui.js';
 import { browserZone, dateTimeWords, dayWordsOf, familyZoneNow } from '../family-time.js';
+import {
+  passwordFits,
+  passwordHint,
+  passwordStillLacks,
+  rulesOrBefore,
+  useSignedInPasswordRules,
+} from '../password-rules.js';
 
 /**
  * Passwords, from the three places a person meets them.
@@ -17,7 +24,9 @@ import { browserZone, dateTimeWords, dayWordsOf, familyZoneNow } from '../family
 
 /** In Settings, for somebody who is signed in and knows their password. */
 export function ChangePassword() {
-  const { guarded, authVersion } = useApp();
+  const { guarded, authVersion, caps } = useApp();
+  // What the new password must be: the household's rules, as the vault holds it to them.
+  const rules = useSignedInPasswordRules(caps);
   // When a link an owner was handed for this sign-in was last used (5.29):
   // every change takes away each passkey and two-step sign-in added since.
   const { data: me, error: meError, reload } = useLoad((t) => api.me(t), [authVersion]);
@@ -99,7 +108,12 @@ export function ChangePassword() {
         value={next}
         onChange={setNext}
         autoComplete="new-password"
-        hint="At least 10 characters. A few words you will remember work best."
+        hint={
+          rules
+            ? passwordHint(rules, 'A few words you will remember work best.')
+            : 'A few words you will remember work best.'
+        }
+        note={rules ? passwordStillLacks(next, rules) : null}
       />
       <p className="muted">
         This also unlocks your own private documents, so they come with it. Every other device you
@@ -108,7 +122,7 @@ export function ChangePassword() {
       {takenAway && <p className="status status-warn">{takenAway}</p>}
       <ErrorNote message={error} />
       <div className="row">
-        <Button type="submit" disabled={busy || next.length < 10}>
+        <Button type="submit" disabled={busy || !rules || !passwordFits(next, rules)}>
           {busy ? 'Changing…' : 'Change it'}
         </Button>
         <Button kind="quiet" onClick={() => setOpen(false)}>
@@ -247,6 +261,8 @@ export function ResetPasswordScreen() {
   };
 
   const textTo = preview?.text_code_to ?? null;
+  // What the new password must be: the household's rules, as the link's look said them.
+  const rules = rulesOrBefore(preview?.password_rules);
   const textMe = async () => {
     if (!token || texting) return;
     setTexting(true);
@@ -374,7 +390,8 @@ export function ResetPasswordScreen() {
           value={password}
           onChange={setPassword}
           autoComplete="new-password"
-          hint="At least 10 characters. This also unlocks your own private documents."
+          hint={passwordHint(rules, 'This also unlocks your own private documents.')}
+          note={passwordStillLacks(password, rules)}
         />
         {/* You asked for a code by text when your password is reset (SMS3). */}
         {textTo && (
@@ -408,7 +425,9 @@ export function ResetPasswordScreen() {
         <ErrorNote message={error} />
         <Button
           type="submit"
-          disabled={busy || password.length < 10 || (textTo !== null && code.trim().length < 6)}
+          disabled={
+            busy || !passwordFits(password, rules) || (textTo !== null && code.trim().length < 6)
+          }
         >
           {busy ? 'Setting it…' : 'Set my new password'}
         </Button>

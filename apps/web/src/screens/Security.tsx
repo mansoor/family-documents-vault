@@ -1,6 +1,7 @@
 import { Navigate } from 'react-router';
 import { AutoLockCard } from '../auto-lock-settings.js';
 import { useApp } from '../app-context.js';
+import { PasswordRulesCard } from '../password-rules.js';
 import { securityCards } from '../settings-sections.js';
 import { storedRole } from '../session.js';
 import { TwoStepRuleCard } from '../two-step-rule.js';
@@ -8,9 +9,10 @@ import { SettingsPage } from './Settings.js';
 
 /**
  * Settings → Security (/settings/security; 24 Nov 2026, the owner's ask),
- * before Privacy: whether every adult must have two-step sign-in, an
- * owner's; and when the vault locks itself — the family's time, an owner's,
- * and each person's own, shorter one beside it (until then in Your account).
+ * before Privacy: the password rules and whether every adult must have
+ * two-step sign-in, an owner's; and when the vault locks itself — the
+ * family's time, an owner's, and each person's own, shorter one beside it
+ * (until then in Your account).
  */
 export function SecurityScreen() {
   const { caps, session } = useApp();
@@ -22,6 +24,8 @@ export function SecurityScreen() {
   if (caps && !cards.twoStepRule && !cards.myLock) return <Navigate to="/settings" replace />;
   return (
     <SettingsPage title="Security">
+      {/* What a sign-in password must be whenever one is set: an owner's to change. */}
+      {cards.passwordRules && <PasswordRulesCard />}
       {/* Two-step sign-in for adults (0.9.0): an owner's to change. */}
       {cards.twoStepRule && <TwoStepRuleCard />}
       {/* Lock after a while away (0.9.0-dev.87): the family's time, an

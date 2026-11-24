@@ -2,6 +2,7 @@ import {
   autoLockInEffect,
   isAutoLockMinutes,
   type AutoLockMinutes,
+  PASSWORD_RULES_DEFAULT,
   guestAccessEnded,
   guestAccessEndedWords,
   restrictionMayWiden,
@@ -29,6 +30,7 @@ import {
 import argon2 from 'argon2';
 import { sql } from 'kysely';
 import { ApiError } from '../errors.js';
+import { mustMeetRules } from './password-rules.js';
 import type { SetupToken } from './setup-token.js';
 import { KnownDevices, type SignInGuard } from './sign-in-guard.js';
 import { CODE_USED_MESSAGE, CODE_USED_REASON, type CodeCheck } from './totp.js';
@@ -495,6 +497,11 @@ export class AuthService {
     const alreadySetUp = () =>
       new ApiError(409, 'already_set_up', 'This vault has already been set up. Sign in instead.');
     if (await this.setupComplete()) throw alreadySetUp();
+    // The rules every household starts with: there is none yet to have others.
+    await mustMeetRules(input.password, PASSWORD_RULES_DEFAULT, {
+      email: input.email,
+      name: input.displayName,
+    });
     if (!this.setupToken?.matches(input.setupToken)) {
       throw new ApiError(
         403,

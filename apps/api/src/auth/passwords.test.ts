@@ -98,9 +98,12 @@ describe.skipIf(!testAdminUrl())('changing a password', () => {
   });
 
   it('refuses a new password that is too short to be worth having', async () => {
-    const res = await change({ current_password: FIRST, new_password: 'short' });
-    expect(res.statusCode).toBe(422);
-    expect(json<{ error: { message: string } }>(res).error.message).toMatch(/10 characters/);
+    const res = await change({ current_password: FIRST, new_password: 'xq7 vvz' });
+    expect(res.statusCode).toBe(400);
+    expect(json<{ error: { code: string; message: string } }>(res).error).toMatchObject({
+      code: 'password_rules',
+      message: 'Use at least 10 characters.',
+    });
   });
 
   it('changes it, and the private documents come with it', async () => {
@@ -491,9 +494,11 @@ describe.skipIf(!testAdminUrl())('forgetting a password', () => {
         payload: { token, password },
         ...peer(),
       });
-    const short = await complete('short');
-    expect(short.statusCode).toBe(422);
-    expect(json<{ error: { message: string } }>(short).error.message).toMatch(/10 characters/);
+    const short = await complete('xq7 vvz');
+    expect(short.statusCode).toBe(400);
+    expect(json<{ error: { message: string } }>(short).error.message).toBe(
+      'Use at least 10 characters.',
+    );
     expect((await lookup(token)).statusCode).toBe(200);
 
     const done = await complete('sam set this from the body');

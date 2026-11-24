@@ -1201,6 +1201,21 @@ const RULES: Record<string, Rule> = {
   // everybody signed in, an owner power to change (A54).
   'GET /api/v1/household/two-step': { who: 'signedIn' },
   'PUT /api/v1/household/two-step': { who: 'ownerPower', body: () => ({ adults: true }) },
+  // Password rules: read by everybody signed in, an owner's to change (the
+  // database holds it too, 0130). The sweep sends the rules every household
+  // starts with, which ask nothing, and leave every later password as it was.
+  'GET /api/v1/household/password-rules': { who: 'signedIn' },
+  'PUT /api/v1/household/password-rules': {
+    who: 'owners',
+    body: () => ({
+      min_length: 10,
+      refuse_common: true,
+      needs_upper: false,
+      needs_lower: false,
+      needs_number: false,
+      needs_symbol: false,
+    }),
+  },
 
   // Changes of owner.
   'GET /api/v1/owner-changes': { who: 'signedIn' },

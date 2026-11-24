@@ -7,6 +7,12 @@ import { heldLinkToken, linkSpent, markLinkSpent } from '../link-token.js';
 import { forgetLanding } from '../landing.js';
 import { Button, ErrorNote, Field, Logo } from '../ui.js';
 import { browserZone, dayWordsOf } from '../family-time.js';
+import {
+  passwordFits,
+  passwordHint,
+  passwordStillLacks,
+  rulesOrBefore,
+} from '../password-rules.js';
 
 /**
  * Accepting an invitation (SHR-02).
@@ -177,7 +183,7 @@ export function JoinScreen() {
             busy={busy}
             error={error}
             onSubmit={submit}
-            passwordHint="At least 10 characters."
+            passwordHint={null}
             submitLabel="Accept the invitation"
             busyLabel="Accepting…"
           />
@@ -209,7 +215,7 @@ export function JoinScreen() {
         busy={busy}
         error={error}
         onSubmit={submit}
-        passwordHint="At least 10 characters. This also unlocks your own private documents."
+        passwordHint="This also unlocks your own private documents."
         submitLabel="Join the family vault"
         busyLabel="Joining…"
       />
@@ -229,11 +235,14 @@ function JoinForm(props: {
   busy: boolean;
   error: string | null;
   onSubmit: (e: FormEvent) => Promise<void>;
-  passwordHint: string;
+  /** Said after the rules under the password field, if anything. */
+  passwordHint: string | null;
   submitLabel: string;
   busyLabel: string;
 }) {
   const { preview, code, setCode, email, setEmail, password, setPassword, busy, error } = props;
+  // What the password must be: the household's rules, as the invitation's look said them.
+  const rules = rulesOrBefore(preview.password_rules);
   return (
     <form onSubmit={(e) => void props.onSubmit(e)} className="card stack">
       <Field
@@ -265,10 +274,11 @@ function JoinForm(props: {
         value={password}
         onChange={setPassword}
         autoComplete="new-password"
-        hint={props.passwordHint}
+        hint={passwordHint(rules, props.passwordHint ?? undefined)}
+        note={passwordStillLacks(password, rules)}
       />
       <ErrorNote message={error} />
-      <Button type="submit" disabled={busy || !code || password.length < 10}>
+      <Button type="submit" disabled={busy || !code || !passwordFits(password, rules)}>
         {busy ? props.busyLabel : props.submitLabel}
       </Button>
       <p className="muted">
