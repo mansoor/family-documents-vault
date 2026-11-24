@@ -130,6 +130,20 @@ export interface Schema {
      * owner's to change.
      */
     require_two_step_adults: Generated<boolean>;
+    /**
+     * The household's password rules (0130), asked whenever a sign-in
+     * password is set: at least so many characters (10 to 64, 10 unless an
+     * owner chose more); common and easily guessed passwords refused (on
+     * unless an owner turned it off); an uppercase letter, a lowercase
+     * letter, a number, a symbol (each off unless an owner turned it on). An
+     * owner's alone (household_password_rules_rule).
+     */
+    password_min_length: Generated<number>;
+    password_refuse_common: Generated<boolean>;
+    password_needs_upper: Generated<boolean>;
+    password_needs_lower: Generated<boolean>;
+    password_needs_number: Generated<boolean>;
+    password_needs_symbol: Generated<boolean>;
   };
 
   member: {

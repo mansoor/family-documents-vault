@@ -202,6 +202,8 @@ describe('buildCapabilities', () => {
       auto_lock: true,
       // Notes that ask, and their switches (said from 0.9.0-dev.88).
       notes_confirm: true,
+      // Password rules an owner sets.
+      password_rules: true,
     });
     // Never on the hosted edition, whose operator keeps the backups.
     expect(buildCapabilities({ ...config, edition: 'hosted' }).features).not.toHaveProperty(

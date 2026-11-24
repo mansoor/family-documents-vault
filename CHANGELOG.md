@@ -6,6 +6,14 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.9.0-dev.98] - 2026-11-24 — password rules
+
+### Added
+
+- **An owner can set what a sign-in password must be**, in Settings → Security, first on the page: at least how many characters (10 to 64, 10 unless you choose more); whether to refuse common and easily guessed passwords (on unless you turn it off); and whether it must have an uppercase letter, a lowercase letter, a number or a symbol (each off unless you turn it on; a space between words counts as a symbol). Making the rules looser asks you to confirm it's you first; making them stricter doesn't. Each change is in the Activity log.
+- **The rules apply whenever a sign-in password is chosen**: setting up the vault (by the rules every vault starts with), changing your own password, resetting a forgotten one, and joining from an invitation. Each of those forms says the rules before you type, says what a password still lacks as you type it, and shows why the vault refused one. A refused password never uses up a code's tries or a reset link. Passwords already chosen are not affected.
+- **Common passwords are refused from a list of about 49,000 kept inside the vault**, never sent anywhere, with a year or a few symbols added at the ends ("Dragon2024!") refused too, as is a password that is just your own email address or name. Long passphrases are welcome.
+
 ## [0.9.0-dev.97] - 2026-11-24 — a tidier Documents toolbar, and Security in Settings
 
 ### Changed

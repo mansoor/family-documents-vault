@@ -142,8 +142,10 @@ import {
   wordingNeedsStepUp,
   myWordingNeedsStepUp,
   rulesInEffect,
+  passwordRulesWeaker,
   type MyWording,
   type NeutralWording,
+  type PasswordRules,
 } from '@fdv/shared';
 import { sha256Of } from './batch-upload.js';
 import { vi } from 'vitest';
@@ -382,6 +384,20 @@ export interface FakeState {
   twoStepReason?: 'enrol' | 'confirm';
   /** A password sign-in answers that the second step is the owner's passkey (0.9.0). */
   passkeySecondStep?: boolean;
+  /**
+   * The household's password rules: `features.password_rules`, GET and PUT
+   * /household/password-rules, and a reset link's look, said when a test
+   * gives them. Each PUT as sent, in `passwordRulesSaves`; one looser than
+   * they were asks to confirm it's you while `stepUpNeeded`.
+   */
+  passwordRules?: PasswordRules;
+  passwordRulesSaves?: unknown[];
+  /**
+   * A new sign-in password refused as the vault refuses it (`400
+   * password_rules`), with these words: changing one, a reset, an
+   * invitation accepted and setup.
+   */
+  passwordRefusal?: string;
   /** Whether every adult must have two-step sign-in (0.9.0): on unless a test says. */
   twoStepAdults?: boolean;
   /** Each PUT /household/two-step, as sent. */
@@ -1766,6 +1782,8 @@ export function installFakeApi(state: FakeState) {
           // Lock (0.9.0-dev.86): said when a test gives it.
           ...(state.sessionLock ? { session_lock: true } : {}),
           ...(state.autoLockMinutes !== undefined ? { auto_lock: true } : {}),
+          // Password rules an owner sets: said when a test gives them.
+          ...(state.passwordRules ? { password_rules: true } : {}),
           // Who opened a link; health records kept as they are (0.9.0, H5).
           ...(state.linkOpenings ? { share_opens: true, record_formats: true } : {}),
           // Caregivers and turning 18 (0.9.0, H1b): said when a test asks.
@@ -1817,6 +1835,7 @@ export function installFakeApi(state: FakeState) {
       if (!(body as { setup_token?: string }).setup_token) {
         return refuse(403, 'setup_token_invalid', 'Enter the setup code.');
       }
+      if (state.passwordRefusal) return refuse(400, 'password_rules', state.passwordRefusal);
       state.setupRequired = false;
       state.displayName = (body as { household_name: string }).household_name;
       // The first owner sets up two-step sign-in first, when a test says so.
@@ -4268,6 +4287,7 @@ export function installFakeApi(state: FakeState) {
           401,
         );
       }
+      if (state.passwordRefusal) return refuse(400, 'password_rules', state.passwordRefusal);
       state.passwordChanged = b.new_password;
       return Promise.resolve(new Response(null, { status: 204 }));
     }
@@ -4295,6 +4315,7 @@ export function installFakeApi(state: FakeState) {
       // Since 0.5.17 the token comes in a body: /lookup shows the link,
       // /complete spends it. Anything else is a path form.
       if (method === 'POST' && path !== '/api/v1/password-resets/lookup') {
+        if (state.passwordRefusal) return refuse(400, 'password_rules', state.passwordRefusal);
         state.passwordChanged = (body as { password: string }).password;
         return json({ email: 'mansoor@example.test' });
       }
@@ -4305,6 +4326,7 @@ export function installFakeApi(state: FakeState) {
         ...(state.resetIssuedBy ? { issued_by: state.resetIssuedBy } : {}),
         text_code_to: state.resetTextTo ?? null,
         expires_at: new Date(Date.now() + 36e5).toISOString(),
+        ...(state.passwordRules ? { password_rules: state.passwordRules } : {}),
       });
     }
     // The activity log as CSV (0.9.0-dev.82): the file given, as the vault names it.
@@ -4487,6 +4509,28 @@ export function installFakeApi(state: FakeState) {
         e.days = (body as { remove_after_days: 30 | 90 | 365 | null }).remove_after_days;
       }
       return json({ remove_after_days: e.days, can_change: owner });
+    }
+    // Password rules: read by everybody, an owner's to change; looser asks to
+    // confirm it's you while stepUpNeeded.
+    if (path === '/api/v1/household/password-rules' && state.passwordRules) {
+      const owner = storedRole() === 'owner';
+      if (method === 'PUT') {
+        if (!owner) return refuse(403, 'forbidden', 'Only an owner can set the password rules.');
+        const to = body as PasswordRules;
+        if (state.stepUpNeeded && passwordRulesWeaker(state.passwordRules, to)) {
+          return refuse(
+            403,
+            'step_up_required',
+            'Please confirm it is you to loosen the password rules.',
+            {
+              action: 'weaken_password_rules',
+            },
+          );
+        }
+        (state.passwordRulesSaves ??= []).push(body);
+        state.passwordRules = { ...to };
+      }
+      return json({ ...state.passwordRules, can_change: owner });
     }
     // Two-step sign-in for adults (0.9.0): read by everybody, an owner's to change.
     if (path === '/api/v1/household/two-step') {
@@ -6288,6 +6332,7 @@ export function installFakeApi(state: FakeState) {
           401,
         );
       }
+      if (state.passwordRefusal) return refuse(400, 'password_rules', state.passwordRefusal);
       return json(TOKENS, 201);
     }
     // The path form, and since 0.5.17 the token in a body.
@@ -6304,6 +6349,7 @@ export function installFakeApi(state: FakeState) {
         role_label: 'Adult',
         invited_by: 'Mansoor Seikh',
         expires_at: new Date(Date.now() + 7 * 864e5).toISOString(),
+        ...(state.passwordRules ? { password_rules: state.passwordRules } : {}),
         ...state.invitationPreview,
       });
     }

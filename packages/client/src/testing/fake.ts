@@ -202,6 +202,16 @@ import {
   autoLockAllowed,
   autoLockInEffect,
   isAutoLockMinutes,
+  isPasswordMinLength,
+  PASSWORD_RULES_CODE,
+  PASSWORD_RULES_DEFAULT,
+  PASSWORD_RULES_KEYS,
+  passwordForms,
+  passwordIsPersonal,
+  passwordLacks,
+  passwordRefusalWords,
+  type PasswordRules,
+  type PasswordRulesView,
   noteConfirm,
   mayKeepOffline,
   type AutoLock,
@@ -625,6 +635,13 @@ export interface FakeVaultState {
    * locked so.
    */
   autoLock: { household: AutoLockMinutes | null; mine: Map<string, AutoLockMinutes | null> };
+  /**
+   * The household's password rules: what GET and PUT
+   * /household/password-rules answer, and what setup and an invitation
+   * accepted are held to. The fake asks no step-up, and knows only a few
+   * common passwords (FAKE_COMMON): the vault's list is its own.
+   */
+  passwordRules: PasswordRules;
   /**
    * What an owner has limited each viewer to (5.33), by member id: what PUT
    * and DELETE /members/{id}/access write, what the preview counts by the
@@ -1565,6 +1582,44 @@ const FAKE_OFFLINE_MAX_DAYS = 90;
 /** The one person the fake signs in as, unless somebody in `signIns` signs in (5.28). */
 const ME = 'fake-member';
 
+/** The few common passwords the fake refuses: the vault keeps the real list. */
+const FAKE_COMMON: ReadonlySet<string> = new Set([
+  'password',
+  '123456',
+  '12345678',
+  '1234567890',
+  'qwerty',
+  'qwertyuiop',
+  'letmein',
+  'iloveyou',
+  'dragon',
+  'football',
+]);
+
+/**
+ * A new sign-in password the household's rules refuse, as the vault refuses
+ * it (`400 password_rules`): the words and the detail; null when it is let in.
+ */
+function passwordRefusal(
+  password: string,
+  rules: PasswordRules,
+  who: { email?: string | null | undefined; name?: string | null | undefined },
+): { message: string; detail: string } | null {
+  const lacks = passwordLacks(password, rules);
+  const guessable = !rules.refuse_common
+    ? null
+    : passwordIsPersonal(password, who)
+      ? ('personal' as const)
+      : passwordForms(password).some((f) => FAKE_COMMON.has(f))
+        ? ('common' as const)
+        : null;
+  if (lacks.length === 0 && guessable === null) return null;
+  return {
+    message: passwordRefusalWords(lacks, rules, guessable),
+    detail: [...lacks, ...(guessable ? [guessable] : [])].join(','),
+  };
+}
+
 export function createFakeVault(): {
   fetch: FetchLike;
   state: FakeVaultState;
@@ -1662,6 +1717,7 @@ export function createFakeVault(): {
     serverTimezone: 'UTC',
     endedSharingDays: 90,
     autoLock: { household: AUTO_LOCK_DEFAULT, mine: new Map() },
+    passwordRules: { ...PASSWORD_RULES_DEFAULT },
     restrictions: new Map(),
     operatorMail: true,
     keepsPrivate: [],
@@ -2429,6 +2485,20 @@ export function createFakeVault(): {
       );
     }
     const email = typeof b.email === 'string' ? b.email.toLowerCase() : v.email;
+    const member = state.members.find((m) => m.id === v.member_id);
+    if (!member)
+      return fail(404, 'invitation_not_valid', 'That invitation link is not valid any more.');
+    // The household's password rules, as the vault holds an invitation to them.
+    const refused = passwordRefusal(
+      typeof b.password === 'string' ? b.password : '',
+      state.passwordRules,
+      {
+        email,
+        name: member.display_name,
+      },
+    );
+    if (refused) return fail(400, PASSWORD_RULES_CODE, refused.message, refused.detail);
+    // After the rules, as the vault asks.
     if (email === state.email || state.signIns.some((x) => x.email.toLowerCase() === email)) {
       return fail(
         409,
@@ -2436,9 +2506,6 @@ export function createFakeVault(): {
         'That address already has a sign-in here. Choose another one.',
       );
     }
-    const member = state.members.find((m) => m.id === v.member_id);
-    if (!member)
-      return fail(404, 'invitation_not_valid', 'That invitation link is not valid any more.');
     // Every refusal before anything changes, as the vault's one transaction
     // undoes them all (the 5.34 review's second round, N534W-02).
     const had = state.restrictions.get(member.id);
@@ -4076,6 +4143,8 @@ export function createFakeVault(): {
           auto_lock: true,
           // Notes that ask, and their switches (0.9.0-dev.88).
           notes_confirm: true,
+          // Password rules an owner sets.
+          password_rules: true,
           // Connected apps (0.9.0, APP1).
           connected_apps: true,
           connected_app_reads: true,
@@ -4102,6 +4171,16 @@ export function createFakeVault(): {
     }
     if (path === '/api/v1/setup' && init.method === 'POST') {
       if (!state.setupRequired) return fail(409, 'already_set_up', 'This vault is already set up.');
+      // The rules every household starts with, as the vault holds setup to them.
+      const refused = passwordRefusal(
+        typeof body.password === 'string' ? body.password : '',
+        PASSWORD_RULES_DEFAULT,
+        {
+          email: typeof body.email === 'string' ? body.email : null,
+          name: typeof body.display_name === 'string' ? body.display_name : null,
+        },
+      );
+      if (refused) return fail(400, PASSWORD_RULES_CODE, refused.message, refused.detail);
       state.setupRequired = false;
       state.householdName = typeof body.household_name === 'string' ? body.household_name : null;
       state.email = String(body.email).toLowerCase();
@@ -9537,6 +9616,41 @@ export function createFakeVault(): {
         return fail(422, 'validation_failed', AUTO_LOCK_LONGER, 'minutes');
       }
       state.autoLock.mine.set(me, to);
+      return ok(view());
+    }
+    // The household's password rules, as the real vault answers them: every
+    // role reads them; an owner sets them, every field at once. The fake asks
+    // no step-up.
+    if (path === '/api/v1/household/password-rules') {
+      const s = session();
+      if (!('id' in s)) return s;
+      const view = (): PasswordRulesView => ({
+        ...state.passwordRules,
+        can_change: whoOf(s).role === 'owner',
+      });
+      if (init.method === 'GET') return ok(view());
+      if (init.method !== 'PUT') return fail(404, 'not_found', 'Not here.');
+      if (whoOf(s).role !== 'owner') {
+        return fail(403, 'forbidden', 'Only an owner can set the password rules.');
+      }
+      const b = body;
+      if (
+        Object.keys(b).some((k) => !(PASSWORD_RULES_KEYS as readonly string[]).includes(k)) ||
+        PASSWORD_RULES_KEYS.some((k) => (k === 'min_length' ? false : typeof b[k] !== 'boolean'))
+      ) {
+        return fail(422, 'validation_failed', 'Please check the form.');
+      }
+      if (!isPasswordMinLength(b.min_length)) {
+        return fail(422, 'validation_failed', 'Choose 10 to 64 characters.');
+      }
+      state.passwordRules = {
+        min_length: b.min_length,
+        refuse_common: b.refuse_common === true,
+        needs_upper: b.needs_upper === true,
+        needs_lower: b.needs_lower === true,
+        needs_number: b.needs_number === true,
+        needs_symbol: b.needs_symbol === true,
+      };
       return ok(view());
     }
     if (path === '/api/v1/household/identity-audience') {

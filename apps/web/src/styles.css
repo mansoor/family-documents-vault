@@ -9619,3 +9619,15 @@ button.arrange-scope {
   max-width: 600px;
   align-items: start;
 }
+
+/* Password rules (Settings → Security): the switches a password must have, one below another. */
+.password-rules-mix {
+  display: grid;
+  gap: 6px;
+}
+
+.password-rules-mix legend {
+  padding: 0;
+  margin-bottom: 4px;
+  font-weight: 600;
+}

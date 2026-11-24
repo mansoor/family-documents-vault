@@ -97,6 +97,7 @@ import { serverVersion } from './version.js';
 import { masterKeyMatchesCanary, masterKeyOpensVault } from './master-key-check.js';
 import { prepareDatabase } from './prepare-database.js';
 import { plainHttpWarning } from './plain-http.js';
+import { commonPasswords } from './auth/password-rules.js';
 
 async function main(): Promise<void> {
   const config = loadConfig();
@@ -341,6 +342,9 @@ async function main(): Promise<void> {
     // What an app reads and downloads (APP2).
     documents,
   });
+  // The common-password list, read now: never first inside a sign-up's
+  // transaction, holding its rows while it loads.
+  await commonPasswords();
   const app = await buildApp(config, {
     cabinet: new CabinetService(db, documents),
     caregivers: new CaregiverService(db, new VisibilityService(db, keys, enqueue)),

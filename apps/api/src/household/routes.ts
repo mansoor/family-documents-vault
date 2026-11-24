@@ -21,7 +21,7 @@ import {
 } from './invitations.js';
 import { roleChangeBody, type CoOwnerService } from './co-owners.js';
 import type { StepUpService } from '../auth/step-up.js';
-import type { Capability } from '@fdv/shared';
+import { PASSWORD_MIN_LENGTH, PASSWORD_MIN_LENGTH_CEILING, type Capability } from '@fdv/shared';
 import type { MultipartFile } from '@fastify/multipart';
 import { needs } from '../authz.js';
 import { noPhoto, orderRefusal, parseCrop, photoOrder, type PhotoService } from './photos.js';
@@ -479,6 +479,39 @@ export function registerHousehold(
     }
     await stepUp?.requireOwnerPower(p, 'manage_sign_ins');
     return household.setTwoStep(p, body.adults, metaOf(req));
+  });
+
+  // Password rules (features.password_rules): read by everybody signed in,
+  // whose own change of password is held to them; an owner's to change
+  // (`403 forbidden` to anybody else). Rules that let in a password the
+  // ones before refused ask to confirm it's you first
+  // (`weaken_password_rules`); stricter ones ask nothing.
+  const passwordRulesBody = z
+    .object({
+      min_length: z
+        .number()
+        .int()
+        .min(PASSWORD_MIN_LENGTH, `Choose ${PASSWORD_MIN_LENGTH} characters or more.`)
+        .max(
+          PASSWORD_MIN_LENGTH_CEILING,
+          `Choose ${PASSWORD_MIN_LENGTH_CEILING} characters or fewer.`,
+        ),
+      refuse_common: z.boolean(),
+      needs_upper: z.boolean(),
+      needs_lower: z.boolean(),
+      needs_number: z.boolean(),
+      needs_symbol: z.boolean(),
+    })
+    .strict();
+  app.get('/api/v1/household/password-rules', auth, async (req) =>
+    household.passwordRules(principal(req)),
+  );
+  app.put('/api/v1/household/password-rules', auth, async (req) => {
+    const p = principal(req);
+    const body = parse(passwordRulesBody, req.body ?? {});
+    return household.setPasswordRules(p, body, metaOf(req), async (trx) => {
+      if (stepUp) await stepUp.require(p, 'weaken_password_rules', trx);
+    });
   });
 
   // The family (5.34: a guest never among them, but for themselves); an

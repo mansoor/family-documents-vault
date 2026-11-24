@@ -35,14 +35,14 @@ describe.skipIf(!testAdminUrl())('setup and password auth', () => {
     expect(res.headers['cache-control']).toBe('no-store');
   });
 
-  it('rejects a weak password with the envelope', async () => {
+  it('rejects a weak password with the envelope, by the rules every household starts with', async () => {
     const res = await app.inject({
       method: 'POST',
       url: '/api/v1/setup',
-      payload: { ...setupBody, password: 'short' },
+      payload: { ...setupBody, password: 'xq7 vvz' },
     });
-    expect(res.statusCode).toBe(422);
-    expect(error(res).code).toBe('validation_failed');
+    expect(res.statusCode).toBe(400);
+    expect(error(res).code).toBe('password_rules');
   });
 
   it('setup takes the setup code, and nobody becomes the owner without it (0.9.0)', async () => {

@@ -58,7 +58,8 @@ export type StepUpAction =
   | 'connect_app'
   | 'sign_out_others'
   | 'change_backups'
-  | 'change_auto_lock';
+  | 'change_auto_lock'
+  | 'weaken_password_rules';
 
 const WHY: Record<StepUpAction, string> = {
   open_private_document: 'to open a document only you can see',
@@ -181,6 +182,11 @@ const WHY: Record<StepUpAction, string> = {
   // could otherwise keep itself, and every browser of the family's, open.
   // Any credential. A shorter time never asks.
   change_auto_lock: 'to let the vault stay unlocked longer',
+  // The household's password rules loosened — a shorter least, or a switch
+  // turned off: a session picked up from an unlocked device could otherwise
+  // let the family choose passwords anybody could guess. Any credential.
+  // Stricter rules never ask.
+  weaken_password_rules: 'to loosen the password rules',
 };
 
 /**

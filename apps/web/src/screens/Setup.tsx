@@ -1,4 +1,4 @@
-import { initialsFor } from '@fdv/shared';
+import { initialsFor, PASSWORD_RULES_DEFAULT } from '@fdv/shared';
 import { useState, type FormEvent } from 'react';
 import { useNavigate } from 'react-router';
 import { api, type CreatedInvitation, type Member } from '../api.js';
@@ -6,6 +6,7 @@ import { describeError, useApp } from '../app-context.js';
 import { forgetLanding } from '../landing.js';
 import { answersBody, answersFrom, HouseholdAnswerFields } from '../household-answers.js';
 import { Avatar, Button, ErrorNote, Field, Logo } from '../ui.js';
+import { passwordHint, passwordStillLacks, RULES_BEFORE } from '../password-rules.js';
 import { TwoStepSetupScreen } from './TwoStepSetup.js';
 import {
   EMAIL_NEEDED,
@@ -55,6 +56,9 @@ export function SetupScreen() {
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  // The rules every household starts with, where the vault has them: the first
+  // owner's password is held to them.
+  const setupRules = caps?.features.password_rules === true ? PASSWORD_RULES_DEFAULT : RULES_BEFORE;
 
   const createAccount = async (e: FormEvent) => {
     e.preventDefault();
@@ -202,7 +206,8 @@ export function SetupScreen() {
             value={password}
             onChange={setPassword}
             autoComplete="new-password"
-            hint="At least 10 characters. A few words you will remember work best."
+            hint={passwordHint(setupRules, 'A few words you will remember work best.')}
+            note={passwordStillLacks(password, setupRules)}
           />
           <ErrorNote message={error} />
           <Button type="submit" disabled={busy}>

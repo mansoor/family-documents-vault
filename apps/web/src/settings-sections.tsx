@@ -119,12 +119,14 @@ export function privacyRows(role: Role, caps: Capabilities | null): SettingsRow[
 
 /**
  * What Settings → Security holds for this reader (24 Nov 2026, the owner's
- * ask): the two-step rule and the family's lock time, an owner's; each
- * person's own lock time, everybody's where the vault locks itself.
+ * ask): the password rules, where the vault has them, the two-step rule and
+ * the family's lock time, an owner's; each person's own lock time,
+ * everybody's where the vault locks itself.
  */
 export function securityCards(role: Role, caps: Capabilities | null) {
   const autoLock = caps?.features.auto_lock === true;
   return {
+    passwordRules: role === 'owner' && caps?.features.password_rules === true,
     twoStepRule: role === 'owner',
     familyLock: role === 'owner' && autoLock,
     myLock: autoLock,
@@ -251,7 +253,14 @@ export function settingsGroups(
         '/settings/security',
         'Security',
         security.twoStepRule
-          ? `Two-step sign-in for adults${security.familyLock ? '; locking after a while away' : ''}`
+          ? [
+              security.passwordRules ? 'Password rules' : null,
+              'two-step sign-in for adults',
+              security.familyLock ? 'locking after a while away' : null,
+            ]
+              .filter(Boolean)
+              .join('; ')
+              .replace(/^./, (c) => c.toUpperCase())
           : 'Locking after a while away',
       ),
     );

@@ -6,8 +6,10 @@ import argon2 from 'argon2';
 import { sql } from 'kysely';
 import { z } from 'zod';
 import {
+  PASSWORD_RULES_DEFAULT,
   RESET_LINK_MINUTES,
   suspensionInEffect,
+  type PasswordRules,
   type ResetNotice,
   type TextCodeSent,
 } from '@fdv/shared';
@@ -19,6 +21,13 @@ import type { StepUpService } from './step-up.js';
 import type { AlertRequest } from '../alert-job.js';
 import { endDevices, SESSION_ENDED, type PushRequest, type PushTarget } from '../push-job.js';
 import { smsCodeNotOffered, type ResetText, type TextCodeService } from '../sms/codes.js';
+import {
+  householdPasswordRules,
+  mustMeetRules,
+  newPasswordField,
+  PASSWORD_RULES_COLUMNS,
+  rulesOfRow,
+} from './password-rules.js';
 
 /**
  * Changing a password, and forgetting one.
@@ -66,7 +75,8 @@ const ARGON2: argon2.HashOptions & { raw?: false } = {
 /** Short, because it is a way into an account and nothing else. */
 export const RESET_TTL_MINUTES = RESET_LINK_MINUTES;
 
-const password = z.string().min(10, 'Use at least 10 characters.').max(1024);
+/** What it must be beyond this is the household's password rules' (`mustMeetRules`). */
+const password = newPasswordField;
 
 export const changeBody = z
   .object({
@@ -111,6 +121,8 @@ export interface ResetPreview {
   expires_at: string;
   /** A code by text is asked for too (SMS3): where it goes, masked; null when none is. */
   text_code_to: string | null;
+  /** The household's password rules, which the new password must meet. */
+  password_rules: PasswordRules;
 }
 
 /** What is kept of a reset link's secret: its hash, never the secret. */
@@ -161,9 +173,23 @@ export class PasswordService {
   async change(p: Principal, input: z.infer<typeof changeBody>, meta: RequestMeta): Promise<void> {
     const account = await this.db
       .selectFrom('account')
-      .select(['id', 'password_hash'])
+      .select(['id', 'password_hash', 'email'])
       .where('id', '=', p.accountId)
       .executeTakeFirstOrThrow();
+
+    // The household's password rules first: what to choose instead is said
+    // before anything is asked of the person, or counted against them.
+    const { rules, name } = await withPrincipal(this.db, p, async (trx) => ({
+      rules: await householdPasswordRules(trx, p.householdId),
+      name: (
+        await trx
+          .selectFrom('member')
+          .select('display_name')
+          .where('id', '=', p.memberId)
+          .executeTakeFirst()
+      )?.display_name,
+    }));
+    await mustMeetRules(input.new_password, rules, { email: account.email, name });
 
     const ref = { householdId: p.householdId, kind: 'member' as const, memberId: p.memberId };
     let method: string;
@@ -425,7 +451,11 @@ export class PasswordService {
       ? await withScope(
           this.db,
           { householdId: membership.household_id, actor: ANONYMOUS },
-          (trx) => trx.selectFrom('household').select(['name']).executeTakeFirst(),
+          (trx) =>
+            trx
+              .selectFrom('household')
+              .select(['name', ...PASSWORD_RULES_COLUMNS])
+              .executeTakeFirst(),
         )
       : null;
     return {
@@ -436,6 +466,9 @@ export class PasswordService {
       issued_by: row.issued_by,
       expires_at: row.expires_at.toISOString(),
       text_code_to: await this.textCodeTo(row.account_id),
+      // What the new password must be (features.password_rules): the rules
+      // alone, nothing else of the household.
+      password_rules: household ? rulesOfRow(household) : { ...PASSWORD_RULES_DEFAULT },
     };
   }
 
@@ -487,6 +520,35 @@ export class PasswordService {
       .select(['id', 'email'])
       .where('id', '=', row.account_id)
       .executeTakeFirstOrThrow();
+    const membership = await withScope(
+      this.db,
+      { accountId: account.id, actor: ANONYMOUS },
+      (trx) =>
+        trx
+          .selectFrom('account_household')
+          .select(['household_id', 'member_id'])
+          .orderBy('joined_at', 'desc')
+          .executeTakeFirst(),
+    );
+    if (!membership) throw gone();
+
+    // The household's password rules, before a code is taken or the link
+    // spent: a password they refuse leaves both as they were.
+    const { rules, name } = await withScope(
+      this.db,
+      { householdId: membership.household_id, accountId: account.id, actor: ANONYMOUS },
+      async (trx) => ({
+        rules: await householdPasswordRules(trx, membership.household_id),
+        name: (
+          await trx
+            .selectFrom('member')
+            .select('display_name')
+            .where('id', '=', membership.member_id)
+            .executeTakeFirst()
+        )?.display_name,
+      }),
+    );
+    await mustMeetRules(newPassword, rules, { email: account.email, name });
     // A code by text, when the person asked for one (SMS3): typed, and
     // right, before anything is spent. Asked for and impossible — their
     // number no longer confirmed, or the household's texts not working —
@@ -505,18 +567,6 @@ export class PasswordService {
       }
       await this.textCodes.verify(account.id, 'reset', code);
     }
-    const membership = await withScope(
-      this.db,
-      { accountId: account.id, actor: ANONYMOUS },
-      (trx) =>
-        trx
-          .selectFrom('account_household')
-          .select(['household_id', 'member_id'])
-          .orderBy('joined_at', 'desc')
-          .executeTakeFirst(),
-    );
-    if (!membership) throw gone();
-
     const hash = await argon2.hash(newPassword, ARGON2);
     let resetPhones: PushTarget[] = [];
     let handedOver = false;

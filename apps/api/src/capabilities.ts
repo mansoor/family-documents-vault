@@ -314,6 +314,9 @@ export function buildCapabilities(config: CapabilityConfig): Capabilities {
       // before their words, and a note's Essential and sensitive switches
       // exist (said from 0.9.0-dev.88, for the phone app to ask by).
       notes_confirm: true,
+      // Password rules an owner sets in Settings → Security, held to
+      // wherever a sign-in password is set (400 password_rules).
+      password_rules: true,
       // 0.9.0 (AIR1): the AI reader set in Settings → Reading, unless the
       // operator keeps it out (FDV_AI_READER_SETTINGS=off); and the kinds
       // of reader this vault reads with — Ollama, Anthropic and an
