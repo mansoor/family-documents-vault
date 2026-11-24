@@ -1,3 +1,4 @@
+import { createPool } from '@fdv/db';
 import { testAdminUrl } from '@fdv/db/testing';
 import {
   CABINET_LEVELS,
@@ -11,18 +12,19 @@ import {
   type CabinetPreview,
   type CabinetView,
   type DocumentPage,
+  type DocumentView,
   type FolderContents,
   type Tokens,
 } from '@fdv/shared';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { createHarness, type Harness } from '../test-harness.js';
+import { asArranged, createHarness, type Harness } from '../test-harness.js';
 
 /**
  * Cabinet levels (0.9.0-dev.90), through the API as each member of a
  * household: a cabinet drawn by levels in any order, a cabinet's own
  * arrangement below it, levels 4 and 5 as dividers worked out when a
- * folder opens, redraws that keep names, pins and ranges, cabinets arranged
- * by hand kept beside the drawn ones, and growing by the new levels — every
+ * folder opens, redraws that keep names, pins and ranges, one structure —
+ * every cabinet drawn by the levels — and growing by the new levels — every
  * count from the side of whoever must not see: somebody else's Only me,
  * and a paper kept to the adults from a teen.
  */
@@ -73,7 +75,26 @@ describe.skipIf(!testAdminUrl())('cabinet levels you choose, and per cabinet', (
   const member = (who: Person) => people[who].member_id;
   const mine = (who: Person) => ok<CabinetView>(call(who, 'GET', '/api/v1/cabinet'));
   const save = (who: Person, layout: CabinetLayout, version: number, extra: object = {}) =>
-    call(who, 'PUT', '/api/v1/cabinet', { layout, version, ...extra });
+    call(who, 'PUT', '/api/v1/cabinet', { layout: asArranged(layout), version, ...extra });
+  /** A layout sent as it is, never made one the vault takes. */
+  const put = (who: Person, layout: unknown, version: number) =>
+    call(who, 'PUT', '/api/v1/cabinet', { layout, version });
+  /** A layout written straight to the database, as no release since 0.9.0-dev.94 saves one. */
+  const stored = async (who: Person, layout: unknown) => {
+    const admin = createPool(h.adminUrl, 1);
+    try {
+      await admin.query('update cabinet_layout set layout = $1 where member_id = $2', [
+        JSON.stringify(layout),
+        member(who),
+      ]);
+    } finally {
+      await admin.end();
+    }
+  };
+  const errorOf = (r: { statusCode: number; json: <T>() => T }) => [
+    r.statusCode,
+    r.json<{ error: { code: string } }>().error.code,
+  ];
   const saved = async (who: Person, layout: CabinetLayout) => {
     const at = await mine(who);
     return ok<CabinetView>(save(who, layout, at.version));
@@ -130,10 +151,10 @@ describe.skipIf(!testAdminUrl())('cabinet levels you choose, and per cabinet', (
   const day = (date: string) => ({ date, precision: 'day' });
   const folders = (l: CabinetLayout) =>
     l.cabinets.flatMap((c) => c.drawers.flatMap((d) => d.folders.map((f) => ({ c, d, f }))));
-  /** A cabinet arranged by hand: one drawer, these folders. */
-  const byHand = (id: string, fs: CabinetFolder[]): Cabinet => ({
+  /** A cabinet as a test makes it, drawn by nothing: one drawer, these folders. */
+  const oneCabinet = (id: string, fs: CabinetFolder[]): Cabinet => ({
     id,
-    name: 'Kept by hand',
+    name: 'Made by a test',
     hidden: false,
     drawers: [{ id: `${id}-d`, name: 'Drawer', hidden: false, folders: fs }],
   });
@@ -259,7 +280,7 @@ describe.skipIf(!testAdminUrl())('cabinet levels you choose, and per cabinet', (
     const hand: CabinetLayout = {
       levels: null,
       cabinets: [
-        byHand('two', [
+        oneCabinet('two', [
           {
             id: 'olive-all',
             name: 'Everything of Olive’s',
@@ -436,38 +457,127 @@ describe.skipIf(!testAdminUrl())('cabinet levels you choose, and per cabinet', (
     expect(refusedTwo.json<{ error: { code: string } }>().error.code).toBe('cabinet_levels');
   });
 
-  it('keeps cabinets arranged by hand beside the drawn ones, never redrawn or grown', async () => {
-    const hand = byHand('hand', [
+  it('keeps one structure: no levels reads as none, a cabinet not drawn is refused and never read', async () => {
+    const loose = oneCabinet('loose', [
       {
-        id: 'hand-olive',
+        id: 'loose-olive',
         name: 'Olive’s',
         hidden: false,
-        // It holds every paper of Olive's: the drawing grows beside it all the same.
         filter: { member_id: member('owner'), notes: 'exclude' },
       },
     ]);
-    await saved('owner', { levels: null, cabinets: [hand] });
-    const p = await preview('owner', { levels: ['person', 'topic', 'year'] });
-    expect(p.layout.cabinets.find((c) => c.id === 'hand')).toEqual(hand);
-    expect(p.layout.cabinets.filter((c) => c.drawn).length).toBeGreaterThan(0);
-    // The drawn ones before it, with none drawn yet.
-    expect(p.layout.cabinets.at(-1)?.id).toBe('hand');
-    await saved('owner', p.layout);
-    // A new paper: grown into the drawn cabinets, never the one by hand.
-    await file('owner', {
-      title: 'Olive bill next year',
-      type_key: 'utility_bill',
-      owner_member_id: member('owner'),
-      visibility: 'household',
-      issued: day(`${year + 1}-01-10`),
-    });
-    const grown = (await mine('owner')).layout as CabinetLayout;
-    expect(grown.cabinets.find((c) => c.id === 'hand')).toEqual(hand);
-    const bill = folders(grown).find(
-      (x) => x.f.filter.type_key === undefined && x.f.filter.dated_from === `${year + 1}-01-01`,
+    const at = await saved('owner', (await fresh('owner', ['person', 'topic', 'year'])).layout);
+    // Stored without levels, as only releases before levels saved one: none yet.
+    await stored('owner', { levels: null, cabinets: [loose] });
+    const none = await mine('owner');
+    expect(none).toMatchObject({ layout: null, version: at.version });
+    expect((await counts('owner')).counts).toEqual({});
+    // Refused, in words, nothing saved: no levels, or a cabinet not drawn by them.
+    expect(errorOf(await put('owner', { levels: null, cabinets: [] }, none.version))).toEqual([
+      422,
+      'cabinet_levels',
+    ]);
+    expect(errorOf(await put('owner', { cabinets: [] }, none.version))).toEqual([
+      422,
+      'cabinet_levels',
+    ]);
+    const drawn = await fresh('owner', ['person', 'topic', 'year']);
+    const withLoose = { ...drawn.layout, cabinets: [...drawn.layout.cabinets, loose] };
+    const refused = await put('owner', withLoose, none.version);
+    expect(errorOf(refused)).toEqual([422, 'cabinet_levels']);
+    expect(refused.json<{ error: { message: string } }>().error.message).toMatch(
+      /^The cabinet “Made by a test”: /,
     );
-    expect(bill?.c.drawn?.value).toBe(member('owner'));
-    expect(bill?.f.dividers).toEqual({ levels: [], ranges: [] });
+    // What no drawing makes: two cabinets for one value, one for none of three levels.
+    const [a, b] = drawn.layout.cabinets as [Cabinet, Cabinet];
+    const twice = { ...drawn.layout, cabinets: [a, { ...b, drawn: a.drawn }] };
+    expect(errorOf(await put('owner', twice, none.version))).toEqual([422, 'cabinet_levels']);
+    const noValue = { ...drawn.layout, cabinets: [{ ...a, drawn: { value: null } }, b] };
+    expect(errorOf(await put('owner', noValue, none.version))).toEqual([422, 'cabinet_levels']);
+    // Of two levels, the one cabinet is drawn for none, and a value is refused.
+    const two = await fresh('owner', ['person', 'kind']);
+    const [only] = two.layout.cabinets as [Cabinet];
+    expect(only.drawn).toEqual({ value: null });
+    const valued = { ...two.layout, cabinets: [{ ...only, drawn: { value: member('owner') } }] };
+    expect(errorOf(await put('owner', valued, none.version))).toEqual([422, 'cabinet_levels']);
+    expect((await mine('owner')).version).toBe(none.version);
+    // The first arrangement, over the version read.
+    const first = await ok<CabinetView>(put('owner', drawn.layout, none.version));
+    expect(first.version).toBe(none.version + 1);
+    // Stored with levels beside a cabinet not drawn: that one is not there.
+    await stored('owner', { ...drawn.layout, cabinets: [loose, ...drawn.layout.cabinets] });
+    const read = (await mine('owner')).layout as CabinetLayout;
+    expect(read.cabinets.some((c) => c.id === 'loose')).toBe(false);
+    expect(read.cabinets.every((c) => c.drawn)).toBe(true);
+    expect(Object.keys((await counts('owner')).counts)).not.toContain('loose-olive');
+  });
+
+  it('reads pins and an original’s place only in folders of the cabinet as it reads', async () => {
+    const drawn = await fresh('owner', ['person', 'topic', 'year']);
+    const layout = (await saved('owner', drawn.layout)).layout as CabinetLayout;
+    const olive = layout.cabinets.find((c) => c.drawn?.value === member('owner')) as Cabinet;
+    const f = folders(layout).find((x) => x.c.id === olive.id && !x.f.hidden)?.f as CabinetFolder;
+    await ok(
+      call('owner', 'POST', `/api/v1/cabinet/folders/${f.id}/pins`, {
+        document_ids: [ids.payNow],
+      }),
+    );
+    await ok(
+      call('owner', 'POST', '/api/v1/documents/original-place', {
+        document_ids: [ids.payNow],
+        folder_id: f.id,
+      }),
+    );
+    const paper = () => ok<DocumentView>(call('owner', 'GET', `/api/v1/documents/${ids.payNow}`));
+    expect((await counts('owner')).pins?.[f.id]).toBe(1);
+    expect((await paper()).original_place?.folder_id).toBe(f.id);
+    // Stored with that cabinet drawn by nothing: its folder is not there.
+    const loose: Cabinet = { ...olive };
+    delete loose.drawn;
+    await stored('owner', {
+      ...layout,
+      cabinets: layout.cabinets.map((c) => (c.id === olive.id ? loose : c)),
+    });
+    expect((await counts('owner')).pins?.[f.id]).toBeUndefined();
+    const read = await paper();
+    expect(read.original_place?.folder_id).toBeNull();
+    expect(read.original_place?.path).toHaveLength(3);
+    // Arranged again: the pin and the place are let go with the folder.
+    await saved('owner', drawn.layout);
+  });
+
+  it('redraws every cabinet, letting go of one not drawn, and keeps changes made to drawn ones', async () => {
+    const base = await saved('owner', (await fresh('owner', ['person', 'topic', 'year'])).layout);
+    const layout = base.layout as CabinetLayout;
+    // Olive's cabinet renamed and hidden; a folder of it renamed and hidden.
+    const olive = layout.cabinets.find((c) => c.drawn?.value === member('owner')) as Cabinet;
+    olive.name = 'Olive’s papers';
+    olive.hidden = true;
+    const f = olive.drawers[0]?.folders[0] as CabinetFolder;
+    f.name = 'Kept name';
+    f.hidden = true;
+    const kept = await saved('owner', layout);
+    // Drawn again over it, with a cabinet beside it no drawing made.
+    const over = { ...(kept.layout as CabinetLayout) };
+    over.cabinets = [oneCabinet('loose', []), ...over.cabinets];
+    for (const levels of [
+      ['person', 'topic', 'year', 'kind'],
+      ['person', 'year', 'topic'],
+    ] as CabinetLevel[][]) {
+      const p = await preview('owner', { levels, layout: over });
+      expect(p.layout.cabinets.every((c) => c.drawn)).toBe(true);
+      expect(p.layout.cabinets.some((c) => c.id === 'loose')).toBe(false);
+      expect(p.layout.cabinets.find((c) => c.id === olive.id)).toMatchObject({
+        name: 'Olive’s papers',
+        hidden: true,
+      });
+      if (levels.length === 4) {
+        expect(folders(p.layout).find((x) => x.f.id === f.id)?.f).toMatchObject({
+          name: 'Kept name',
+          hidden: true,
+        });
+      }
+    }
   });
 
   it('grows a cabinet by its own levels, and a fourth level as dividers', async () => {
@@ -524,13 +634,15 @@ describe.skipIf(!testAdminUrl())('cabinet levels you choose, and per cabinet', (
         hidden: false,
         filter: { tag: `t${prefix}${i}` },
       }));
+    // A cabinet of its own arrangement, kept as the drawers and folders change.
     const big: CabinetLayout = {
-      levels: null,
+      levels: ['person', 'topic', 'year'],
       cabinets: [
         {
           id: 'big',
           name: 'Big',
           hidden: false,
+          drawn: { value: 'big', levels: ['kind', 'year'] },
           drawers: [0, 1, 2, 3].map((d) => ({
             id: `big-${d}`,
             name: `Drawer ${d}`,
@@ -540,8 +652,8 @@ describe.skipIf(!testAdminUrl())('cabinet levels you choose, and per cabinet', (
         },
       ],
     };
-    // A thousand folders of one's own, as a cabinet may hold: the drawing beside them, past it.
-    const p = await preview('owner', { levels: ['person', 'kind'], layout: big });
+    // A thousand folders, as a cabinet may hold: the drawing beside them, past it.
+    const p = await preview('owner', { levels: ['person', 'year', 'topic'], layout: big });
     expect(p.size.over).toBe('cabinet_too_big');
     expect(p.size.folders).toBeGreaterThan(1000);
     expect(p.size.biggest_drawer?.folders).toBe(250);
@@ -571,6 +683,8 @@ describe.skipIf(!testAdminUrl())('cabinet levels you choose, and per cabinet', (
   });
 
   it('puts the smallest of more than 100 dividers behind Everything else, which lists exactly them', async () => {
+    // Read before the papers are filed: a cabinet of Sam's is not grown by them first.
+    const at = await mine('adult');
     // 102 years of Sam's statements: a year divider each, but 100 shown at most.
     for (let i = 0; i < 102; i += 1) {
       await file('adult', {
@@ -589,10 +703,10 @@ describe.skipIf(!testAdminUrl())('cabinet levels you choose, and per cabinet', (
       visibility: 'household',
       issued: day('1900-07-01'),
     });
-    await saved('adult', {
+    const layout: CabinetLayout = {
       levels: null,
       cabinets: [
-        byHand('old', [
+        oneCabinet('old', [
           {
             id: 'old-years',
             name: 'Old years',
@@ -607,7 +721,8 @@ describe.skipIf(!testAdminUrl())('cabinet levels you choose, and per cabinet', (
           },
         ]),
       ],
-    });
+    };
+    await ok(save('adult', layout, at.version));
     const c = await opened('adult', 'old-years');
     expect(c.dividers).toHaveLength(100);
     const rest = c.dividers.at(-1);
@@ -621,29 +736,30 @@ describe.skipIf(!testAdminUrl())('cabinet levels you choose, and per cabinet', (
     for (const d of page.items) {
       expect(shown.has(d.issued?.date.slice(0, 4) ?? '')).toBe(false);
     }
-  });
+    // A hundred and three papers filed one by one: slow on a busy machine.
+  }, 60_000);
 
-  it('takes what an older app sends, and tells it arranged by hand', async () => {
-    const hand = byHand('older', []);
+  it('takes what an older app sends beside the levels, and tells it null', async () => {
+    const drawn = await fresh('owner', ['person', 'kind']);
     const at0 = await mine('owner');
     const sent = await ok<CabinetView>(
-      save(
-        'owner',
-        { arranged_by: 'person_kind', cabinets: [hand] } as unknown as CabinetLayout,
-        at0.version,
-      ),
+      put('owner', { ...drawn.layout, arranged_by: 'person_kind' }, at0.version),
     );
-    expect(sent.layout).toEqual({ levels: null, arranged_by: null, cabinets: [hand] });
+    expect(sent.layout?.arranged_by).toBeNull();
+    expect(sent.layout?.levels).toEqual(['person', 'kind']);
+    // Without levels, as an older app sends it: refused.
+    expect(
+      errorOf(await put('owner', { arranged_by: 'person_kind', cabinets: [] }, sent.version)),
+    ).toEqual([422, 'cabinet_levels']);
     const read = await mine('owner');
     expect(read.layout?.arranged_by).toBeNull();
-    expect(read.layout?.levels).toBeNull();
     // A folder's dividers: at most two levels, each once.
     const three = await save(
       'owner',
       {
         levels: null,
         cabinets: [
-          byHand('x', [
+          oneCabinet('x', [
             {
               id: 'x-f',
               name: 'X',
@@ -662,7 +778,7 @@ describe.skipIf(!testAdminUrl())('cabinet levels you choose, and per cabinet', (
       {
         levels: null,
         cabinets: [
-          byHand('x', [
+          oneCabinet('x', [
             {
               id: 'x-f',
               name: 'X',

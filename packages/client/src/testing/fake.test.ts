@@ -3,6 +3,7 @@ import {
   refusalFor,
   SENSITIVE_SHARE_CONFIRM,
   shareEndWords,
+  type CabinetLevel,
   type FolderDividers,
   type FolderFilter,
   type Role,
@@ -2319,12 +2320,13 @@ describe('the fake vault, my cabinet (0.9.0, C1)', () => {
     await expect(api.documentAlsoIn(token, secret.id)).rejects.toMatchObject({ status: 404 });
     // A folder's question is the list's: anything else is refused.
     const folder = (filter: Record<string, unknown>) => ({
-      levels: null,
+      levels: ['topic', 'year', 'person'] as CabinetLevel[],
       cabinets: [
         {
           id: 'c',
           name: 'C',
           hidden: false,
+          drawn: { value: 'education' },
           drawers: [
             {
               id: 'd',
@@ -2347,6 +2349,51 @@ describe('the fake vault, my cabinet (0.9.0, C1)', () => {
         version: 1,
       }),
     ).rejects.toMatchObject({ status: 422 });
+  });
+
+  it('keeps one structure as the vault does: no levels reads as none, and only drawn cabinets are saved (0.9.0-dev.94)', async () => {
+    const vault = createFakeVault();
+    const api = createApi(createHttp({ baseUrl: 'https://fake.example', fetch: vault.fetch }));
+    const { access_token: token } = await api.setup({
+      household_name: 'The Fake family',
+      display_name: 'Fake Owner',
+      email: 'owner@example.test',
+      password: 'a long enough password',
+    });
+    await api.createDocument(token, { title: 'Passport', type_key: 'passport' });
+    const loose = {
+      id: 'loose',
+      name: 'Kept loose',
+      hidden: false,
+      drawers: [
+        {
+          id: 'loose-d',
+          name: 'All',
+          hidden: false,
+          folders: [{ id: 'loose-f', name: 'All', hidden: false, filter: {} }],
+        },
+      ],
+    };
+    // A layout stored without levels: none yet, its version kept to save over.
+    vault.state.cabinets = {
+      'fake-member': { layout: { levels: null, cabinets: [loose] }, version: 3, updated_at: null },
+    };
+    expect(await api.cabinet(token)).toMatchObject({ layout: null, version: 3 });
+    // Refused, in words, nothing saved: no levels, or a cabinet not drawn by them.
+    await expect(
+      api.saveCabinet(token, { layout: { levels: null, cabinets: [] }, version: 3 }),
+    ).rejects.toMatchObject({ status: 422, code: 'cabinet_levels' });
+    const drawn = await api.previewCabinet(token, { levels: ['topic', 'year', 'person'] });
+    await expect(
+      api.saveCabinet(token, {
+        layout: { ...drawn.layout, cabinets: [...drawn.layout.cabinets, loose] },
+        version: 3,
+      }),
+    ).rejects.toMatchObject({ status: 422, code: 'cabinet_levels' });
+    // The drawing alone: kept over the version read.
+    const saved = await api.saveCabinet(token, { layout: drawn.layout, version: 3 });
+    expect(saved.version).toBe(4);
+    expect(saved.layout?.cabinets.every((c) => c.drawn)).toBe(true);
   });
 
   it('groups a folder behind dividers and keeps pins as the vault does (C2)', async () => {
@@ -2376,12 +2423,13 @@ describe('the fake vault, my cabinet (0.9.0, C1)', () => {
     const theirs = vault.state.documents.find((d) => d.id === secret.id);
     if (theirs) theirs.owner_member_id = 'sam';
     const layout = (dividers?: FolderDividers) => ({
-      levels: null,
+      levels: ['topic', 'year', 'person'] as CabinetLevel[],
       cabinets: [
         {
           id: 'c',
           name: 'C',
           hidden: false,
+          drawn: { value: 'education' },
           drawers: [
             {
               id: 'd',
@@ -2524,12 +2572,13 @@ describe('the fake vault, my cabinet (0.9.0, C1)', () => {
     await api.saveCabinet(token, {
       version: 0,
       layout: {
-        levels: null,
+        levels: ['topic', 'year', 'person'] as CabinetLevel[],
         cabinets: [
           {
             id: 'c',
             name: 'School',
             hidden: false,
+            drawn: { value: 'education' },
             drawers: [
               {
                 id: 'd',

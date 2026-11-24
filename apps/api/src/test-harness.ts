@@ -18,7 +18,7 @@ import {
   UPLOAD_REQUEST_COPY_PURPOSE,
 } from '@fdv/crypto';
 import { createDb, createPool, type Db, type Schema } from '@fdv/db';
-import type { Role } from '@fdv/shared';
+import type { CabinetLayout, CabinetLevel, Role } from '@fdv/shared';
 import type { OffsiteBucket, OffsiteTestFound } from '@fdv/storage';
 import { createTestDatabase, type TestDatabase } from '@fdv/db/testing';
 import type { FastifyInstance } from 'fastify';
@@ -94,6 +94,41 @@ import type { SmsProvider, SmsProviderFactory } from '@fdv/db';
 import { SmsService } from './sms/service.js';
 import { SMS_CODE_KEY_PURPOSE, TextCodeService } from './sms/codes.js';
 import { serverVersion } from './version.js';
+
+/**
+ * A cabinet layout made by a test, as the vault takes one (0.9.0-dev.94):
+ * arranged by levels (Topic › Year › Person where it gives none), every
+ * cabinet drawn as a drawing would draw it. With two levels, the one
+ * cabinet drawn for none (`null`); with more, each for a value of the first
+ * level — a cabinet not drawn by the test, for the topic every folder of it
+ * asks (`category`) where there is one no other cabinet has, else for its
+ * own id, which no drawing gives, so the vault grows papers beside it,
+ * never into it. For tests of what folders hold, not of drawing.
+ */
+export function asArranged(
+  layout: Omit<CabinetLayout, 'levels'> & { levels?: CabinetLevel[] | null },
+): CabinetLayout {
+  const levels = layout.levels ?? ['topic', 'year', 'person'];
+  const taken = new Set(layout.cabinets.flatMap((c) => (c.drawn ? [c.drawn.value] : [])));
+  const valueOf = (c: CabinetLayout['cabinets'][number]): string | null => {
+    if (levels.length <= 2) return null;
+    const topics = new Set(c.drawers.flatMap((d) => d.folders.map((f) => f.filter.category)));
+    const [topic] = topics;
+    const value =
+      levels[0] === 'topic' && topics.size === 1 && topic && !topic.includes(',') ? topic : c.id;
+    return taken.has(value) ? c.id : value;
+  };
+  return {
+    ...layout,
+    levels,
+    cabinets: layout.cabinets.map((c) => {
+      if (c.drawn) return c;
+      const value = valueOf(c);
+      taken.add(value);
+      return { ...c, drawn: { value } };
+    }),
+  };
+}
 
 /**
  * A fully wired API on a throwaway database with a temp local vault.

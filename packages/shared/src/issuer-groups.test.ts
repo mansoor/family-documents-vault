@@ -455,31 +455,18 @@ describe('a drawn cabinet made one where issuers were said to be the same', () =
     });
     const layout = {
       levels: ['issuer', 'year', 'person'] as CabinetLevel[],
-      cabinets: [
-        cabinet('uk', 'barclays bank uk'),
-        cabinet('b', 'barclays'),
-        {
-          id: 'hand',
-          name: 'Kept by hand',
-          hidden: false,
-          drawers: [
-            { id: 'hd', name: 'All', hidden: false, folders: [folder('hf', 'barclays bank uk')] },
-          ],
-        },
-      ],
+      cabinets: [cabinet('uk', 'barclays bank uk'), cabinet('b', 'barclays')],
     };
     const m = mergeSameIssuers(layout, root);
-    expect(m.layout.cabinets.map((c) => c.id)).toEqual(['uk', 'hand']);
+    expect(m.layout.cabinets.map((c) => c.id)).toEqual(['uk']);
     expect(m.layout.cabinets[0]?.drawers.map((d) => d.id)).toEqual(['uk-2026']);
     expect(m.layout.cabinets[0]?.drawers[0]?.folders.map((f) => f.id)).toEqual(['uk-me']);
     expect(m.moved).toEqual([{ from: 'b-me', to: 'uk-me' }]);
-    // A cabinet arranged by hand is never touched.
-    expect(m.layout.cabinets[1]).toEqual(layout.cabinets[2]);
   });
 
-  it('leaves a layout arranged by hand, or with nothing said to be one, as it is', () => {
-    const hand = { levels: null, cabinets: [] };
-    expect(mergeSameIssuers(hand, root).layout).toBe(hand);
+  it('leaves a layout with no levels, or with nothing said to be one, as it is', () => {
+    const none = { levels: null, cabinets: [] };
+    expect(mergeSameIssuers(none, root).layout).toBe(none);
     const layout = drawCabinet(
       ['topic', 'issuer'],
       [{ person: 'me', category: 'financial', type_key: null, year: 2026, issuer: 'hsbc', n: 1 }],

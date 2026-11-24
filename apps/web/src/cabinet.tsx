@@ -19,8 +19,6 @@ import {
   sizeWarnings,
   sizeWarningWords,
   folderQuestionWords,
-  folderTreeWords,
-  FOLDERS_CABINET,
   daySpanWords,
   inSeveralWords,
   unfiledWords,
@@ -100,7 +98,6 @@ export function cabinetHref(
     cabinet?: string;
     folder?: string;
     arrange?: boolean;
-    fromFolders?: boolean;
     unfiled?: boolean;
   } = {},
 ): string {
@@ -108,24 +105,9 @@ export function cabinetHref(
   if (over.cabinet) p.set('cabinet', over.cabinet);
   if (over.folder) p.set('folder', over.folder);
   if (over.arrange) p.set('arrange', '1');
-  // Keep this folder tree as my cabinet (0.9.0, C4): its drawing, to look over first.
-  if (over.fromFolders) p.set('from', 'folders');
   // The papers no folder holds (19 Nov 2026).
   if (over.unfiled) p.set('unfiled', '1');
   return `/documents?${p.toString()}`;
-}
-
-/**
- * Whether this reader may keep their folder tree as their cabinet (C4): the
- * vault keeps the folder a paper came from, and they see where originals are.
- */
-export function useFolderTreeOffered(): boolean {
-  const { caps } = useApp();
-  return (
-    caps?.features.source_folders === true &&
-    caps.features.cabinets === true &&
-    seesLocation(storedRole())
-  );
 }
 
 /** Table or Cabinet: the two ways to see the same documents. */
@@ -251,18 +233,14 @@ export function CabinetDocuments() {
   const placesOffered = caps?.features.original_place === true && seesLocation(storedRole());
   const [params, setParams] = useSearchParams();
   const arranging = params.get('arrange') === '1';
-  const treeOffered = useFolderTreeOffered();
-  const keepingTree = treeOffered && params.get('from') === 'folders';
   const mine = useLoad(async (t) => api.cabinet(t), [authVersion]);
   const layout = mine.data?.layout ?? null;
   const version = mine.data?.version ?? 0;
-  // Counted for a cabinet; and, for whoever may keep their folder tree (C4),
-  // also asked of an empty one: whether papers came from folders it has none
-  // for yet (`new_folders`) — a cheap question, never the drawing itself.
+  // Counted for a cabinet.
   const loaded = mine.data !== undefined && mine.data !== null;
   const told = useLoad(
-    async (t) => (loaded && (layout || treeOffered) ? await api.cabinetCounts(t) : null),
-    [authVersion, version, layout !== null, loaded, treeOffered],
+    async (t) => (loaded && layout ? await api.cabinetCounts(t) : null),
+    [authVersion, version, layout !== null, loaded],
   );
   const counts = { ...told, data: told.data?.counts ?? null };
   // What the cabinet holds in all, each paper once (19 Nov 2026): the
@@ -271,18 +249,11 @@ export function CabinetDocuments() {
   const unfiled = told.data?.unfiled ?? 0;
   const inSeveral = told.data?.in_several ?? 0;
   const showingUnfiled = params.get('unfiled') === '1';
-  // Offered, never added unasked.
-  const treeToAdd = treeOffered && !keepingTree && told.data?.new_folders === true;
   const names = useNames();
   const heading = useRef<HTMLHeadingElement>(null);
 
-  const go = (over: {
-    cabinet?: string;
-    folder?: string;
-    arrange?: boolean;
-    fromFolders?: boolean;
-    unfiled?: boolean;
-  }) => setParams(new URLSearchParams(cabinetHref(over).split('?')[1]));
+  const go = (over: { cabinet?: string; folder?: string; arrange?: boolean; unfiled?: boolean }) =>
+    setParams(new URLSearchParams(cabinetHref(over).split('?')[1]));
 
   let body: ReactNode;
   if (mine.error && !mine.data) {
@@ -291,18 +262,6 @@ export function CabinetDocuments() {
     );
   } else if (!mine.data) {
     body = <p className="muted">Opening your cabinet…</p>;
-  } else if (keepingTree) {
-    body = (
-      <KeepFolderTree
-        saved={mine.data}
-        onCancel={() => go({})}
-        onSaved={(saved, cabinetId) => {
-          mine.setData(saved);
-          go(cabinetId ? { cabinet: cabinetId } : {});
-          heading.current?.focus();
-        }}
-      />
-    );
   } else if (arranging) {
     body = (
       <ArrangeCabinet
@@ -322,21 +281,17 @@ export function CabinetDocuments() {
     body = (
       <section className="cab-empty stack" aria-labelledby="cab-empty-h">
         <h2 id="cab-empty-h" className="section-h">
-          {layout ? 'Every cabinet is hidden' : 'Your cabinet is empty'}
+          {layout && layout.cabinets.length > 0
+            ? 'Every cabinet is hidden'
+            : 'Your cabinet is empty'}
         </h2>
         <p>
-          {layout
+          {layout && layout.cabinets.length > 0
             ? 'Show a cabinet again while arranging, or draw a new arrangement.'
             : 'Arrange it from what the vault already knows: by person, by topic and year, or by kind. Folders fill themselves as papers are added.'}
         </p>
         <div className="actions">
           <Button onClick={() => go({ arrange: true })}>Arrange my cabinet</Button>
-          {/* Or the folders the papers came from (C4), when there are any. */}
-          {!layout && treeToAdd && (
-            <Button kind="quiet" onClick={() => go({ fromFolders: true })}>
-              Use my folder tree
-            </Button>
-          )}
         </div>
       </section>
     );
@@ -366,7 +321,7 @@ export function CabinetDocuments() {
         {/* Where the table's Columns is (DL): the same slot, so toggling
             Table and Cabinet moves neither. */}
         <div className="table-head-tool">
-          {!arranging && !keepingTree && mine.data && layout && (
+          {!arranging && mine.data && layout && (
             <button
               type="button"
               className="btn btn-quiet btn-small"
@@ -377,19 +332,14 @@ export function CabinetDocuments() {
           )}
         </div>
       </div>
-      {!arranging && !keepingTree && mine.data && (
+      {!arranging && mine.data && (
         <div className="cab-bar">
           <p className="muted">
             <strong className="cab-mine">My cabinet</strong>
             {/* The total it holds, each paper once, in the table's own words. */}
             {layout && typeof whole === 'number' && <span>{` · ${documentsCount(whole)}`}</span>}
-            {/* What it is arranged by (0.9.0-dev.90): its levels, or by hand. */}
-            {layout && (
-              <span>
-                {' · '}
-                {layout.levels ? `Arranged by ${levelsWords(layout.levels)}` : 'Arranged by hand'}
-              </span>
-            )}
+            {/* What it is arranged by (0.9.0-dev.90): its levels. */}
+            {layout?.levels && <span>{` · Arranged by ${levelsWords(layout.levels)}`}</span>}
             <span>{' · Only you see this arrangement'}</span>
             {/* Labels for the paper folders, each with a code (C3). */}
             {placesOffered && layout && (
@@ -398,17 +348,10 @@ export function CabinetDocuments() {
                 <Link to="/cabinet/labels">Print folder labels</Link>
               </span>
             )}
-            {/* Folders papers came from, not in the cabinet yet (C4). */}
-            {layout && treeToAdd && (
-              <span>
-                {' · '}
-                <Link to={cabinetHref({ fromFolders: true })}>Keep my folder tree</Link>
-              </span>
-            )}
           </p>
         </div>
       )}
-      {!arranging && !keepingTree && layout && (unfiled > 0 || inSeveral > 0) && (
+      {!arranging && layout && (unfiled > 0 || inSeveral > 0) && (
         <p className="muted cab-held">
           {unfiled > 0 && <Link to={cabinetHref({ unfiled: true })}>{unfiledWords(unfiled)}</Link>}
           {unfiled > 0 && inSeveral > 0 && ' · '}
@@ -426,8 +369,8 @@ export function CabinetDocuments() {
 
 /**
  * The papers no shown folder holds (19 Nov 2026): those with no topic or
- * kind yet, those only a hidden folder holds, and those a cabinet arranged
- * by hand asks for nowhere — newest first, a page at a time.
+ * kind yet, those only a hidden folder holds, and those no folder asks for
+ * once one was changed — newest first, a page at a time.
  */
 function UnfiledPane(props: {
   names: ReturnType<typeof useNames>;
@@ -606,12 +549,7 @@ function Browse(props: {
                   {n === 1 ? (folders === 1 ? '1 folder' : `${folders} folders`) : `${n} drawers`}
                 </span>
                 {/* How it is arranged, where it is not the default's (0.9.0-dev.90). */}
-                {layout.levels && c.drawn?.levels && (
-                  <span className="badge badge-own">Own arrangement</span>
-                )}
-                {layout.levels && !c.drawn && (
-                  <span className="badge badge-hand">Arranged by hand</span>
-                )}
+                {c.drawn?.levels && <span className="badge badge-own">Own arrangement</span>}
               </button>
             </li>
           );
@@ -1199,171 +1137,16 @@ export function mergeDrawers(
 
 const clone = (l: CabinetLayout): CabinetLayout => JSON.parse(JSON.stringify(l)) as CabinetLayout;
 
-/**
- * Keep this folder tree as my cabinet (0.9.0, C4): the folders the reader's
- * papers came from, drawn by the vault beside what their cabinet holds, to
- * look over first. Nothing is saved until they say so — and, when they have
- * a cabinet already, until they confirm it — and nothing there is changed:
- * the folders are added to the cabinet "My folders".
- */
-function KeepFolderTree(props: {
-  saved: CabinetView;
-  onCancel: () => void;
-  onSaved: (saved: CabinetView, cabinetId: string | null) => void;
-}) {
-  const { withToken } = useApp();
-  const drawn = useLoad(async (t) => api.cabinetFromFolders(t), []);
-  const [asking, setAsking] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const d = drawn.data;
-  const tree = d
-    ? d.layout.cabinets.find((c) => c.drawers.some((x) => x.folders.some((f) => f.id in d.counts)))
-    : undefined;
-  /** The drawers that get a new folder, each with only its new folders. */
-  const added = (tree?.drawers ?? [])
-    .map((x) => ({ ...x, folders: x.folders.filter((f) => (d ? f.id in d.counts : false)) }))
-    .filter((x) => x.folders.length > 0);
-  const hasCabinet = (props.saved.layout?.cabinets.length ?? 0) > 0;
-
-  const keep = async () => {
-    if (!d) return;
-    setBusy(true);
-    try {
-      const done = await withToken((t) =>
-        api.saveCabinet(t, { layout: d.layout, version: d.version }),
-      );
-      if (done) props.onSaved(done, tree?.id ?? null);
-    } catch (err) {
-      setAsking(false);
-      if (err instanceof ApiRequestError && err.status === 409) {
-        // Changed elsewhere meanwhile: drawn again on what it is now, never over it.
-        setError(`${CABINET_CHANGED} The folders were drawn again on your cabinet as it is now.`);
-        await drawn.reload();
-      } else setError(describeError(err));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  let body: ReactNode;
-  if (drawn.error && !d) {
-    body = (
-      <LoadFailed message={drawn.error} what="your folders" onRetry={() => void drawn.reload()} />
-    );
-  } else if (!d) {
-    body = <p className="muted">Looking at your folders…</p>;
-  } else if (d.folders.length === 0) {
-    body = (
-      <p className="cab-none">
-        None of your papers came from a folder yet. Papers you add from a folder — with Add many,
-        the scanner folder or a computer — keep the folder they came from.
-      </p>
-    );
-  } else if (added.length === 0) {
-    body = (
-      <p className="cab-none">
-        {d.left_out > 0
-          ? 'Your cabinet has no room for more folders. Hide or merge some with Arrange my cabinet, then try again.'
-          : folderTreeWords(d.added)}
-      </p>
-    );
-  } else {
-    body = (
-      <>
-        <p className="muted">{folderTreeWords(d.added)}</p>
-        <ol className="arrange-tree folder-tree" aria-label={`New in “${FOLDERS_CABINET}”`}>
-          {added.map((x) => (
-            <li key={x.id}>
-              <div className="arrange-row">
-                <strong>{x.name}</strong>
-              </div>
-              <ol>
-                {x.folders.map((f) => (
-                  <li key={f.id}>
-                    <div className="arrange-row">
-                      <FolderIcon />
-                      <span title={f.filter.source_folder}>{f.name}</span>
-                      <Count n={d.counts[f.id]} />
-                    </div>
-                  </li>
-                ))}
-              </ol>
-            </li>
-          ))}
-        </ol>
-        {(d.already > 0 || d.left_out > 0) && (
-          <p className="muted">
-            {d.already > 0 &&
-              `${d.already === 1 ? '1 folder is' : `${d.already} folders are`} in your cabinet already, and ${d.already === 1 ? 'stays' : 'stay'} as ${d.already === 1 ? 'it is' : 'they are'}. `}
-            {d.left_out > 0 &&
-              `${d.left_out === 1 ? '1 folder is' : `${d.left_out} folders are`} left out: that is more than a cabinet can hold.`}
-          </p>
-        )}
-      </>
-    );
-  }
-
-  return (
-    <section className="arrange stack" aria-labelledby="tree-h" aria-busy={drawn.loading}>
-      <div>
-        <h2 id="tree-h" className="section-h">
-          Keep this folder tree as my cabinet
-        </h2>
-        <p className="muted">
-          Each folder your papers came from becomes a folder in the cabinet “{FOLDERS_CABINET}”, and
-          holds the papers from that folder, now and as more are added. Nothing in your cabinet now
-          is changed. Only you see this arrangement.
-        </p>
-      </div>
-      {body}
-      <ErrorNote message={error} />
-      <div className="actions">
-        <Button kind="quiet" onClick={props.onCancel}>
-          {added.length > 0 ? 'Cancel' : 'Back to my cabinet'}
-        </Button>
-        {added.length > 0 && (
-          <Button
-            disabled={busy || drawn.loading}
-            onClick={() => (hasCabinet ? setAsking(true) : void keep())}
-          >
-            {busy ? 'Saving…' : 'Keep this folder tree'}
-          </Button>
-        )}
-      </div>
-      {asking && d && (
-        <ConfirmDialog
-          title={
-            d.added.folders === 1
-              ? 'Add 1 folder to your cabinet?'
-              : `Add ${d.added.folders} folders to your cabinet?`
-          }
-          confirmLabel="Add the folders"
-          busyLabel="Saving…"
-          busy={busy}
-          onConfirm={() => void keep()}
-          onCancel={() => setAsking(false)}
-        >
-          They go in the cabinet “{FOLDERS_CABINET}”. Your other cabinets, drawers and folders stay
-          as they are. You can rename, move or hide the new ones with Arrange my cabinet.
-        </ConfirmDialog>
-      )}
-    </section>
-  );
-}
-
 /** Numbers as the family reads them: 1,204. */
 const COUNT = new Intl.NumberFormat('en-GB');
 
-/** What a cabinet is, to the person arranging: drawn by the default, by its own levels, or by hand. */
-function cabinetMark(layout: CabinetLayout, c: Cabinet): 'default' | 'own' | 'hand' {
-  if (!layout.levels || !c.drawn) return 'hand';
-  return c.drawn.levels ? 'own' : 'default';
+/** What a cabinet is, to the person arranging: drawn by the default, or by its own levels below it. */
+function cabinetMark(c: Cabinet): 'default' | 'own' {
+  return c.drawn?.levels ? 'own' : 'default';
 }
 const MARK_WORDS = {
   default: 'Follows the default',
   own: 'Own arrangement',
-  hand: 'Arranged by hand',
 } as const;
 
 /** What a level is, by its place among `total` levels: cabinet, drawer, folder or divider. */
@@ -1397,8 +1180,8 @@ const sameLevels = (
  * What saving a new default does, in words, said before it is saved: the
  * dividers alone; own arrangements let go wherever the vault's redraw lets
  * them go (the first level changing, or the default going from three or
- * more levels to two, or from two); pinned papers let go, counted;
- * cabinets arranged by hand kept. Null where there is nothing to say.
+ * more levels to two, or from two); pinned papers let go, counted. Null
+ * where there is nothing to say.
  */
 export function changeWords(
   saved: CabinetLayout | null,
@@ -1413,16 +1196,9 @@ export function changeWords(
       : pinsLost === 1
         ? ' 1 pinned paper is in a folder this arrangement doesn’t keep: you are asked before it is let go.'
         : ` ${pinsLost} pinned papers are in folders this arrangement doesn’t keep: you are asked before they are let go.`;
-  const hand = draft.cabinets.filter((c) => !c.drawn).length;
-  const handWords =
-    hand === 0
-      ? ''
-      : hand === 1
-        ? ' Your cabinet arranged by hand stays as it is, beside the drawn ones.'
-        : ` Your ${hand} cabinets arranged by hand stay as they are, beside the drawn ones.`;
   const kept =
     'Names you gave, hidden folders and pins are kept wherever the same folder is drawn again; you are asked first before any pin is let go.';
-  if (saved.levels === null) return `${kept}${handWords}${pinWords}`;
+  if (!saved.levels) return `${kept}${pinWords}`;
   if (sameLevels(saved.levels, draft.levels)) return pinWords.trim() || null;
   if (sameLevels(nodeLevels(saved.levels), nodeLevels(draft.levels))) {
     return pinWords
@@ -1439,15 +1215,16 @@ export function changeWords(
     own.length === 0
       ? ''
       : ` ${own.join(', ')} ${own.length === 1 ? 'has its own arrangement, which is' : 'have their own arrangements, which are'} let go: ${draft.levels.length < LEVEL_LIMITS.nodes ? 'with two levels there is one cabinet, which follows them' : 'the first level, the cabinets themselves, changes'}.`;
-  return `${kept}${ownWords}${handWords}${pinWords}`;
+  return `${kept}${ownWords}${pinWords}`;
 }
 
 /**
  * Arrange my cabinet (0.9.0-dev.90): the levels it is drawn by — the
  * default for every cabinet, or one cabinet's own below it — chosen and put
  * in order, drawn by the vault over what is there, then each part to rename,
- * hide, move or merge, and Use this arrangement. Cabinets arranged by hand
- * are kept beside the drawn ones.
+ * hide, move or merge, and Use this arrangement. One structure
+ * (0.9.0-dev.94): every cabinet is drawn by the levels, and Cancel and Use
+ * this arrangement stay in a bar at the foot of the screen.
  */
 function ArrangeCabinet(props: {
   saved: CabinetView;
@@ -1520,6 +1297,26 @@ function ArrangeCabinet(props: {
   };
   const [busy, setBusy] = useState(false);
   const [focusOn, setFocusOn] = useState<{ id: string; act: string } | null>(null);
+  /** The screen, and its bar of Cancel and Use this arrangement at the foot. */
+  const screenRef = useRef<HTMLElement>(null);
+  const barRef = useRef<HTMLDivElement>(null);
+  // The bar's height as it is now — a refusal said in it, its buttons on two
+  // rows — kept on the screen (`--arrange-bar-h`): a part tabbed to stops
+  // that far above the foot, never under the bar.
+  useEffect(() => {
+    const bar = barRef.current;
+    const screen = screenRef.current;
+    if (!bar || !screen || typeof ResizeObserver === 'undefined') return;
+    const follow = () =>
+      screen.style.setProperty(
+        '--arrange-bar-h',
+        `${Math.ceil(bar.getBoundingClientRect().height)}px`,
+      );
+    follow();
+    const watch = new ResizeObserver(follow);
+    watch.observe(bar);
+    return () => watch.disconnect();
+  }, []);
 
   /** What was last drawn: drawn again once issuers are said to be the same, or separate. */
   const [lastAsk, setLastAsk] = useState<{
@@ -1614,15 +1411,13 @@ function ArrangeCabinet(props: {
   const size = draft ? cabinetSize(draft) : null;
   const tooBig = size?.over !== null && size?.over !== undefined;
   // What the picker warns of: only the cabinets it would redraw — those
-  // that follow the default, or the one being arranged — never one arranged
-  // by hand, nor another with its own arrangement.
+  // that follow the default, or the one being arranged — never another with
+  // its own arrangement.
   const scopeSize = draft
     ? cabinetSize({
         levels: draft.levels,
         cabinets: draft.cabinets.filter((c) =>
-          scope === 'default'
-            ? draft.levels !== null && c.drawn && !c.drawn.levels
-            : c.id === scope,
+          scope === 'default' ? !c.drawn?.levels : c.id === scope,
         ),
       })
     : null;
@@ -1868,7 +1663,7 @@ function ArrangeCabinet(props: {
   const note = changeWords(saved.layout, draft, lost);
 
   return (
-    <section className="arrange stack" aria-labelledby="arrange-h">
+    <section ref={screenRef} className="arrange stack" aria-labelledby="arrange-h">
       <div>
         <h2 id="arrange-h" className="section-h">
           Arrange my cabinet
@@ -1897,7 +1692,6 @@ function ArrangeCabinet(props: {
           scopeSize={scopeSize}
           loading={loading}
           note={note}
-          byHand={draft !== null && draft.levels === null}
           onChoose={choose}
           onUseDefault={scoped ? () => followDefault(scoped) : undefined}
           onSaveAnyway={() => void use()}
@@ -1935,10 +1729,8 @@ function ArrangeCabinet(props: {
                   index: ci,
                   count: draft.cabinets.length,
                   extra:
-                    cabinetMark(draft, c) === 'default' ? undefined : (
-                      <span className={`badge badge-${cabinetMark(draft, c)}`}>
-                        {MARK_WORDS[cabinetMark(draft, c)]}
-                      </span>
+                    cabinetMark(c) === 'default' ? undefined : (
+                      <span className="badge badge-own">{MARK_WORDS.own}</span>
                     ),
                   rename: (l, v) => {
                     (l.cabinets[ci] as Cabinet).name = v;
@@ -2087,19 +1879,29 @@ function ArrangeCabinet(props: {
       <p className="visually-hidden" role="status" aria-live="polite">
         {said}
       </p>
-      <ErrorNote message={error} />
-      <div className="actions">
-        <Button kind="quiet" onClick={props.onCancel}>
-          Cancel
-        </Button>
-        {newer && (
-          <Button kind="quiet" onClick={loadNewer}>
-            Load the newer arrangement
+      {/* Always in reach (0.9.0-dev.94): at the foot of the screen while the
+          levels, the cabinets and the drawing scroll under it, last in the
+          reading and Tab order; a refusal said beside the buttons. */}
+      <div
+        ref={barRef}
+        className="arrange-bar"
+        role="region"
+        aria-label="Save or cancel this arrangement"
+      >
+        <ErrorNote message={error} />
+        <div className="actions">
+          <Button kind="quiet" onClick={props.onCancel}>
+            Cancel
           </Button>
-        )}
-        <Button disabled={!draft || loading || busy || tooBig} onClick={() => void use()}>
-          {busy ? 'Saving…' : 'Use this arrangement'}
-        </Button>
+          {newer && (
+            <Button kind="quiet" onClick={loadNewer}>
+              Load the newer arrangement
+            </Button>
+          )}
+          <Button disabled={!draft || loading || busy || tooBig} onClick={() => void use()}>
+            {busy ? 'Saving…' : 'Use this arrangement'}
+          </Button>
+        </div>
       </div>
       {losing !== null && (
         <ConfirmDialog
@@ -2121,8 +1923,8 @@ function ArrangeCabinet(props: {
 
 /**
  * What to arrange: the default, for every cabinet, and each cabinet with
- * how it is arranged — following the default, its own, or by hand — and,
- * for a drawn one, a ⋯ menu: Arrange this cabinet, and Use the default again.
+ * how it is arranged — following the default, or its own below the
+ * cabinet level — and a ⋯ menu: Arrange this cabinet, and Use the default again.
  */
 function ArrangeScopes(props: {
   draft: CabinetLayout | null;
@@ -2152,8 +1954,7 @@ function ArrangeScopes(props: {
         </button>
       </li>
       {(draft?.cabinets ?? []).map((c) => {
-        const mark = cabinetMark(draft as CabinetLayout, c);
-        const offered = ownOffered && mark !== 'hand';
+        const mark = cabinetMark(c);
         return (
           <li key={c.id} className="arrange-scope-cab">
             <div className="arrange-scope" aria-current={props.scope === c.id ? 'true' : undefined}>
@@ -2163,7 +1964,7 @@ function ArrangeScopes(props: {
                 <span className={`badge badge-${mark}`}>{MARK_WORDS[mark]}</span>
               </span>
             </div>
-            {offered && (
+            {ownOffered && (
               <CabinetMenu
                 cabinet={c}
                 open={menu === c.id}
@@ -2285,7 +2086,6 @@ function LevelPicker(props: {
   scopeSize: CabinetSize | null;
   loading: boolean;
   note: string | null;
-  byHand: boolean;
   onChoose: (levels: CabinetLevel[], words: string) => void;
   onUseDefault: (() => void) | undefined;
   onSaveAnyway: () => void;
@@ -2380,10 +2180,8 @@ function LevelPicker(props: {
       </div>
       <p className="muted">
         {scope
-          ? `The cabinet itself always comes from the default’s first level, ${name(scope.defaults[0] as CabinetLevel)}. Choose what goes inside it: ${levelsWords(scope.defaults.slice(1))} by default.`
-          : props.byHand
-            ? 'Your cabinet is arranged by hand. Choose levels to add drawn cabinets beside your own, which stay as they are.'
-            : 'Every cabinet follows this order unless its ⋯ menu gives it its own. Only the first three levels make cabinets, drawers and folders; a fourth and fifth are dividers inside each folder, so they cost no folders.'}
+          ? `The cabinet itself always comes from the default’s first level, ${name(scope.defaults[0] as CabinetLevel)}. Choose what goes inside it: ${levelsWords(scope.defaults.slice(1))} by default. If the default’s first level changes, this cabinet follows the default again.`
+          : 'Every cabinet follows this order unless its ⋯ menu gives it its own. Only the first three levels make cabinets, drawers and folders; a fourth and fifth are dividers inside each folder, so they cost no folders.'}
       </p>
       {!scope && (
         <div className="level-chips" role="group" aria-label="Start from">

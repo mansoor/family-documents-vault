@@ -85,7 +85,8 @@ const cabinet = z
   .strict();
 const layoutBody = z
   .object({
-    // Absent or null: arranged by hand (0.9.0-dev.90).
+    // Absent or null: refused by PUT /cabinet (0.9.0-dev.94), in words;
+    // the empty starting point of a preview.
     levels: levels.nullable().optional(),
     // What older apps still send (deprecated): ignored.
     arranged_by: z.string().max(40).nullable().optional(),

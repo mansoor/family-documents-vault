@@ -21,6 +21,7 @@ import { deviceKeyHash } from './devices/service.js';
 import {
   alertsSent,
   appKeyFor,
+  asArranged,
   basicFor,
   createHarness,
   mailSent,
@@ -3876,7 +3877,10 @@ describe.skipIf(!testAdminUrl())('the release exit (Phase 5, and Phase 6 for 0.7
     };
     const counted = async (who: Tokens) => {
       const at = json<{ version: number }>(await ok(send(who, 'GET', '/api/v1/cabinet'), 200));
-      await ok(send(who, 'PUT', '/api/v1/cabinet', { layout, version: at.version }), 200);
+      await ok(
+        send(who, 'PUT', '/api/v1/cabinet', { layout: asArranged(layout), version: at.version }),
+        200,
+      );
       return json<{ counts: Record<string, number | null> }>(
         await ok(send(who, 'GET', '/api/v1/cabinet/counts'), 200),
       ).counts;

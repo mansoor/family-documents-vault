@@ -1160,7 +1160,9 @@ export function createApi(http: Http) {
      * conflict` when it changed meanwhile (another window or device),
      * nothing saved. Each folder's `filter` is GET /documents's own
      * parameters, checked by the list's parser (`422 validation_failed`
-     * naming the folder); a layout too big is `422 cabinet_too_big`.
+     * naming the folder); a layout too big is `422 cabinet_too_big`. One
+     * structure (0.9.0-dev.94): a layout without `levels`, or with a
+     * cabinet without `drawn`, is `422 cabinet_levels`.
      */
     saveCabinet: (token: string, body: CabinetSave) =>
       request<CabinetView>('/api/v1/cabinet', { method: 'PUT', body, token }),
@@ -1181,9 +1183,9 @@ export function createApi(http: Http) {
     /**
      * Bring your tree (0.9.0, C4, `features.source_folders`): the caller's
      * cabinet with a folder for each folder their papers came from, added
-     * beside what is there — shown, not saved. Keep it with `saveCabinet`
-     * and its `layout` and `version` (409 if the cabinet changed since). A
-     * viewer or a guest is `403`.
+     * beside what is there — shown, not saved. Its "My folders" cabinet is
+     * drawn by no levels, so `saveCabinet` refuses it (0.9.0-dev.94: `422
+     * cabinet_levels`). A viewer or a guest is `403`.
      */
     cabinetFromFolders: (token: string) =>
       request<CabinetFromFolders>('/api/v1/cabinet/from-folders', { token }),

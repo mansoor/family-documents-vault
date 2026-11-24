@@ -254,7 +254,7 @@ describe('a level with one group, passed over', () => {
     expect(dividerDims({ ...folder, dividers: { levels: [], ranges: [] } })).toEqual([]);
   });
 
-  it('hides year dividers with only one year to show, in a folder arranged by hand too', () => {
+  it('hides year dividers with only one year to show, in a folder that asks no year too', () => {
     // A folder that asks no year, whose papers happen to be all of 2026.
     const byHand = { filter: { category: 'financial' } };
     expect(keys(shownDividers(byHand, counts({ 'year:2026': 3 })))).toEqual([['all', 3]]);

@@ -35,6 +35,8 @@ import {
   redrawCabinet,
   RedrawRefused,
   cabinetSize,
+  drawnCabinets,
+  structureProblem,
   shortName,
   type CabinetGroup,
   type CabinetPreviewAsk,
@@ -6618,7 +6620,15 @@ export function installFakeApi(state: FakeState) {
     // table's own answer for them.
     const alsoInAt = /^\/api\/v1\/documents\/([^/]+)\/also-in$/.exec(path);
     if (path.startsWith('/api/v1/cabinet') || alsoInAt) {
-      const held: CabinetView = state.cabinet ?? { layout: null, version: 0, updated_at: null };
+      const stored: CabinetView = state.cabinet ?? { layout: null, version: 0, updated_at: null };
+      // As the vault reads it (0.9.0-dev.94): one structure, a layout
+      // without levels none yet, and only the cabinets drawn by them.
+      const held: CabinetView = {
+        ...stored,
+        layout: Array.isArray(stored.layout?.levels)
+          ? { ...stored.layout, cabinets: drawnCabinets(stored.layout) }
+          : null,
+      };
       const folders = (held.layout?.cabinets ?? [])
         .filter((c) => !c.hidden)
         .flatMap((c) =>
@@ -6790,6 +6800,9 @@ export function installFakeApi(state: FakeState) {
       if (path === '/api/v1/cabinet' && method === 'PUT') {
         const sent = body as { layout: CabinetLayout; version: number; pins_moved?: PinsMoved[] };
         (state.cabinetSaves ??= []).push(sent);
+        // One structure (0.9.0-dev.94): levels, and every cabinet drawn by them.
+        const loose = structureProblem(sent.layout);
+        if (loose !== null) return refuse(422, 'cabinet_levels', loose);
         if (sent.version !== held.version) {
           return refuse(409, 'conflict', 'Your cabinet was changed somewhere else.');
         }
@@ -6805,7 +6818,7 @@ export function installFakeApi(state: FakeState) {
         }
         state.cabinetPins = pins.filter((x) => kept.has(x.folder_id));
         state.cabinet = {
-          layout: { ...sent.layout, levels: sent.layout.levels ?? null },
+          layout: sent.layout,
           version: held.version + 1,
           updated_at: new Date().toISOString(),
         };

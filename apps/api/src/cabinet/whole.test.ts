@@ -8,7 +8,7 @@ import {
   type Tokens,
 } from '@fdv/shared';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { createHarness, type Harness } from '../test-harness.js';
+import { asArranged, createHarness, type Harness } from '../test-harness.js';
 
 /**
  * The whole cabinet (19 Nov 2026): the owner's Table said 15 documents and
@@ -57,7 +57,9 @@ describe.skipIf(!testAdminUrl())('the whole cabinet', () => {
   const mine = (who: Person) => ok<CabinetView>(call(who, 'GET', '/api/v1/cabinet'));
   const saved = async (who: Person, layout: CabinetLayout) => {
     const at = await mine(who);
-    return ok<CabinetView>(call(who, 'PUT', '/api/v1/cabinet', { layout, version: at.version }));
+    return ok<CabinetView>(
+      call(who, 'PUT', '/api/v1/cabinet', { layout: asArranged(layout), version: at.version }),
+    );
   };
   const counts = (who: Person) => ok<CabinetCounts>(call(who, 'GET', '/api/v1/cabinet/counts'));
   /** The Documents table's total, unfiltered, as the web asks it. */
@@ -238,7 +240,7 @@ describe.skipIf(!testAdminUrl())('the whole cabinet', () => {
     expect(statements.filter((q) => q.includes('documentPlaces'))).toEqual([]);
   });
 
-  it('a cabinet arranged by hand is never changed: what it holds nowhere is counted, and listed', async () => {
+  it('what a cabinet holds nowhere is counted, and listed', async () => {
     await saved('adult', {
       levels: null,
       cabinets: [

@@ -24,6 +24,7 @@ import {
   CABINET_LIMITS,
   CABINET_TOO_BIG,
   HOUSEHOLD_MEMBER_FILTER,
+  drawnCabinets,
   layoutProblemOf,
   layoutSize,
   LOCATION_SORT_REFUSAL,
@@ -32,6 +33,7 @@ import {
   NOT_SURE_YET,
   NOTE_KIND,
   shortName,
+  structureProblem,
   THE_HOUSEHOLD,
   type AlsoIn,
   type CabinetCounts,
@@ -201,16 +203,16 @@ async function dividerOf(
 }
 
 /**
- * A layout as the vault reads it (0.9.0-dev.90): its levels, or null —
- * arranged by hand, as a layout saved before levels reads — and a folder's
- * dividers left off where they are not as this release keeps them.
+ * A layout as the vault reads it: one structure (0.9.0-dev.94), its levels
+ * and the cabinets drawn by them alone — a layout without levels reads as
+ * none yet (`levels` null, no cabinets) — and a folder's dividers left off
+ * where they are not as this release keeps them.
  */
 export function readLayout(raw: unknown): CabinetLayout {
   const l = raw as Partial<CabinetLayout> | null | undefined;
-  const cabinets = Array.isArray(l?.cabinets) ? l.cabinets : [];
   return {
     levels: Array.isArray(l?.levels) ? l.levels : null,
-    cabinets: cabinets.map((c) => ({
+    cabinets: drawnCabinets(raw).map((c) => ({
       ...c,
       drawers: (Array.isArray(c.drawers) ? c.drawers : []).map((d) => ({
         ...d,
@@ -258,13 +260,14 @@ export class CabinetService {
   ) {}
 
   /**
-   * GET /cabinet: the caller's layout; none until they save one. One drawn
-   * by levels is kept up to date first (19 Nov 2026): a paper no folder of
-   * its drawn cabinets holds, shown or hidden, by its question or a pin — one of
-   * a topic, year or person there was none of when it was drawn — gets the
-   * folder the drawing would have given it (`addToDrawing`), up to what a
-   * cabinet may hold, saved as a new version made to the one read. A layout
-   * arranged by hand is never changed. The papers are only looked over when
+   * GET /cabinet: the caller's layout; none until they save one, and none
+   * for a layout without levels (0.9.0-dev.94), though its `version` is
+   * the row's, for the first arrangement to be saved over. It is kept up to
+   * date first (19 Nov 2026): a paper no folder of its cabinets holds, shown
+   * or hidden, by its question or a pin — one of a topic, year or person
+   * there was none of when it was drawn — gets the folder the drawing would
+   * have given it (`addToDrawing`), up to what a cabinet may hold, saved as
+   * a new version made to the one read. The papers are only looked over when
    * one the caller sees was added or changed since the layout was saved, and
    * not again while nothing has changed since they last were.
    */
@@ -283,7 +286,8 @@ export class CabinetService {
         version: row.version,
         updated_at: row.updated_at.toISOString(),
       };
-      if (layout.levels === null) return { view, unheld: [] };
+      // No levels: no arrangement yet.
+      if (layout.levels === null) return { view: { ...view, layout: null }, unheld: [] };
       // Issuers said to be the same since it was drawn (0.9.0-dev.91): their
       // folders, drawers or cabinets made one first, saved as a new version.
       const merged = await mergedIssuers(trx, p, layout, row.version);
@@ -302,10 +306,8 @@ export class CabinetService {
       ) {
         return { view, unheld: [] };
       }
-      // Held by a drawn cabinet's folder or pin: one arranged by hand holds
-      // nothing for the drawing, which grows a folder of its own beside it.
-      const drawn = { ...layout, cabinets: layout.cabinets.filter((c) => c.drawn) };
-      const placed = await placesOf(trx, p, drawn, 'every', byIssuer(layout));
+      // Held by a folder or pin of its cabinets.
+      const placed = await placesOf(trx, p, layout, 'every', byIssuer(layout));
       remember(LOOKED_OVER, key, looked);
       const unheld = placed.documents.filter((d) => d.folders === 0);
       // Who issued them, as the reader knows each group, where it is a level.
@@ -319,8 +321,8 @@ export class CabinetService {
     if (!read) return { layout: null, version: 0, updated_at: null };
     const { view, unheld } = read;
     const fold = 'fold' in read ? read.fold : null;
+    if (unheld.length === 0 || view.layout === null) return view;
     const layout = readLayout(view.layout);
-    if (unheld.length === 0) return view;
     // Folders to add: named as the caller is given people and kinds, and
     // saved only over the version read — a change made meanwhile wins.
     const kinds = await this.kindNames(p);
@@ -363,9 +365,11 @@ export class CabinetService {
 
   /**
    * PUT /cabinet: the whole layout, made to the version the caller last
-   * read (0 for none yet) — else `409 conflict`, nothing saved. Its shape
-   * and size are checked, and each folder's question by the list's own
-   * parser: a folder never asks what the list would refuse its person.
+   * read (0 for none yet) — else `409 conflict`, nothing saved. One
+   * structure (0.9.0-dev.94): what no drawing makes — a layout without
+   * levels, a cabinet not drawn by them — is `422 cabinet_levels`. Its shape and size are checked, and each
+   * folder's question by the list's own parser: a folder never asks what
+   * the list would refuse its person.
    */
   async save(
     p: Principal,
@@ -377,9 +381,13 @@ export class CabinetService {
     // spaces before its words would otherwise pass as its trimmed words,
     // and be kept, and written on documents, as more than the database takes.
     layout = trimmedNames(layout);
-    // As it is kept (0.9.0-dev.90): its levels, null for none sent, and
-    // nothing of `arranged_by`, which older apps still send.
-    layout = { levels: layout.levels ?? null, cabinets: layout.cabinets };
+    const loose = structureProblem(layout);
+    if (loose !== null) {
+      throw new ApiError(422, 'cabinet_levels', loose, { detail: 'layout' });
+    }
+    // As it is kept: its levels and cabinets, nothing of `arranged_by`,
+    // which older apps still send.
+    layout = { levels: layout.levels, cabinets: layout.cabinets };
     checkLayout(p, layout);
     const json = JSON.stringify(layout);
     return withPrincipal(this.db, p, async (trx) => {
@@ -572,7 +580,7 @@ export class CabinetService {
            limit ${FROM_FOLDERS_MOST}`.execute(trx)
       ).rows;
       // What the layout's folders ask, lowered as the filter lowers them.
-      const asked = await loweredFolders(trx, row?.layout as CabinetLayout | undefined);
+      const asked = await loweredFolders(trx, row ? readLayout(row.layout) : undefined);
       return { row, rows, asked };
     });
     const folders: SourceFolder[] = rows
@@ -611,11 +619,12 @@ export class CabinetService {
       // Folders papers came from that this cabinet has none for yet (C4):
       // whether there are any, asked cheaply, for the page to offer them.
       const newFolders = maySortByLocation(p.role)
-        ? await hasNewFolders(trx, p, row?.layout as CabinetLayout | undefined)
+        ? await hasNewFolders(trx, p, row ? readLayout(row.layout) : undefined)
         : undefined;
       const fresh = newFolders === undefined ? {} : { new_folders: newFolders };
       if (!row) return { version: 0, counts: {}, ...fresh };
-      const shown = shownFolders(readLayout(row.layout));
+      const layout = readLayout(row.layout);
+      const shown = shownFolders(layout);
       // Each folder's pins the caller may still open, counted once: its
       // question counts what it holds besides them (C2).
       const pins = await livePins(trx, p);
@@ -637,9 +646,12 @@ export class CabinetService {
         counts[s.folder.id] = placed.counts[i] ?? null;
       });
       // Every folder's live pins, hidden ones too: what saving a new
-      // arrangement would let go of, said before it is (C2 review).
+      // arrangement would let go of, said before it is (C2 review). Only
+      // the folders of its cabinet as it reads (0.9.0-dev.94): a pin left in
+      // a folder no longer there is never one to ask about.
+      const ids = new Set(everyFolder(layout).map((f) => f.id));
       const pinsOf: Record<string, number> = {};
-      for (const [folder, docs] of pins) pinsOf[folder] = docs.length;
+      for (const [folder, docs] of pins) if (ids.has(folder)) pinsOf[folder] = docs.length;
       return {
         version: row.version,
         counts,
@@ -846,9 +858,13 @@ export class CabinetService {
         .forUpdate()
         .executeTakeFirst();
       // A shown folder of theirs: a hidden one is not offered, and not taken (C2 review).
-      if (!row || !shownFolders(readLayout(row.layout)).some((s) => s.folder.id === folderId)) {
+      const layout = row ? readLayout(row.layout) : null;
+      if (!layout || !shownFolders(layout).some((s) => s.folder.id === folderId)) {
         throw notFound('That folder');
       }
+      // Counted toward the caps: pins in the folders of their cabinet as it
+      // reads (0.9.0-dev.94), never one left in a folder no longer there.
+      const folderIds = everyFolder(layout).map((f) => f.id);
       const seen = (
         await sql<{ id: string; in_trash: boolean }>`
           select d.id, d.deleted_at is not null as in_trash
@@ -871,7 +887,8 @@ export class CabinetService {
                    count(*)::int as every
               from cabinet_pin
              where household_id = ${p.householdId}::uuid
-               and member_id = ${p.memberId}::uuid`.execute(trx)
+               and member_id = ${p.memberId}::uuid
+               and folder_id = any(${folderIds}::text[])`.execute(trx)
         ).rows[0];
         return (n?.here ?? 0) > PIN_LIMITS.folder || (n?.every ?? 0) > PIN_LIMITS.total;
       };

@@ -16,7 +16,9 @@ import {
   CABINET_LIMITS,
   CABINET_TOO_BIG,
   dividerKeyOf,
+  drawnCabinets,
   layoutProblemOf,
+  structureProblem,
   PIN_IN_TRASH,
   PIN_LIMITS,
   shownDividers,
@@ -4732,10 +4734,18 @@ export function createFakeVault(): {
       if (!('id' in s)) return s;
       const who = whoOf(s);
       const cabinets = (state.cabinets ??= {});
-      const held: CabinetView = cabinets[who.memberId] ?? {
+      const stored: CabinetView = cabinets[who.memberId] ?? {
         layout: null,
         version: 0,
         updated_at: null,
+      };
+      // As the vault reads it (0.9.0-dev.94): one structure, a layout
+      // without levels none yet, and only the cabinets drawn by them.
+      const held: CabinetView = {
+        ...stored,
+        layout: Array.isArray(stored.layout?.levels)
+          ? { ...stored.layout, cabinets: drawnCabinets(stored.layout) }
+          : null,
       };
       /** Every document the table gives this person for a folder's question, or its refusal. */
       const tabled = async (
@@ -4892,11 +4902,8 @@ export function createFakeVault(): {
           cabinets[who.memberId] = held;
           layout = merged.layout;
         }
-        // Held by a drawn cabinet's folder or pin: one arranged by hand holds nothing for it.
-        const all = await placed(
-          { ...layout, cabinets: layout.cabinets.filter((c) => c.drawn) },
-          'every',
-        );
+        // Held by a folder or pin of its cabinets.
+        const all = await placed(layout, 'every');
         if ('status' in all) return ok(held);
         const unheld = all.filter((x) => x.folders === 0).map((x) => x.doc);
         // Ids never one the cabinet has: a fresh one each time, as the vault's are random.
@@ -4940,14 +4947,18 @@ export function createFakeVault(): {
         ) {
           return fail(422, 'validation_failed', 'Please check the form.');
         }
+        // One structure (0.9.0-dev.94), checked first as the vault checks it:
+        // levels, and every cabinet drawn by them.
+        const loose = structureProblem(layout);
+        if (loose !== null) return fail(422, 'cabinet_levels', loose, 'layout');
         if (JSON.stringify(layout).length > CABINET_LIMITS.layout_bytes) {
           return fail(422, 'cabinet_too_big', CABINET_TOO_BIG);
         }
         const problem = layoutProblemOf(layout);
         if (problem !== null) return fail(422, problem.code, problem.message);
-        // As the vault keeps it: its levels, null for none sent; nothing of `arranged_by`.
+        // As the vault keeps it: nothing of `arranged_by`.
         const keptLayout: CabinetLayout = {
-          levels: layout.levels ?? null,
+          levels: layout.levels,
           cabinets: layout.cabinets,
         };
         for (const { f } of shown({

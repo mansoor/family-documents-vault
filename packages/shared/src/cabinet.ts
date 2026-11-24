@@ -240,9 +240,9 @@ export interface DrawnFrom {
 export interface Cabinet extends Node {
   drawers: CabinetDrawer[];
   /**
-   * How it was drawn (0.9.0-dev.90). A cabinet without it was arranged by
-   * hand (a kept folder tree, say): never redrawn, never grown, kept beside
-   * the drawn ones.
+   * How it was drawn (0.9.0-dev.90). Every cabinet is drawn by the layout's
+   * levels (0.9.0-dev.94): `PUT /cabinet` refuses one without it, and one
+   * read without it is not there.
    */
   drawn?: DrawnFrom | undefined;
 }
@@ -250,8 +250,9 @@ export interface Cabinet extends Node {
 /** A person's whole arrangement: their cabinets, in order. */
 export interface CabinetLayout {
   /**
-   * The default levels every drawn cabinet follows (0.9.0-dev.90), 2 to 5;
-   * null for a cabinet arranged by hand, which is never redrawn or grown.
+   * The default levels every cabinet follows (0.9.0-dev.90), 2 to 5. Always
+   * set on a layout the vault answers (0.9.0-dev.94); null only on a
+   * drawing's empty starting point, and refused by `PUT /cabinet`.
    */
   levels: CabinetLevel[] | null;
   /** What older apps read (deprecated): the vault sends null, and ignores what it is sent. */
@@ -439,6 +440,53 @@ export function layoutSize(layout: CabinetLayout): {
  */
 export function layoutProblem(layout: CabinetLayout): string | null {
   return layoutProblemOf(layout)?.message ?? null;
+}
+
+/**
+ * A stored layout's cabinets, as they are read (0.9.0-dev.94): one structure,
+ * every cabinet drawn by the layout's levels. A layout without levels holds
+ * none, and a cabinet without `drawn` is not one.
+ */
+export function drawnCabinets(raw: unknown): Cabinet[] {
+  const l = raw as Partial<CabinetLayout> | null | undefined;
+  if (!Array.isArray(l?.levels) || !Array.isArray(l.cabinets)) return [];
+  return l.cabinets.filter((c): c is Cabinet => typeof c?.drawn === 'object' && c.drawn !== null);
+}
+
+export const CABINET_NEEDS_LEVELS =
+  'Choose the levels to arrange your cabinet by: every cabinet is drawn by them.';
+export const CABINET_NOT_DRAWN =
+  'Every cabinet is drawn by your arrangement’s levels: arrange your cabinet again and use that.';
+export const CABINET_DRAWN_TWICE =
+  'Another cabinet is drawn for the same papers: arrange your cabinet again and use that.';
+
+/**
+ * What `PUT /cabinet` refuses before anything else (0.9.0-dev.94, `422
+ * cabinet_levels`): what no drawing makes. A layout without levels; a
+ * cabinet not drawn by them; with two levels, a cabinet drawn for a value
+ * (the one cabinet of two levels is drawn for none, `null`); with three or
+ * more, one drawn for none; and two drawn for the same value. Null for none.
+ */
+export function structureProblem(layout: {
+  levels?: unknown;
+  cabinets: ReadonlyArray<{ name: string; drawn?: unknown }>;
+}): string | null {
+  if (!Array.isArray(layout.levels)) return CABINET_NEEDS_LEVELS;
+  const one = layout.levels.length <= LEVEL_LIMITS.fewest;
+  const seen = new Set<string | null>();
+  for (const c of layout.cabinets) {
+    const named = (words: string) => `The cabinet “${c.name.trim()}”: ${words}`;
+    const drawn = c.drawn as { value?: unknown } | null | undefined;
+    if (typeof drawn !== 'object' || drawn === null) return named(CABINET_NOT_DRAWN);
+    const value = drawn.value;
+    if (one ? value !== null : typeof value !== 'string' || value === '') {
+      return named(CABINET_NOT_DRAWN);
+    }
+    const key = value as string | null;
+    if (seen.has(key)) return named(CABINET_DRAWN_TWICE);
+    seen.add(key);
+  }
+  return null;
 }
 
 /** What a refused layout is answered with: its code, and its words. */

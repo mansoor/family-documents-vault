@@ -7,9 +7,8 @@ import { fresh, installFakeApi, ME, PASSPORT, signedIn, type FakeState } from '.
 
 /**
  * The folder a paper came from (0.9.0, C4): said on a document's page as a
- * way to the other papers from it, forgotten after a confirm, and its tree
- * kept as the reader's cabinet — looked over first, added beside what is
- * there, and confirmed when there is a cabinet already.
+ * way to the other papers from it, and forgotten after a confirm. Its tree
+ * is not offered as a cabinet: every cabinet is drawn by the arrangement.
  */
 
 function atWidth(px: number) {
@@ -43,12 +42,13 @@ afterEach(() => {
 });
 
 const LAYOUT: CabinetLayout = {
-  levels: null,
+  levels: ['topic', 'year', 'person'],
   cabinets: [
     {
       id: 'c-study',
       name: 'Study cabinet',
       hidden: false,
+      drawn: { value: 'identity' },
       drawers: [
         {
           id: 'd-two',
@@ -136,57 +136,23 @@ describe('the table', () => {
   });
 });
 
-describe('Keep this folder tree as my cabinet', () => {
-  it('is offered beside my cabinet, looked over, and added beside it after a confirm', async () => {
+describe('a folder tree as my cabinet', () => {
+  // Not offered (0.9.0-dev.94): every cabinet is drawn by the arrangement's
+  // levels, and "My folders" would be a cabinet beside them.
+  it('is offered nowhere: not beside my cabinet, nor on an empty one, nor from its address', async () => {
     const state = at('/documents?show=cabinet');
-    const offer = await screen.findByRole('link', { name: 'Keep my folder tree' });
-    // Offered from the counts alone: nothing is drawn until it is asked for.
+    expect(await screen.findByRole('button', { name: 'Arrange my cabinet' })).toBeVisible();
+    expect(screen.queryByRole('link', { name: 'Keep my folder tree' })).toBeNull();
+    cleanup();
+    at('/documents?show=cabinet', { cabinet: { layout: null, version: 0, updated_at: null } });
+    expect(await screen.findByRole('heading', { name: 'Your cabinet is empty' })).toBeVisible();
+    expect(screen.queryByRole('button', { name: 'Use my folder tree' })).toBeNull();
+    cleanup();
+    at('/documents?show=cabinet&from=folders');
+    expect(await screen.findByRole('button', { name: 'Arrange my cabinet' })).toBeVisible();
+    expect(
+      screen.queryByRole('heading', { name: 'Keep this folder tree as my cabinet' }),
+    ).toBeNull();
     expect(state.calls.some((c) => c.url.includes('/cabinet/from-folders'))).toBe(false);
-    fireEvent.click(offer);
-    expect(
-      await screen.findByRole('heading', { name: 'Keep this folder tree as my cabinet' }),
-    ).toBeVisible();
-    const tree = await screen.findByRole('list', { name: 'New in “My folders”' });
-    expect(within(tree).getByText('Taxes', { selector: 'strong' })).toBeVisible();
-    expect(within(tree).getByText('2025')).toBeVisible();
-    expect(
-      screen.getByText(/2 new folders, 1 new drawer, in the cabinet “My folders”/),
-    ).toBeVisible();
-    fireEvent.click(screen.getByRole('button', { name: 'Keep this folder tree' }));
-    const dialog = await screen.findByRole('alertdialog', {
-      name: 'Add 2 folders to your cabinet?',
-    });
-    expect(dialog).toHaveTextContent('Your other cabinets, drawers and folders stay as they are');
-    // Nothing saved until it is confirmed.
-    expect(state.cabinetSaves ?? []).toEqual([]);
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Add the folders' }));
-    await waitFor(() => expect(state.cabinetSaves).toHaveLength(1));
-    const saved = state.cabinetSaves?.[0];
-    expect(saved?.version).toBe(1);
-    expect(saved?.layout.cabinets[0]).toEqual(LAYOUT.cabinets[0]);
-    expect(saved?.layout.cabinets[1]?.name).toBe('My folders');
-  });
-
-  it('builds a first cabinet from the tree when there is none, looked over first', async () => {
-    const state = at('/documents?show=cabinet', {
-      cabinet: { layout: null, version: 0, updated_at: null },
-      fromFolders: drawn(null, 0),
-    });
-    fireEvent.click(await screen.findByRole('button', { name: 'Use my folder tree' }));
-    fireEvent.click(await screen.findByRole('button', { name: 'Keep this folder tree' }));
-    await waitFor(() => expect(state.cabinetSaves).toHaveLength(1));
-    expect(state.cabinetSaves?.[0]?.layout.cabinets.map((c) => c.name)).toEqual(['My folders']);
-  });
-
-  it('says so when every folder is in the cabinet already, and offers nothing', async () => {
-    const kept = drawn(LAYOUT, 1);
-    at('/documents?show=cabinet&from=folders', {
-      cabinet: { layout: kept.layout, version: 2, updated_at: '2026-11-16T10:00:00Z' },
-      fromFolders: drawn(kept.layout, 2),
-    });
-    expect(
-      await screen.findByText('Your cabinet has a folder for each of them already.'),
-    ).toBeVisible();
-    expect(screen.queryByRole('button', { name: 'Keep this folder tree' })).toBeNull();
   });
 });
