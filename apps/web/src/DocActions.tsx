@@ -32,6 +32,7 @@ import {
 } from './ui.js';
 import { createUploadKeys, whileInProgress } from './upload-keys.js';
 import { NeededAgainQuestion } from './no-longer-needed.js';
+import { PrintFromRow } from './print-document.js';
 
 /**
  * Quick actions on every document (5.4): a ⋯ beside each row in a list
@@ -43,6 +44,7 @@ import { NeededAgainQuestion } from './no-longer-needed.js';
 export type DocAction =
   | 'open'
   | 'download'
+  | 'print'
   | 'read'
   | 'edit'
   | 'share'
@@ -90,7 +92,9 @@ export function mayChange(
  *
  * `collections`: collections are offered to this reader (5.15), so anything they can
  * see may go in one of theirs. `uncollect`: the row is in a collection the reader
- * may change, on that collection's page.
+ * may change, on that collection's page. `print`: the list offers Print
+ * (the Documents table's ⋯, and a collection's: the owner's ask of 24 Nov
+ * 2026), which goes beside Download, as on the document's page.
  */
 export function actionsFor(
   role: Role,
@@ -101,7 +105,7 @@ export function actionsFor(
         'owner_member_id' | 'visibility' | 'latest_version_id' | 'filed_by_me' | 'file_removed'
       > & { type_key?: string | null; caregiver?: true | undefined })
     | null,
-  collections: { collections: boolean; uncollect: boolean } = {
+  collections: { collections: boolean; uncollect: boolean; print?: boolean } = {
     collections: false,
     uncollect: false,
   },
@@ -112,6 +116,10 @@ export function actionsFor(
   // send (5.24, the review's W524-7).
   const hasFile = doc.latest_version_id !== null && doc.file_removed !== true;
   if (hasFile) actions.push('download');
+  // Print, as its page offers it: to whoever may see it — a viewer and a
+  // caregiver too — a document with no file printing the sheet of its
+  // details, a note its words.
+  if (collections.print === true) actions.push('print');
   // Somebody who can change nothing (a viewer) is given what they came
   // for: Open and Download. So is a caregiver, of a paper a grant gives
   // them (0.9.0, H1b): to read it, nothing more.
@@ -151,6 +159,8 @@ function labelFor(action: DocAction, doc: DocumentView | null): string {
       return 'Open';
     case 'download':
       return 'Download';
+    case 'print':
+      return 'Print';
     case 'read':
       return 'Read full size';
     case 'edit':
@@ -173,10 +183,10 @@ function labelFor(action: DocAction, doc: DocumentView | null): string {
 }
 
 /**
- * The most the menu can be: an owner's eleven items on a collection's page,
+ * The most the menu can be: an owner's twelve items on a collection's page,
  * 44 px each, and its edges.
  */
-const MENU_TALLEST = 11 * 44 + 18;
+const MENU_TALLEST = 12 * 44 + 18;
 /** However little room there is, three items and a bit, so it is seen to scroll. */
 const MENU_SHORTEST = 132;
 
@@ -228,6 +238,11 @@ export function DocActions(props: {
    * the row — and what it would have said — goes with it.
    */
   onTrashed?: ((title: string) => void) | undefined;
+  /**
+   * Print offered, beside Download (the owner's ask of 24 Nov 2026): the
+   * Documents table's ⋯ and a collection's, on a phone as on a wide screen.
+   */
+  print?: boolean | undefined;
 }) {
   const { withToken, guarded, session, caps } = useApp();
   const navigate = useNavigate();
@@ -245,7 +260,7 @@ export function DocActions(props: {
     error: null,
   });
   const [sheet, setSheet] = useState<
-    'share' | 'visibility' | 'collect' | 'trash' | 'ask_again' | null
+    'share' | 'visibility' | 'collect' | 'trash' | 'ask_again' | 'print' | null
   >(null);
   // What the sheet holds is on its way: Escape leaves it open until it is done.
   const [sheetBusy, setSheetBusy] = useState(false);
@@ -285,6 +300,7 @@ export function DocActions(props: {
   const offered = actionsFor(role, memberId, doc, {
     collections: collectionsOffered(caps, role),
     uncollect: props.collection?.mayChange ?? false,
+    print: props.print === true,
   });
 
   // A row that leaves its list takes its ⋯ with it. If focus was there, it
@@ -468,6 +484,7 @@ export function DocActions(props: {
       case 'visibility':
       case 'collect':
       case 'trash':
+      case 'print':
         setSheet(action);
         return;
     }
@@ -614,6 +631,15 @@ export function DocActions(props: {
             setNote(`“${props.title}” is needed again: its reminders come back as its dates say.`);
             await props.onChanged();
           }}
+        />
+      )}
+      {/* Its page's own print: the same dialog, notice and questions. */}
+      {sheet === 'print' && (
+        <PrintFromRow
+          documentId={props.documentId}
+          returnFocus={more}
+          onClose={() => setSheet(null)}
+          onError={(words) => setError(words)}
         />
       )}
       {sheet === 'trash' && (

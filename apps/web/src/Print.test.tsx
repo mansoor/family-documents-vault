@@ -4,6 +4,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { App } from './App.js';
+import { actionsFor } from './DocActions.js';
 import { documentFacts, printablePages } from './print-document.js';
 import { SENSITIVE_PRINT_NOTICE } from './print.js';
 import {
@@ -398,6 +399,223 @@ describe('a document’s details sheet and its pages, worked out', () => {
     expect(printablePages(v({ preview_pages: 0 }))).toMatchObject({ pages: 0, none: true });
     expect(printablePages(v({ file_removed: true }))).toMatchObject({ none: true });
     expect(printablePages(v({ stored_as_is: true }))).toMatchObject({ none: true });
+  });
+});
+
+/**
+ * Print from a row's ⋯ in the Documents table (the owner's ask of 24 Nov
+ * 2026: "On the web also, add Print to ellipsis menu in the document
+ * list"): its page's own print, without opening it first.
+ */
+describe('Print from a row’s ⋯', () => {
+  /** A screen as wide as `px`: from 1024 px, the Documents table. */
+  function atWidth(px: number) {
+    Object.defineProperty(window, 'matchMedia', {
+      configurable: true,
+      writable: true,
+      value: (query: string) => {
+        const min = /\(min-width:\s*(\d+)px\)/.exec(query);
+        return {
+          matches: Boolean(min) && px >= Number(min?.[1]),
+          media: query,
+          onchange: null,
+          addEventListener: () => undefined,
+          removeEventListener: () => undefined,
+          addListener: () => undefined,
+          removeListener: () => undefined,
+          dispatchEvent: () => false,
+        };
+      },
+    });
+  }
+  afterEach(() => {
+    Reflect.deleteProperty(window, 'matchMedia');
+  });
+
+  const NAME = "Actions for “Mansoor's passport”";
+  /** The Documents table, or a collection's. */
+  const table = () => screen.findByRole('grid', { name: /, sorted by/ });
+
+  /** The table at `path`, its ⋯ for `name` pressed, and the menu it opens. */
+  async function menuOf(s: FakeState, path: string, role: Role = 'owner', name = NAME) {
+    atWidth(1280);
+    open(s, path, role);
+    const more = await within(await table()).findByRole('button', { name });
+    more.focus();
+    fireEvent.click(more);
+    const menu = await screen.findByRole('menu', { name });
+    return { more, menu };
+  }
+  const items = (menu: HTMLElement) =>
+    within(menu)
+      .getAllByRole('menuitem')
+      .map((i) => i.textContent);
+
+  it('is offered beside Download, and opens its page’s “What to print” for that document', async () => {
+    const s = fresh({ documents: [{ ...PASSPORT }], stepUpNeeded: true });
+    const { more, menu } = await menuOf(s, '/documents');
+    expect(items(menu).slice(0, 4)).toEqual(['Open', 'Download', 'Print', 'Read full size']);
+    fireEvent.click(within(menu).getByRole('menuitem', { name: 'Print' }));
+    // The page's own dialog, its own choices: nothing opened, nothing fetched yet.
+    const dialog = await screen.findByRole('dialog', { name: "Print “Mansoor's passport”" });
+    expect(window.location.pathname).toBe('/documents');
+    expect(within(dialog).getByRole('checkbox', { name: 'Its pages' })).toBeChecked();
+    expect(within(dialog).getByText('2 pages.')).toBeVisible();
+    expect(within(dialog).getByRole('checkbox', { name: 'A sheet of its details' })).toBeChecked();
+    expect(within(dialog).queryByText(SENSITIVE_PRINT_NOTICE)).toBeNull();
+    expect(s.calls.some((c) => /\/pages\/\d+$/.test(c.url))).toBe(false);
+
+    // Its pages ask to confirm it's you, as its page's do (an Essential document).
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Print' }));
+    const prompt = await screen.findByRole('dialog', { name: 'Just checking it is you' });
+    fireEvent.change(within(prompt).getByLabelText('Or your password'), {
+      target: { value: 'correct horse battery' },
+    });
+    fireEvent.click(within(prompt).getByRole('button', { name: 'Confirm' }));
+    const root = await printed();
+    expect(within(root).getByRole('heading', { level: 1, hidden: true })).toHaveTextContent(
+      "Mansoor's passport",
+    );
+    const facts = Object.fromEntries(
+      [...root.querySelectorAll('.print-fact')].map((f): [string, string] => [
+        f.querySelector('dt')?.textContent ?? '',
+        f.querySelector('dd')?.textContent ?? '',
+      ]),
+    );
+    expect(facts).toMatchObject({ Type: 'Passport', Person: 'Mansoor Seikh' });
+    expect(root.querySelectorAll('img')).toHaveLength(2);
+    await afterPrint();
+    // The focus is back on the ⋯ it was printed from.
+    await waitFor(() => expect(more).toHaveFocus());
+  });
+
+  it('Escape prints nothing, and gives the focus back to the ⋯', async () => {
+    const s = fresh({ documents: [{ ...PASSPORT, is_essential: false }] });
+    const { more, menu } = await menuOf(s, '/documents');
+    // The menu's own keys, in the table as in every list: Escape shuts it.
+    fireEvent.keyDown(within(menu).getByRole('menuitem', { name: 'Open' }), { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByRole('menu')).toBeNull());
+    expect(more).toHaveFocus();
+    fireEvent.click(more);
+    const again = await screen.findByRole('menu', { name: NAME });
+    fireEvent.click(within(again).getByRole('menuitem', { name: 'Print' }));
+    const dialog = await screen.findByRole('dialog', { name: /^Print/ });
+    fireEvent.keyDown(within(dialog).getByRole('checkbox', { name: 'Its pages' }), {
+      key: 'Escape',
+    });
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: /^Print/ })).toBeNull());
+    expect(print).not.toHaveBeenCalled();
+    await waitFor(() => expect(more).toHaveFocus());
+  });
+
+  it('a Sensitive document: its dialog says first to keep the printout safe; Cancel prints nothing', async () => {
+    const s = fresh({
+      sensitive: true,
+      documents: [{ ...PASSPORT, is_essential: false, sensitive: true, sensitive_effective: true }],
+    });
+    const { more, menu } = await menuOf(s, '/documents');
+    fireEvent.click(within(menu).getByRole('menuitem', { name: 'Print' }));
+    const dialog = await screen.findByRole('dialog', { name: /^Print/ });
+    const notice = within(dialog).getByText(SENSITIVE_PRINT_NOTICE);
+    expect(notice).toBeVisible();
+    // Said before the choices.
+    expect(
+      notice.compareDocumentPosition(within(dialog).getByRole('group', { name: 'What to print' })),
+    ).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: /^Print/ })).toBeNull());
+    expect(print).not.toHaveBeenCalled();
+    expect(printRoot()).toBeNull();
+    await waitFor(() => expect(more).toHaveFocus());
+
+    // Printed from it: its heading says Sensitive.
+    fireEvent.click(more);
+    const again = await screen.findByRole('menu', { name: NAME });
+    fireEvent.click(within(again).getByRole('menuitem', { name: 'Print' }));
+    const second = await screen.findByRole('dialog', { name: /^Print/ });
+    fireEvent.click(within(second).getByRole('button', { name: 'Print' }));
+    const root = await printed();
+    expect(root.querySelector('.print-about')).toHaveTextContent(/^Document · Sensitive$/);
+    await afterPrint();
+  });
+
+  it('a Sensitive note in a collection’s table: the notice first, then its words', async () => {
+    const note = {
+      ...PASSPORT,
+      id: 'note-safe',
+      type_key: 'note',
+      category: 'other',
+      title: 'Safe code',
+      identifier: null,
+      issued: null,
+      expires: null,
+      physical_location: null,
+      is_essential: false,
+      latest_version_id: null,
+      versions: 0,
+      tags: [],
+      notes: 'Ask Sara for the code.',
+      notes_updated_at: '2026-09-25T15:12:00Z',
+      sensitive: true,
+      sensitive_effective: true,
+      etag: '"safe"',
+    };
+    const travel: FakeCollection = {
+      id: 'collection-t',
+      name: 'Travel',
+      description: null,
+      audience: 'everyone',
+      owner_member_id: 'me',
+      etag: '"t.1"',
+      items: ['doc-1', 'note-safe'],
+    };
+    const s = fresh({
+      notes: true,
+      sensitive: true,
+      documents: [{ ...PASSPORT }, note],
+      collections: [travel],
+    });
+    const { more, menu } = await menuOf(
+      s,
+      '/collections/collection-t',
+      'owner',
+      'Actions for “Safe code”',
+    );
+    // A note has no file: Print comes after Open.
+    expect(items(menu).slice(0, 2)).toEqual(['Open', 'Print']);
+    fireEvent.click(within(menu).getByRole('menuitem', { name: 'Print' }));
+    const notice = await screen.findByRole('alertdialog', { name: 'Before you print' });
+    expect(notice).toHaveTextContent(SENSITIVE_PRINT_NOTICE);
+    expect(printRoot()).toBeNull();
+    fireEvent.click(within(notice).getByRole('button', { name: 'Print' }));
+    const root = await printed();
+    expect(root.querySelector('.print-about')).toHaveTextContent(
+      /^Note · Everyone in the family · Sensitive · changed /,
+    );
+    expect(root).toHaveTextContent('Ask Sara for the code.');
+    await afterPrint();
+    await waitFor(() => expect(more).toHaveFocus());
+  });
+
+  it('a viewer may print what they see, as its page lets them; not offered before the document is known, nor where the list offers none', async () => {
+    const { menu } = await menuOf(fresh({ documents: [{ ...PASSPORT }] }), '/documents', 'viewer');
+    expect(items(menu)).toEqual(['Open', 'Download', 'Print']);
+    // Not known yet (a search hit, its document on its way): Open alone.
+    expect(
+      actionsFor('owner', 'me', null, { collections: true, uncollect: false, print: true }),
+    ).toEqual(['open']);
+    // A list that does not offer it (Home's) offers none.
+    expect(actionsFor('owner', 'me', PASSPORT as unknown as DocumentView)).not.toContain('print');
+  });
+
+  it('on a phone, the Documents list’s ⋯ offers it too', async () => {
+    open(fresh({ documents: [{ ...PASSPORT, is_essential: false }] }), '/documents');
+    const more = await screen.findByRole('button', { name: NAME });
+    fireEvent.click(more);
+    const menu = await screen.findByRole('menu', { name: NAME });
+    expect(items(menu).slice(0, 3)).toEqual(['Open', 'Download', 'Print']);
+    fireEvent.click(within(menu).getByRole('menuitem', { name: 'Print' }));
+    expect(await screen.findByRole('dialog', { name: /^Print/ })).toBeInTheDocument();
   });
 });
 

@@ -14,8 +14,6 @@ import {
   PREVIEW_MAX_PAGES,
   type CoreField,
   type VersionView,
-  NOT_SURE_YET,
-  THE_HOUSEHOLD,
   SENSITIVE_LABEL,
   SENSITIVE_MEANS,
   CAREGIVER_MARK,
@@ -72,7 +70,7 @@ import { mayChangeWhoSees, VisibilityControl } from './Visibility.js';
 import { ActionIcon, ActionRow, countBadge } from '../action-row.js';
 import { DocumentActivityPanel } from '../document-activity.js';
 import { createUploadKeys, whileInProgress } from '../upload-keys.js';
-import { documentFacts, PrintDocument } from '../print-document.js';
+import { documentFacts, PrintDocument, sheetNote, whoseWords } from '../print-document.js';
 import { exactWords, familyZoneNow } from '../family-time.js';
 
 /**
@@ -466,13 +464,7 @@ function OneDocumentView(props: DocumentViewProps) {
   });
   const title = doc.title ?? 'Needs a name';
   // Whose it is, as its details say it: printed in the same words.
-  const person =
-    owner?.display_name ??
-    (doc.household_owned === true
-      ? THE_HOUSEHOLD
-      : doc.household_owned === false
-        ? NOT_SURE_YET
-        : 'Not set');
+  const person = whoseWords(doc, members);
   const memberId = session.info?.member_id ?? null;
   const isMine = doc.owner_member_id !== null && doc.owner_member_id === memberId;
   const filedByMe = doc.filed_by_me === true;
@@ -918,7 +910,7 @@ function OneDocumentView(props: DocumentViewProps) {
           title={title}
           version={latest}
           facts={documentFacts(doc, type, person, storedRole())}
-          note={doc.notes ? { label: word('notes', 'Notes'), text: doc.notes } : null}
+          note={sheetNote(doc, type)}
           sensitive={doc.sensitive_effective === true}
           returnFocus={printButton}
           onClose={() => setPrinting(false)}

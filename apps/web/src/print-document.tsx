@@ -3,9 +3,12 @@ import {
   formatDate,
   isRecordFormat,
   issuedByLabel,
+  NOT_SURE_YET,
+  NOTE_KIND,
   PREVIEW_MAX_PAGES,
   SENSITIVE_LABEL,
   seesLocation,
+  THE_HOUSEHOLD,
   type CoreField,
   type DocumentTypeView,
   type DocumentView,
@@ -16,9 +19,11 @@ import { useEffect, useRef, useState, type RefObject } from 'react';
 import { api, ApiRequestError } from './api.js';
 import { describeError, useApp } from './app-context.js';
 import { asksFor, coreRule, detailText } from './details.js';
-import { NoteText } from './notes.js';
+import { exactWords } from './family-time.js';
+import { NoteText, noteTitle } from './notes.js';
 import { placeLine } from './original-place.js';
-import { PrintOut, SENSITIVE_PRINT_NOTICE } from './print.js';
+import { PrintOut, SENSITIVE_PRINT_NOTICE, SensitivePrintNotice } from './print.js';
+import { storedRole } from './session.js';
 import { Button, categoryLabel, Check, Dialog, ErrorNote } from './ui.js';
 
 /**
@@ -63,6 +68,30 @@ const WHO_SEES: Record<DocumentView['visibility'], string> = {
   adults: 'Adults only',
   private: 'Only me',
 };
+
+/** Whose it is, as its page's details say it: printed in the same words. */
+export function whoseWords(
+  doc: Pick<DocumentView, 'owner_member_id' | 'household_owned'>,
+  members: ReadonlyArray<{ id: string; display_name: string }>,
+): string {
+  const owner = members.find((m) => m.id === doc.owner_member_id);
+  return (
+    owner?.display_name ??
+    (doc.household_owned === true
+      ? THE_HOUSEHOLD
+      : doc.household_owned === false
+        ? NOT_SURE_YET
+        : 'Not set')
+  );
+}
+
+/** Its note on the details sheet, in what its kind calls it: none when it has none. */
+export function sheetNote(
+  doc: Pick<DocumentView, 'notes'>,
+  type: DocumentTypeView | undefined,
+): { label: string; text: string } | null {
+  return doc.notes ? { label: coreRule(type, 'notes').label ?? 'Notes', text: doc.notes } : null;
+}
 
 /**
  * The details sheet's lines, as the document's page says them: never where
@@ -332,5 +361,179 @@ export function PrintDocument(props: {
       </fieldset>
       <ErrorNote message={problem} />
     </Dialog>
+  );
+}
+
+/**
+ * A note printed: its name, who sees it, whether it is Sensitive and when
+ * it changed, on the family's clock (`timezone`, its page's); then its
+ * words. Whatever asks first — the Sensitive notice — has been answered.
+ */
+export function PrintNote(props: {
+  doc: DocumentView;
+  timezone: string | null;
+  onDone: () => void;
+}) {
+  const { doc } = props;
+  return (
+    <PrintOut
+      title={noteTitle(doc.title, doc.notes)}
+      about={
+        <p className="print-about">
+          Note · {WHO_SEES[doc.visibility]}
+          {doc.sensitive_effective === true ? ` · ${SENSITIVE_LABEL}` : ''} · changed{' '}
+          {exactWords(doc.notes_updated_at ?? doc.updated_at, props.timezone ?? undefined)}
+        </p>
+      }
+      onDone={props.onDone}
+    >
+      <div className="print-note">
+        {doc.notes ? (
+          <NoteText source={doc.notes} headingLevel={2} />
+        ) : (
+          <p>This note has no words yet.</p>
+        )}
+      </div>
+    </PrintOut>
+  );
+}
+
+/** What a row's Print has fetched: a document, with what its sheet says; or a note. */
+type Fetched =
+  | {
+      kind: 'document';
+      doc: DocumentView;
+      version: VersionView | undefined;
+      type: DocumentTypeView | undefined;
+      person: string;
+    }
+  | { kind: 'note'; doc: DocumentView; timezone: string | null };
+
+/**
+ * Print from a row's ⋯ (the owner's ask of 24 Nov 2026: "On the web also,
+ * add Print to ellipsis menu in the document list"): the print its page
+ * makes, without opening it first. The document is fetched as its page
+ * fetches it — a note's words asking to confirm it's you where its page
+ * asks (0.9.0-dev.87); turned down, nothing is printed — then a document
+ * has its page's "What to print" dialog, Sensitive notice and all, its
+ * pages asking what they ask there; a note prints as its Print does, a
+ * Sensitive one asked about first. The focus goes back to the ⋯
+ * (`returnFocus`) once it is done.
+ */
+export function PrintFromRow(props: {
+  documentId: string;
+  returnFocus: RefObject<HTMLElement | null>;
+  onClose: () => void;
+  /** Fetching it went wrong: said where the ⋯ says things. */
+  onError: (words: string) => void;
+}) {
+  const app = useApp();
+  const [got, setGot] = useState<Fetched | null>(null);
+  // A Sensitive note: the notice answered with Print.
+  const [noticed, setNoticed] = useState(false);
+  // Fetched once for each document, whatever is given again meanwhile.
+  const latest = useRef({ props, app });
+  useEffect(() => {
+    latest.current = { props, app };
+  });
+  const { documentId } = props;
+  useEffect(() => {
+    let alive = true;
+    const { withToken, guarded } = latest.current.app;
+    const done = () => {
+      latest.current.props.onClose();
+      latest.current.props.returnFocus.current?.focus();
+    };
+    void (async () => {
+      try {
+        const doc = await guarded((t) => api.document(t, documentId), {
+          cancelled: () => !alive,
+        });
+        if (!alive) return;
+        if (!doc) {
+          // "Confirm it's you" turned down: said, as nothing comes.
+          latest.current.props.onError('Not printed: it asks to confirm it’s you first.');
+          done();
+          return;
+        }
+        if (doc.type_key === NOTE_KIND) {
+          // The family's clock, which its "changed …" is said in (5.35).
+          const profile = await withToken((t) => api.profile(t)).catch(() => null);
+          if (alive) setGot({ kind: 'note', doc, timezone: profile?.timezone ?? null });
+          return;
+        }
+        const rest = await withToken((t) =>
+          Promise.all([api.versions(t, documentId), api.members(t), api.documentTypes(t)]),
+        );
+        if (!alive) return;
+        if (!rest) {
+          done();
+          return;
+        }
+        const [versions, members, types] = rest;
+        setGot({
+          kind: 'document',
+          doc,
+          version: versions.items[0],
+          type: types.items.find((t) => t.key === doc.type_key),
+          person: whoseWords(doc, members.items),
+        });
+      } catch (err) {
+        if (!alive) return;
+        latest.current.props.onError(describeError(err));
+        done();
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [documentId]);
+
+  // While it is fetched: said, and nothing else pressed meanwhile (another
+  // row's Print, the menu again). Cancel or Escape stops it; nothing prints.
+  if (!got) {
+    return (
+      <Dialog
+        title="Getting it ready to print…"
+        returnFocus={props.returnFocus}
+        onClose={props.onClose}
+        closeLabel="Cancel"
+      >
+        <p className="muted">One moment.</p>
+      </Dialog>
+    );
+  }
+  if (got.kind === 'note') {
+    if (got.doc.sensitive_effective === true && !noticed) {
+      return (
+        <SensitivePrintNotice
+          returnFocus={props.returnFocus}
+          onPrint={() => setNoticed(true)}
+          onCancel={props.onClose}
+        />
+      );
+    }
+    return (
+      <PrintNote
+        doc={got.doc}
+        timezone={got.timezone}
+        onDone={() => {
+          props.onClose();
+          props.returnFocus.current?.focus();
+        }}
+      />
+    );
+  }
+  const { doc, type } = got;
+  return (
+    <PrintDocument
+      title={doc.title ?? 'Needs a name'}
+      version={got.version}
+      facts={documentFacts(doc, type, got.person, storedRole())}
+      note={sheetNote(doc, type)}
+      sensitive={doc.sensitive_effective === true}
+      returnFocus={props.returnFocus}
+      onClose={props.onClose}
+    />
   );
 }
