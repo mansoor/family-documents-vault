@@ -223,6 +223,19 @@ describe('a document beside the list: the same view, another host', () => {
     await expectAccessible();
   });
 
+  it('its pages turn with the scroll wheel and the arrows, as on its page, and the address stays', async () => {
+    open(fresh({ members: [ME], documents: [{ ...PASSPORT }] }));
+    const right = await pages();
+    await within(right).findByRole('img', { name: 'Page 1 of 2' });
+    fireEvent.click(within(right).getByRole('button', { name: 'Fit page' }));
+    const viewer = within(right).getByRole('group', { name: /^Page 1 of 2/ });
+    expect(fireEvent.wheel(viewer, { deltaY: 100 })).toBe(false); // used: not the browser's
+    expect(await within(right).findByRole('img', { name: 'Page 2 of 2' })).toBeInTheDocument();
+    fireEvent.keyDown(viewer, { key: 'ArrowLeft' });
+    expect(await within(right).findByRole('img', { name: 'Page 1 of 2' })).toBeInTheDocument();
+    addressKept();
+  });
+
   it('an older version looked at is its own: the address is never changed', async () => {
     const state = fresh({
       members: [ME],

@@ -347,7 +347,10 @@ describe('the pages, at 1280 px (R3)', () => {
     const right = await pages();
     await within(right).findByRole('img', { name: 'Page 1 of 2' });
     const viewer = within(right).getByRole('group', { name: /^Page 1 of 2/ });
-    expect(viewer).toHaveAttribute('aria-keyshortcuts', 'PageUp PageDown');
+    expect(viewer).toHaveAttribute(
+      'aria-keyshortcuts',
+      'PageUp PageDown ArrowUp ArrowDown Home End',
+    );
     fireEvent.keyDown(viewer, { key: ']' });
     expect(within(right).getByRole('img', { name: 'Page 1 of 2' })).toBeInTheDocument();
     fireEvent.keyDown(viewer, { key: 'PageDown' });

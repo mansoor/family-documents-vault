@@ -6,6 +6,20 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.9.0-dev.95] - 2026-11-24 — turn a PDF's pages with the wheel and keys
+
+### Added
+
+- **Turn the pages with the mouse wheel.** When a document with several pages is shown at **Fit page**, one turn of the mouse wheel, or one swipe on a trackpad, goes to the next page or back to the one before — one page each time, however fast the wheel spins. At **Fit to width**, the wheel scrolls down the page as before; once you are at the bottom, scroll again and the next page opens at its top. At the top of a page, scroll up again and the page before opens at its bottom, so you carry on reading where you were.
+- **Turn the pages with the arrow keys.** Click the page (or Tab to it) first. At Fit page, the arrow keys turn the pages; at Fit to width, the up and down arrows scroll, and turn the page once you are at its bottom or top and press again. Holding a key down never runs on into the next page. **Home** and **End** go to the first and the last page. Page Up and Page Down still turn the pages, as before.
+- This works wherever pages are shown: on a document's page, beside the list, and when reviewing files in the Inbox. Screen readers hear the new page number, as with the Previous page and Next page buttons.
+
+### Kept as they are
+
+- **Zoomed in or out to a size of your own**, the wheel and the arrow keys only move around the page, as before. Ctrl (⌘ on a Mac) and the wheel still zoom. Documents with a single page, and typing in a box, are not affected.
+- **In a narrow window**, where the page is shown in one column and the whole screen scrolls rather than the page's own box, the wheel and the arrow keys scroll the screen as before; Previous page, Next page, Page Up and Page Down still turn the pages.
+- **A page that is still loading is never skipped**: at Fit to width, the wheel and the arrow keys wait until it is shown before they can turn past it.
+
 ## [0.9.0-dev.94] - 2026-11-23 — one cabinet structure
 
 ### Changed

@@ -111,4 +111,22 @@ describe('the pages, zoomed (0.9.0)', () => {
     expect(rulesNaming('.btn-small')['min-height']).toBe('var(--tap)');
     expect(rulesNaming('.viewer-zoom-at')['min-width']).toBe('64px');
   });
+
+  it('says where it scrolls its page itself, so the wheel and the arrows may turn the pages there (page-viewer.tsx)', () => {
+    // As tall as the window allows: it scrolls its page.
+    expect(rulesNaming('.viewer')['--viewer-scrolls']).toBe('1');
+    // One column, as tall as its page: the window scrolls instead.
+    expect(css).toMatch(
+      /@media \(max-width: 959px\) \{\s*\.viewer \{\s*max-height: none;\s*--viewer-scrolls: 0;\s*\}/,
+    );
+    // Beside the details, on the page and beside the list: its pane's height.
+    for (const at of [
+      '.doc-panes .viewer',
+      '.flyout .doc-fit-two .viewer',
+      '.flyout .doc-fit-content .viewer',
+    ]) {
+      expect(rulesNaming(at)['max-height']).toBe('none');
+      expect(rulesNaming(at)['--viewer-scrolls']).toBe('1');
+    }
+  });
 });
