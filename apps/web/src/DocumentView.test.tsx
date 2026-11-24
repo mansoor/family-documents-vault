@@ -383,7 +383,10 @@ describe('the pages, zoomed (0.9.0)', () => {
     const right = await pages();
     await shownPage(right);
     const viewer = within(right).getByRole('group', { name: /^Page 1 of 2/ });
-    expect(viewer).toHaveAttribute('aria-keyshortcuts', 'PageUp PageDown [ ] + - 0');
+    expect(viewer).toHaveAttribute(
+      'aria-keyshortcuts',
+      'PageUp PageDown ArrowUp ArrowDown Home End [ ] + - 0',
+    );
     expect(within(right).getByRole('button', { name: 'Zoom in' })).toHaveAttribute(
       'aria-keyshortcuts',
       '+',
@@ -422,7 +425,10 @@ describe('the pages, zoomed (0.9.0)', () => {
     const right = await pages();
     await shownPage(right);
     const viewer = within(right).getByRole('group', { name: /^Page 1 of 2/ });
-    expect(viewer).toHaveAttribute('aria-keyshortcuts', 'PageUp PageDown');
+    expect(viewer).toHaveAttribute(
+      'aria-keyshortcuts',
+      'PageUp PageDown ArrowUp ArrowDown Home End',
+    );
     expect(within(right).getByRole('button', { name: 'Zoom in' })).not.toHaveAttribute(
       'aria-keyshortcuts',
     );
@@ -434,10 +440,15 @@ describe('the pages, zoomed (0.9.0)', () => {
     }
     expect(readout(right)).toHaveTextContent('50%');
     expect(within(right).getByText(/^With the page in focus/)).toHaveTextContent(
-      'With the page in focus, Page Up and Page Down turn the pages.',
+      'With the page in focus, Page Up and Page Down turn the pages; at the foot or the top of one, the arrow keys and the scroll wheel turn to the next or the one before. Home and End go to the first and the last.',
     );
     fireEvent.click(within(right).getByRole('button', { name: 'Zoom in' }));
     expect(readout(right)).toHaveTextContent('67%');
+    // Zoomed to a size of its own: Page Up and Page Down alone, as ever.
+    expect(within(right).getByText(/^With the page in focus/)).toHaveTextContent(
+      'With the page in focus, Page Up and Page Down turn the pages.',
+    );
+    expect(viewer).toHaveAttribute('aria-keyshortcuts', 'PageUp PageDown');
   });
 
   it('Ctrl or ⌘ and the wheel over the page zoom it and never the browser; anywhere else they are left be', async () => {
@@ -478,6 +489,42 @@ describe('the pages, zoomed (0.9.0)', () => {
     expect(readout(right)).toHaveTextContent('200%');
     for (let i = 0; i < 30; i += 1) wheel(viewer, { ctrlKey: true, deltaY: 100 });
     expect(readout(right)).toHaveTextContent('25%');
+  });
+
+  it('Fit page: the wheel and the arrows over the page turn its pages, one a movement, and the page counter follows', async () => {
+    at('/documents/doc-1', WIDE, { pagesDrawn: 5, pageCount: 5 });
+    const right = await pages();
+    await shownPage(right);
+    fireEvent.click(within(right).getByRole('button', { name: 'Fit page' }));
+    const viewer = within(right).getByRole('group', { name: /^Page 1 of 5/ });
+    let clock = 1_000;
+    const wheel = (deltaY: number, after: number) => {
+      clock += after;
+      const e = new WheelEvent('wheel', { bubbles: true, cancelable: true, deltaY });
+      Object.defineProperty(e, 'timeStamp', { value: clock });
+      act(() => {
+        viewer.dispatchEvent(e);
+      });
+      return e.defaultPrevented;
+    };
+    // One notch and its echoes: one page.
+    expect(wheel(100, 0)).toBe(true);
+    expect(wheel(100, 16)).toBe(true);
+    expect(await within(right).findByRole('img', { name: 'Page 2 of 5' })).toBeInTheDocument();
+    expect(within(right).getByText('Page 2 of 5', { selector: '.viewer-at' })).toBeInTheDocument();
+    // After a pause, the next.
+    wheel(100, 400);
+    expect(await within(right).findByRole('img', { name: 'Page 3 of 5' })).toBeInTheDocument();
+    fireEvent.keyDown(viewer, { key: 'ArrowUp' });
+    expect(await within(right).findByRole('img', { name: 'Page 2 of 5' })).toBeInTheDocument();
+    fireEvent.keyDown(viewer, { key: 'End' });
+    expect(await within(right).findByRole('img', { name: 'Page 5 of 5' })).toBeInTheDocument();
+    expect(within(right).getByRole('button', { name: 'Next page' })).toBeDisabled();
+    // Elsewhere, the arrows are the page's.
+    fireEvent.keyDown(within(right).getByRole('button', { name: 'Previous page' }), {
+      key: 'ArrowUp',
+    });
+    expect(within(right).getByRole('img', { name: 'Page 5 of 5' })).toBeInTheDocument();
   });
 
   it('the zoom holds as the pages turn, and another document starts fitted to the width', async () => {

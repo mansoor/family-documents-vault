@@ -6191,6 +6191,10 @@ html:has(.shell-phone):has(.has-toast) {
   /* A pinch over the page zooms the page (page-viewer.tsx), not the window;
      a finger still scrolls it either way. */
   touch-action: pan-x pan-y;
+  /* As tall as the window allows, not its page: it scrolls its page itself,
+     so the wheel and the arrow keys may turn the pages (page-viewer.tsx).
+     0 where it is as tall as its page and the window scrolls instead. */
+  --viewer-scrolls: 1;
 }
 
 /* In the middle while it fits; zoomed past the pane, from its left edge,
@@ -6228,6 +6232,7 @@ html:has(.shell-phone):has(.has-toast) {
 @media (max-width: 959px) {
   .viewer {
     max-height: none;
+    --viewer-scrolls: 0;
   }
 }
 
@@ -6330,6 +6335,8 @@ html:has(.shell-phone):has(.has-toast) {
   flex: 1 1 auto;
   min-height: 200px;
   max-height: none;
+  /* The window's height, from its pane's: it scrolls its page itself. */
+  --viewer-scrolls: 1;
 }
 
 /* A document beside the list (flyouts): its own width decides, never the
@@ -6668,6 +6675,8 @@ html:has(.shell-phone):has(.has-toast) {
   flex: 1 1 auto;
   min-height: 200px;
   max-height: none;
+  /* The flyout's height, from its pane's: it scrolls its page itself. */
+  --viewer-scrolls: 1;
 }
 
 .flyout-tray {

@@ -422,6 +422,30 @@ describe('a file in two panes (I3)', () => {
     expect(fit).toHaveAttribute('aria-pressed', 'false');
   });
 
+  it('fitted to the width, a page that fits turns with the scroll wheel and the arrows over it', async () => {
+    at('/inbox/batches/batch-1/items/item-1');
+    const pages = await screen.findByRole('region', { name: 'Pages of passport.pdf' });
+    // Each page drawn: its own size known, as a browser knows it once it has loaded.
+    const drawn = (img: HTMLElement) => {
+      Object.defineProperties(img, {
+        naturalWidth: { configurable: true, value: 1000 },
+        naturalHeight: { configurable: true, value: 1414 },
+      });
+      fireEvent.load(img);
+    };
+    drawn(await within(pages).findByRole('img', { name: 'Page 1 of 2' }));
+    const viewer = within(pages).getByRole('group', { name: /^Page 1 of 2/ });
+    const e = new WheelEvent('wheel', { bubbles: true, cancelable: true, deltaY: 100 });
+    fireEvent(viewer, e);
+    expect(e.defaultPrevented).toBe(true);
+    drawn(await within(pages).findByRole('img', { name: 'Page 2 of 2' }));
+    fireEvent.keyDown(viewer, { key: 'ArrowUp' });
+    expect(await within(pages).findByRole('img', { name: 'Page 1 of 2' })).toBeVisible();
+    // In the card beside it, the keys are the card's.
+    fireEvent.keyDown(screen.getByLabelText(/What it is/), { key: 'PageDown' });
+    expect(within(pages).getByRole('img', { name: 'Page 1 of 2' })).toBeVisible();
+  });
+
   it('with single keys off, [ and ] turn nothing; Page Down still does', async () => {
     localStorage.setItem('fdv.shortcuts', 'off');
     at('/inbox/batches/batch-1/items/item-1');
