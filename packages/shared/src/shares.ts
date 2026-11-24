@@ -115,7 +115,7 @@ export const ONLY_ME_SHARE_WARNING =
 
 /** A link that would send an Only me document, while the household shares none (409). */
 export const ONLY_ME_NOT_SHARED =
-  "This document is Only me, and this household doesn't share Only me documents outside the family. Change who can see it first.";
+  "This document is Only me, and this household doesn't share Only me documents outside the family. Change its visibility first.";
 
 /** "Keep them", asked while the household shares no Only me documents (409). */
 export const ONLY_ME_KEEP_REFUSED =

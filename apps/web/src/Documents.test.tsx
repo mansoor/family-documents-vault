@@ -232,7 +232,7 @@ describe('the Documents table, from 768 px (R2)', () => {
       'Issued',
       'Expires',
       'Status',
-      'Who sees it',
+      'Visibility',
       'Location',
       'Collections',
     ]);
@@ -543,14 +543,14 @@ describe('the Documents table, from 768 px (R2)', () => {
       'Set where it’s kept',
       // A tag to many at once (0.9.0, T1): one menu button, Add and Remove in it.
       'Tags▾',
-      'Who can see it',
+      'Visibility',
       // No longer needed is set with a document's details, not here (0.9.0).
       'Move to the Trash',
       'Clear selection',
     ]);
     // Only me is for documents that are yours: with nobody's chosen, not offered.
-    fireEvent.click(within(bar).getByRole('button', { name: 'Who can see it' }));
-    const sheet = screen.getByRole('dialog', { name: 'Who can see 2 documents' });
+    fireEvent.click(within(bar).getByRole('button', { name: 'Visibility' }));
+    const sheet = screen.getByRole('dialog', { name: 'Visibility of 2 documents' });
     expect(within(sheet).queryByRole('button', { name: 'Only me' })).not.toBeInTheDocument();
     fireEvent.click(within(sheet).getByRole('button', { name: 'Cancel' }));
     cleanup();
@@ -584,7 +584,7 @@ describe('the Documents table, from 768 px (R2)', () => {
     expect(
       within(bar).queryByRole('button', { name: 'Set where it’s kept' }),
     ).not.toBeInTheDocument();
-    expect(within(bar).queryByRole('button', { name: 'Who can see it' })).not.toBeInTheDocument();
+    expect(within(bar).queryByRole('button', { name: 'Visibility' })).not.toBeInTheDocument();
     expect(within(bar).getByRole('button', { name: 'Add to a collection' })).toBeInTheDocument();
     expect(
       within(bar).getByText(
@@ -593,7 +593,7 @@ describe('the Documents table, from 768 px (R2)', () => {
     ).toBeInTheDocument();
     expect(
       within(bar).getByText(
-        'Who can see it is offered when it can be changed the same way for every one you chose.',
+        'Visibility is offered when it can be changed the same way for every one you chose.',
       ),
     ).toBeInTheDocument();
     await expectAccessible();
@@ -705,8 +705,8 @@ describe('the Documents table, from 768 px (R2)', () => {
       fireEvent.click(within(t).getByRole('checkbox', { name: `Select “${name}”` }));
     }
     const bar = screen.getByRole('region', { name: 'What to do with the chosen documents' });
-    fireEvent.click(within(bar).getByRole('button', { name: 'Who can see it' }));
-    const sheet = screen.getByRole('dialog', { name: 'Who can see 3 documents' });
+    fireEvent.click(within(bar).getByRole('button', { name: 'Visibility' }));
+    const sheet = screen.getByRole('dialog', { name: 'Visibility of 3 documents' });
     fireEvent.click(within(sheet).getByRole('button', { name: 'Only me' }));
     expect(
       within(sheet).getByText('Nobody else, including the owner of this vault.'),
@@ -716,7 +716,7 @@ describe('the Documents table, from 768 px (R2)', () => {
     expect(ask).toHaveAccessibleDescription(
       'Nobody else, including the owner of this vault. 1 is Only me already, and stays as it is.',
     );
-    fireEvent.click(within(ask).getByRole('button', { name: 'Change who can see them' }));
+    fireEvent.click(within(ask).getByRole('button', { name: 'Change visibility' }));
     // The vault's words for it, once, before anything else.
     const notice = await screen.findByRole('dialog', { name: 'Only you can open this' });
     expect(
@@ -763,14 +763,14 @@ describe('the Documents table, from 768 px (R2)', () => {
       await waitFor(() => expect(titles(t)).toHaveLength(3));
       fireEvent.click(within(t).getByRole('checkbox', { name: 'Select all 3 shown' }));
       const bar = screen.getByRole('region', { name: 'What to do with the chosen documents' });
-      fireEvent.click(within(bar).getByRole('button', { name: 'Who can see it' }));
-      const sheet = screen.getByRole('dialog', { name: 'Who can see 3 documents' });
+      fireEvent.click(within(bar).getByRole('button', { name: 'Visibility' }));
+      const sheet = screen.getByRole('dialog', { name: 'Visibility of 3 documents' });
       fireEvent.click(within(sheet).getByRole('button', { name: 'Only me' }));
       fireEvent.click(within(sheet).getByRole('button', { name: 'Continue' }));
       fireEvent.click(
         within(screen.getByRole('alertdialog', { name: 'Make 3 documents Only me?' })).getByRole(
           'button',
-          { name: 'Change who can see them' },
+          { name: 'Change visibility' },
         ),
       );
       const asked = await screen.findByRole('alertdialog', {
@@ -902,15 +902,15 @@ describe('the Documents table, from 768 px (R2)', () => {
       expect(visibilityCalls(state)).toHaveLength(3);
       // Who can see them, and its "are you sure?": each in turn, and Escape.
       const bar = screen.getByRole('region', { name: 'What to do with the chosen documents' });
-      const button = within(bar).getByRole('button', { name: 'Who can see it' });
+      const button = within(bar).getByRole('button', { name: 'Visibility' });
       press(button);
-      const sheet = screen.getByRole('dialog', { name: 'Who can see 2 documents' });
+      const sheet = screen.getByRole('dialog', { name: 'Visibility of 2 documents' });
       await expectTabKeptIn(sheet);
       fireEvent.keyDown(document.activeElement as HTMLElement, { key: 'Escape' });
       await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
       await waitFor(() => expect(button).toHaveFocus());
       press(button);
-      const choose = screen.getByRole('dialog', { name: 'Who can see 2 documents' });
+      const choose = screen.getByRole('dialog', { name: 'Visibility of 2 documents' });
       fireEvent.click(within(choose).getByRole('button', { name: 'Only me' }));
       fireEvent.click(within(choose).getByRole('button', { name: 'Continue' }));
       const sure = screen.getByRole('alertdialog', { name: 'Make 2 documents Only me?' });
@@ -979,14 +979,14 @@ describe('the Documents table, from 768 px (R2)', () => {
         fireEvent.click(within(t).getByRole('checkbox', { name: `Select “${name}”` }));
       }
       const bar = screen.getByRole('region', { name: 'What to do with the chosen documents' });
-      fireEvent.click(within(bar).getByRole('button', { name: 'Who can see it' }));
-      const sheet = screen.getByRole('dialog', { name: 'Who can see 2 documents' });
+      fireEvent.click(within(bar).getByRole('button', { name: 'Visibility' }));
+      const sheet = screen.getByRole('dialog', { name: 'Visibility of 2 documents' });
       fireEvent.click(within(sheet).getByRole('button', { name: 'Only me' }));
       fireEvent.click(within(sheet).getByRole('button', { name: 'Continue' }));
       fireEvent.click(
         within(screen.getByRole('alertdialog', { name: 'Make 2 documents Only me?' })).getByRole(
           'button',
-          { name: 'Change who can see them' },
+          { name: 'Change visibility' },
         ),
       );
       const asked = await screen.findByRole('alertdialog', {
@@ -1064,8 +1064,8 @@ describe('the Documents table, from 768 px (R2)', () => {
       fireEvent.click(within(t).getByRole('checkbox', { name: `Select “${name}”` }));
     }
     const bar = screen.getByRole('region', { name: 'What to do with the chosen documents' });
-    fireEvent.click(within(bar).getByRole('button', { name: 'Who can see it' }));
-    const sheet = screen.getByRole('dialog', { name: 'Who can see 2 documents' });
+    fireEvent.click(within(bar).getByRole('button', { name: 'Visibility' }));
+    const sheet = screen.getByRole('dialog', { name: 'Visibility of 2 documents' });
     fireEvent.click(within(sheet).getByRole('button', { name: 'Adults only' }));
     fireEvent.click(within(sheet).getByRole('button', { name: 'Continue' }));
     const ask = screen.getByRole('alertdialog', { name: 'Make 2 documents Adults only?' });
@@ -1074,8 +1074,8 @@ describe('the Documents table, from 768 px (R2)', () => {
     );
     fireEvent.click(within(ask).getByRole('button', { name: 'Cancel' }));
     // To Everyone, the same, in its words.
-    fireEvent.click(within(bar).getByRole('button', { name: 'Who can see it' }));
-    const again = screen.getByRole('dialog', { name: 'Who can see 2 documents' });
+    fireEvent.click(within(bar).getByRole('button', { name: 'Visibility' }));
+    const again = screen.getByRole('dialog', { name: 'Visibility of 2 documents' });
     fireEvent.click(within(again).getByRole('button', { name: 'Everyone in the family' }));
     fireEvent.click(within(again).getByRole('button', { name: 'Continue' }));
     expect(
@@ -1099,13 +1099,13 @@ describe('the Documents table, from 768 px (R2)', () => {
       fireEvent.click(within(t).getByRole('checkbox', { name: `Select “${name}”` }));
     }
     const bar = screen.getByRole('region', { name: 'What to do with the chosen documents' });
-    fireEvent.click(within(bar).getByRole('button', { name: 'Who can see it' }));
-    const sheet = screen.getByRole('dialog', { name: 'Who can see 2 documents' });
+    fireEvent.click(within(bar).getByRole('button', { name: 'Visibility' }));
+    const sheet = screen.getByRole('dialog', { name: 'Visibility of 2 documents' });
     fireEvent.click(within(sheet).getByRole('button', { name: 'Everyone in the family' }));
     fireEvent.click(within(sheet).getByRole('button', { name: 'Continue' }));
     fireEvent.click(
       within(screen.getByRole('alertdialog')).getByRole('button', {
-        name: 'Change who can see them',
+        name: 'Change visibility',
       }),
     );
     // Out of Only me asks who is asking; not answered.
@@ -1764,7 +1764,7 @@ describe('the Documents table’s columns, balanced and widened (0.9.0, TW)', ()
     'Issued',
     'Expires',
     'Status',
-    'Who can see it',
+    'Visibility',
     'Location',
     'Collections',
   ];
@@ -1808,7 +1808,7 @@ describe('the Documents table’s columns, balanced and widened (0.9.0, TW)', ()
       Issued: 106,
       Expires: 106,
       Status: 184,
-      'Who can see it': 118,
+      Visibility: 118,
       Location: 122,
       Collections: 132,
     });
@@ -1822,7 +1822,7 @@ describe('the Documents table’s columns, balanced and widened (0.9.0, TW)', ()
     const cols = [...t.querySelectorAll<HTMLElement>('colgroup col')].map((c) => c.style.width);
     expect(cols).toEqual(['44px', ...NAMES.map((n) => `${widths[n] ?? 0}px`), '56px']);
     // Its header in shorter words, whole on one line; its name in full elsewhere.
-    expect(within(t).getByRole('button', { name: /^Who sees it/ })).toBeInTheDocument();
+    expect(within(t).getByRole('button', { name: /^Visibility/ })).toBeInTheDocument();
     await expectAccessible();
   });
 

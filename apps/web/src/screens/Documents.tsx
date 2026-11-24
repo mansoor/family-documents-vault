@@ -622,7 +622,7 @@ export const SORT_LABELS: Record<DocumentSort, string> = {
   issued: 'Issued',
   expires: 'Expires',
   status: 'Status',
-  visibility: 'Who can see it',
+  visibility: 'Visibility',
   collections: 'Collections',
   location: 'Location',
   // Where the original is, as a place in a cabinet (C3).
@@ -837,7 +837,7 @@ export const FILTER_LABELS: Record<FilterKey, string> = {
   person: 'Person',
   kind: 'Kind',
   status: 'Status',
-  visibility: 'Who can see it',
+  visibility: 'Visibility',
   collection: 'Collection',
   tag: 'Tag',
   label: 'Detail',
@@ -2477,7 +2477,7 @@ function BulkBar(props: {
               setActing('visibility');
             }}
           >
-            Who can see it
+            Visibility
           </button>
         )}
         {scope?.mayRemove && (
@@ -2563,15 +2563,15 @@ function BulkBar(props: {
       )}
       {acting === 'visibility' && (
         <Sheet
-          label={`Who can see ${what}`}
+          label={`Visibility of ${what}`}
           busy={false}
           returnFocus={visibilityButton}
           onClose={() => setActing(null)}
         >
           <div className="card stack">
-            <h2 style={{ fontSize: 20 }}>Who can see {what}</h2>
+            <h2 style={{ fontSize: 20 }}>Visibility of {what}</h2>
             <Pills
-              label="Who can see them"
+              label="Visibility"
               value={to}
               options={offer.visibility.map((v) => ({
                 value: v,
@@ -2598,7 +2598,7 @@ function BulkBar(props: {
               ? `Let everyone in the family see ${documentsCount(changing.length)}?`
               : `Make ${documentsCount(changing.length)} ${VISIBILITY_WORDS[to]}?`
           }
-          confirmLabel="Change who can see them"
+          confirmLabel="Change visibility"
           busyLabel={progress ? `Changing ${progress.done + 1} of ${progress.of}…` : 'Changing…'}
           busy={busy}
           returnFocus={visibilityButton}

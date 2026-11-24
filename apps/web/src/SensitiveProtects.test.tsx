@@ -303,7 +303,7 @@ async function addWith(kind: string) {
 }
 
 const pressed = () =>
-  within(screen.getByRole('group', { name: 'Who can see it' }))
+  within(screen.getByRole('group', { name: 'Visibility' }))
     .getAllByRole('button')
     .filter((b) => b.getAttribute('aria-pressed') === 'true')
     .map((b) => b.textContent);

@@ -18,7 +18,7 @@ import { describeError, useApp } from './app-context.js';
 import { asksFor, coreRule, detailText } from './details.js';
 import { NoteText } from './notes.js';
 import { placeLine } from './original-place.js';
-import { PrintOut } from './print.js';
+import { PrintOut, SENSITIVE_PRINT_NOTICE } from './print.js';
 import { Button, categoryLabel, Check, Dialog, ErrorNote } from './ui.js';
 
 /**
@@ -39,9 +39,14 @@ import { Button, categoryLabel, Check, Dialog, ErrorNote } from './ui.js';
  * read, and so are a long file's pages past the 30th.
  *
  * The details sheet is what the page's details say, in its words and the
- * family's date format: the kind, whose it is, its dates, its status, who
- * sees it, where the original is kept (for whoever the page tells), the
+ * family's date format: the kind, whose it is, its dates, its status, its
+ * visibility, where the original is kept (for whoever the page tells), the
  * kind's own details, and its note.
+ *
+ * A Sensitive document (the owner's choice of 24 Nov 2026) prints as any
+ * other, its heading saying Sensitive, and the dialog that asks what to
+ * print says first to keep the printout safe and shred it: its Cancel
+ * prints nothing.
  */
 
 /** One line of the details sheet: what it is, and what it says. */
@@ -52,7 +57,7 @@ export interface Fact {
   long?: boolean;
 }
 
-/** Who can see it, as its page says it. */
+/** Its visibility, as its page says it. */
 const WHO_SEES: Record<DocumentView['visibility'], string> = {
   household: 'Everyone in the family',
   adults: 'Adults only',
@@ -96,7 +101,7 @@ export function documentFacts(
   });
   facts.push({ label: 'Category', value: categoryLabel(doc.category) });
   facts.push({
-    label: 'Who can see it',
+    label: 'Visibility',
     value: doc.caregiver === true ? CAREGIVER_MARK : WHO_SEES[doc.visibility],
   });
   if (doc.sensitive_effective === true) facts.push({ label: SENSITIVE_LABEL, value: 'Yes' });
@@ -248,6 +253,9 @@ export function PrintDocument(props: {
             <p className="print-about">
               {props.sensitive ? `Document · ${SENSITIVE_LABEL}` : 'Document'}
             </p>
+          ) : props.sensitive ? (
+            // Its pages alone: the heading still says it is Sensitive.
+            <p className="print-about">{SENSITIVE_LABEL}</p>
           ) : undefined
         }
         onDone={props.onClose}
@@ -299,6 +307,11 @@ export function PrintDocument(props: {
         </Button>
       }
     >
+      {props.sensitive && (
+        <p className="print-sensitive" role="note">
+          {SENSITIVE_PRINT_NOTICE}
+        </p>
+      )}
       <fieldset className="print-choices">
         <legend>What to print</legend>
         <Check

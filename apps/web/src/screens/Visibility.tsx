@@ -51,20 +51,6 @@ export function mayChangeWhoSees(props: {
   );
 }
 
-/** Who can see it, in a word: on the action row's button. */
-export const VISIBILITY_SHORT: Record<Visibility, string> = {
-  household: 'Everyone',
-  adults: 'Adults',
-  private: 'Only me',
-};
-
-/** And said in full. */
-export const VISIBILITY_WORDS: Record<Visibility, string> = {
-  household: 'Everyone in the family',
-  adults: 'Adults only',
-  private: 'Only me',
-};
-
 export function VisibilityControl(props: {
   documentId: string;
   current: Visibility;
@@ -202,7 +188,7 @@ export function VisibilityControl(props: {
           setOpen(true);
         }}
       >
-        Change who can see it
+        Change visibility
       </Button>
     );
   }
@@ -210,7 +196,7 @@ export function VisibilityControl(props: {
   return (
     <section ref={box} className="card stack">
       <Pills
-        label="Who can see it"
+        label="Visibility"
         value={choice}
         options={choices.map((c) => ({ value: c.value, label: c.label }))}
         onChange={setChoice}
@@ -284,7 +270,7 @@ export async function linksAsk(
 /**
  * What becomes of one's own links to a document made Only me (5.41): each
  * named, End to start with, Keep while the household lets them out. Asked
- * by "Who can see it" and by the edit card alike; and, for many made
+ * by Visibility and by the edit card alike; and, for many made
  * Only me at once (the Documents table, R2), once for all of them, each
  * document's links under its title (`documents`).
  */

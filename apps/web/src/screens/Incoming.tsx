@@ -512,8 +512,8 @@ function IncomingFile(props: {
                   : undefined
               }
             />
-            <div className="field" role="group" aria-label="Who can see it">
-              <span className="field-label">Who can see it</span>
+            <div className="field" role="group" aria-label="Visibility">
+              <span className="field-label">Visibility</span>
               <div className="pills">
                 {VISIBILITIES.map(([v, label]) => (
                   <button

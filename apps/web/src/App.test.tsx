@@ -854,7 +854,7 @@ describe('App', () => {
     window.history.replaceState({}, '', '/documents/doc-1');
     render(<App />);
 
-    fireEvent.click(await screen.findByRole('button', { name: /^Who can see it/ }));
+    fireEvent.click(await screen.findByRole('button', { name: /^Visibility/ }));
     fireEvent.click(screen.getByRole('button', { name: 'Only me' }));
     expect(screen.getByText(/Nobody else, including the owner of this vault/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
@@ -866,8 +866,8 @@ describe('App', () => {
     fireEvent.click(screen.getByRole('button', { name: 'I understand' }));
 
     // And never again for this document: the server decides, and says null.
-    await screen.findByRole('button', { name: 'Who can see it: Only me' });
-    fireEvent.click(screen.getByRole('button', { name: 'Who can see it: Only me' }));
+    await screen.findByRole('button', { name: 'Visibility' });
+    fireEvent.click(screen.getByRole('button', { name: 'Visibility' }));
     fireEvent.click(screen.getByRole('button', { name: 'Everyone in the family' }));
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
     await waitFor(() =>

@@ -2250,7 +2250,7 @@ export class ShareService {
         throw new ApiError(
           409,
           'only_me_not_shared',
-          `“${onlyMe.title ?? 'A document'}” is Only me, and this household doesn't share Only me documents outside the family. Untick it, or change who can see it first.`,
+          `“${onlyMe.title ?? 'A document'}” is Only me, and this household doesn't share Only me documents outside the family. Untick it, or change its visibility first.`,
         );
       }
       const gone = found.find((d) => d.file_removed === true);

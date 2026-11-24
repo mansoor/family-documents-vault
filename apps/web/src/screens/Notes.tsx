@@ -11,7 +11,7 @@ import {
 } from '@fdv/shared';
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { Link, NavLink, useLocation, useNavigate, useParams } from 'react-router';
-import { api } from '../api.js';
+import { api, ApiRequestError } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
 import { collectionsOffered } from '../collections.js';
 import { mayChange } from '../DocActions.js';
@@ -19,13 +19,12 @@ import {
   ESSENTIAL_NOTE_MEANS,
   keepWords,
   NOTE_ASKS,
-  NoteMarks,
   NoteText,
   NotesSection,
   ONLY_ME_TITLE,
   secretNoteWarning,
 } from '../notes.js';
-import { PrintOut } from '../print.js';
+import { PrintOut, SensitivePrintNotice } from '../print.js';
 import { release, useLeaveGuard } from '../leave-guard.js';
 import { RichTextEditor } from '../rich-text.js';
 import { storedRole } from '../session.js';
@@ -36,12 +35,7 @@ import { Button, ErrorNote, MoveToTrashDialog, Pills, Switch, TopBar } from '../
 import { ActionIcon, ActionRow, countBadge } from '../action-row.js';
 import { DocumentCollections } from './Document.js';
 import { SharePanel } from './Share.js';
-import {
-  mayChangeWhoSees,
-  VISIBILITY_SHORT,
-  VISIBILITY_WORDS,
-  VisibilityControl,
-} from './Visibility.js';
+import { mayChangeWhoSees, VisibilityControl } from './Visibility.js';
 import { dayWordsOf, exactWords, familyZoneNow } from '../family-time.js';
 
 /**
@@ -285,19 +279,21 @@ function NotesList(props: {
   );
 }
 
-/** The marks a note has, beside its section's button: "Essential", "Essential, sensitive". */
-function marksBadge(
-  doc: DocumentView,
-  sensitiveOffered: boolean,
-): { shown: string; spoken: string } | null {
-  const marks = [
-    doc.is_essential ? 'Essential' : null,
-    sensitiveOffered && doc.sensitive_effective === true ? 'sensitive' : null,
-  ].filter((m): m is string => m !== null);
-  if (marks.length === 0) return null;
-  const words = marks.join(', ');
-  const shown = words.charAt(0).toUpperCase() + words.slice(1);
-  return { shown, spoken: shown };
+/**
+ * What a note's details say under its title: who sees it, whether it is
+ * Essential or Sensitive — for anybody who reads it.
+ */
+function noteMeta(
+  doc: Pick<NoteSummary, 'visibility'> & { is_essential?: boolean | undefined },
+  sensitive: boolean,
+): string {
+  return [
+    visibilityWords[doc.visibility],
+    doc.is_essential === true ? 'Essential' : null,
+    sensitive ? SENSITIVE_LABEL : null,
+  ]
+    .filter(Boolean)
+    .join(' · ');
 }
 
 /** A note's words, as a file of their own: Markdown, which any editor opens. */
@@ -326,7 +322,7 @@ function NotePane(props: {
   onChanged: () => void;
   onDirty: (dirty: boolean) => void;
 }) {
-  const { authVersion, session, withToken, caps } = useApp();
+  const { authVersion, session, withToken, guarded, caps } = useApp();
   const navigate = useNavigate();
   // A note made just now (0.9.0-dev.87): opened with the words in hand, its
   // maker never asked to confirm it's them for what they have just written.
@@ -339,9 +335,14 @@ function NotePane(props: {
   const [trashing, setTrashing] = useState(false);
   const [editSlot, setEditSlot] = useState<HTMLElement | null>(null);
   const [confirming, setConfirming] = useState(false);
-  // Printed (0.9.0): its title, who sees it and when it changed, and its words.
-  const [printing, setPrinting] = useState(false);
+  // Printed (0.9.0): its title, who sees it and when it changed, and its
+  // words; a Sensitive one asked about first (the owner's choice of 24 Nov 2026).
+  const [printing, setPrinting] = useState<'ask' | 'print' | null>(null);
+  const printButton = useRef<HTMLButtonElement>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  // Essential being turned on or off, and what it came to.
+  const [toggling, setToggling] = useState(false);
+  const [said, setSaid] = useState<string | null>(null);
   // The row's counts, as its sections say them; and which of them is busy.
   const [counts, setCounts] = useState<{ collections?: number; links?: number }>({});
   const [busy, setBusy] = useState<{ visibility?: boolean; share?: boolean }>({});
@@ -394,8 +395,7 @@ function NotePane(props: {
             </h2>
             {s && (
               <p className="muted note-pane-meta">
-                {visibilityWords[s.visibility]}
-                {s.is_essential ? ' · Essential' : ''} · changed{' '}
+                {noteMeta(s, s.sensitive_effective === true)} · changed{' '}
                 {exactWords(s.notes_updated_at ?? s.updated_at)}
               </p>
             )}
@@ -435,10 +435,42 @@ function NotePane(props: {
   const filedByMe = doc.filed_by_me === true;
   const title = noteTitle(doc.title, doc.notes);
   const sensitiveOffered = caps?.features.sensitive_documents === true;
+  const sensitive = doc.sensitive_effective === true;
   // An answer that withholds its words keeps those in hand (0.9.0-dev.87).
   const saved = (next: DocumentView) => {
     setData((d) => (d ? { ...d, doc: keepWords(d.doc, next) } : d));
     props.onChanged();
+  };
+
+  // Make it Essential, or Stop it being Essential (the owner's request of
+  // 24 Nov 2026): as a document's ⋯ does, with the ETag of the note as it
+  // was loaded. Turning it off takes away the question opening it asks, so
+  // the vault may ask to confirm it's you first.
+  const toggleEssential = async () => {
+    if (toggling) return;
+    const next = !doc.is_essential;
+    setToggling(true);
+    setActionError(null);
+    setSaid(null);
+    try {
+      const result = await guarded((t) =>
+        api.updateDocument(t, doc.id, { is_essential: next }, doc.etag),
+      );
+      if (!result) return;
+      saved(result);
+      setSaid(next ? 'This note is Essential now.' : 'This note is not Essential any more.');
+    } catch (err) {
+      if (err instanceof ApiRequestError && err.status === 409) {
+        setActionError(
+          'This note was changed somewhere else, so it has been loaded again. Try again if it still needs changing.',
+        );
+        void reload();
+        return;
+      }
+      setActionError(describeError(err));
+    } finally {
+      setToggling(false);
+    }
   };
 
   const remove = async () => {
@@ -466,7 +498,7 @@ function NotePane(props: {
             {title}
           </h2>
           <p className="muted note-pane-meta">
-            {visibilityWords[doc.visibility]} · changed{' '}
+            {noteMeta(doc, sensitive)} · changed{' '}
             {exactWords(doc.notes_updated_at ?? doc.updated_at, data.timezone ?? undefined)}
           </p>
         </div>
@@ -486,6 +518,7 @@ function NotePane(props: {
         onConfirm={() => void reload()}
         onDirty={props.onDirty}
         editSlot={editSlot}
+        sensitiveOffered={sensitiveOffered && mayEdit}
       />
       {/* Under the note, one row: Download, Print, a button for each
           section, and the Trash at the end (the owner's request of 24 Oct 2026). */}
@@ -493,22 +526,32 @@ function NotePane(props: {
         kind="note"
         memberId={memberId}
         onDownload={() => downloadNote(doc)}
-        onPrint={() => setPrinting(true)}
+        onPrint={() => setPrinting(sensitive ? 'ask' : 'print')}
+        printRef={printButton}
+        essential={
+          mayEdit
+            ? { on: doc.is_essential, busy: toggling, onToggle: () => void toggleEssential() }
+            : null
+        }
         onTrash={mayEdit ? () => setConfirming(true) : null}
         trashRef={trashButton}
-        error={<ErrorNote message={actionError} />}
+        error={
+          <>
+            <ErrorNote message={actionError} />
+            <p className="muted" role="status">
+              {said}
+            </p>
+          </>
+        }
         sections={[
           ...(mayChangeWhoSees({ current: doc.visibility, isMine, filedByMe })
             ? [
                 {
                   key: 'visibility' as const,
-                  label: 'Who can see it',
+                  // Its words without its value: the details say that.
+                  label: 'Visibility',
                   icon: <ActionIcon name="eye" />,
-                  badge: {
-                    shown: VISIBILITY_SHORT[doc.visibility],
-                    spoken: VISIBILITY_WORDS[doc.visibility],
-                  },
-                  heading: 'Who can see it',
+                  heading: 'Visibility',
                   busy: busy.visibility === true,
                   render: (done: () => void) => (
                     <VisibilityControl
@@ -523,29 +566,6 @@ function NotePane(props: {
                       }}
                       onClose={done}
                       onBusy={(on) => setBusy((b) => ({ ...b, visibility: on }))}
-                    />
-                  ),
-                },
-              ]
-            : []),
-          // Essential and Sensitive (0.9.0-dev.87): as a document's, for
-          // whoever may change it; read by anybody where it is either.
-          ...(mayEdit || doc.is_essential || doc.sensitive_effective === true
-            ? [
-                {
-                  key: 'marks' as const,
-                  label: 'Essential and sensitive',
-                  icon: <ActionIcon name="star" />,
-                  badge: marksBadge(doc, sensitiveOffered),
-                  heading: 'Essential and sensitive',
-                  render: () => (
-                    <NoteMarks
-                      key={`marks-${doc.id}`}
-                      doc={doc}
-                      mayEdit={mayEdit}
-                      sensitiveOffered={sensitiveOffered}
-                      onSaved={saved}
-                      onStale={() => void reload()}
                     />
                   ),
                 },
@@ -614,16 +634,24 @@ function NotePane(props: {
             : []),
         ]}
       />
-      {printing && (
+      {printing === 'ask' && (
+        <SensitivePrintNotice
+          returnFocus={printButton}
+          onPrint={() => setPrinting('print')}
+          onCancel={() => setPrinting(null)}
+        />
+      )}
+      {printing === 'print' && (
         <PrintOut
           title={title}
           about={
             <p className="print-about">
-              Note · {visibilityWords[doc.visibility]} · changed{' '}
+              Note · {visibilityWords[doc.visibility]}
+              {sensitive ? ` · ${SENSITIVE_LABEL}` : ''} · changed{' '}
               {exactWords(doc.notes_updated_at ?? doc.updated_at, data.timezone ?? undefined)}
             </p>
           }
-          onDone={() => setPrinting(false)}
+          onDone={() => setPrinting(null)}
         >
           <div className="print-note">
             {doc.notes ? (
@@ -745,7 +773,7 @@ function NewNote(props: { onMade: () => void; onDirty: (dirty: boolean) => void 
         )}
       </div>
       <Pills
-        label="Who can see it"
+        label="Visibility"
         value={visibility}
         options={choices.map((v) => ({ value: v, label: visibilityWords[v] }))}
         onChange={setVisibility}

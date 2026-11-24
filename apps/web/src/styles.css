@@ -3265,6 +3265,15 @@ fieldset.identity-section {
 .notes-own .notes-head {
   justify-content: flex-start;
 }
+/* A note's Sensitive, at the far end of its Save and Cancel row (24 Nov 2026). */
+.note-save-row {
+  align-items: center;
+}
+.note-sensitive {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+}
 .shared-note {
   margin-top: 4px;
   align-self: stretch;

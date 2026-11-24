@@ -274,7 +274,7 @@ describe('Settings → Kinds of document (5.12)', () => {
   it('the four locked rows cannot be unchecked', async () => {
     open('/settings/kinds/passport');
     await screen.findByRole('heading', { name: 'Passport', level: 1 });
-    for (const name of ['What it is', 'Name', 'Whose it is', 'Who can see it']) {
+    for (const name of ['What it is', 'Name', 'Whose it is', 'Visibility']) {
       const row = group(name);
       const box = within(row).getByRole('checkbox', { name: 'Always asked' });
       expect(box).toBeChecked();
@@ -286,7 +286,7 @@ describe('Settings → Kinds of document (5.12)', () => {
       // Never "Required": it is not the family's to choose.
       expect(within(row).queryByRole('checkbox', { name: 'Required' })).toBeNull();
     }
-    expect(within(group('Who can see it')).getByText('Who may open it.')).toBeInTheDocument();
+    expect(within(group('Visibility')).getByText('Who may open it.')).toBeInTheDocument();
     await expectAccessible();
   });
 
@@ -363,7 +363,7 @@ describe('Settings → Kinds of document (5.12)', () => {
   it('an adult is not offered a wider default visibility', async () => {
     open('/settings/kinds/will', 'adult');
     await screen.findByRole('heading', { name: 'Will / trust / power of attorney', level: 1 });
-    const who = group('Who can see a new one');
+    const who = group('Visibility of a new one');
     expect(within(who).getByRole('button', { name: 'Adults only' })).toHaveAttribute(
       'aria-pressed',
       'true',
@@ -391,7 +391,7 @@ describe('Settings → Kinds of document (5.12)', () => {
   it('an owner widens it once they have confirmed it is them', async () => {
     const state = open('/settings/kinds/will', 'owner', { stepUpNeeded: true });
     await screen.findByRole('heading', { name: 'Will / trust / power of attorney', level: 1 });
-    const everyone = within(group('Who can see a new one')).getByRole('button', {
+    const everyone = within(group('Visibility of a new one')).getByRole('button', {
       name: 'Everyone',
     });
     expect(everyone).toBeEnabled();

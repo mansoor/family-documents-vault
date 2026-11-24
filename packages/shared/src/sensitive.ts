@@ -132,14 +132,14 @@ export function teenOwnStart(
 
 /** Said on the capture and confirm cards when a paper starts as Only me by H1a's rule. */
 export const SENSITIVE_ONLY_ME_NOTE =
-  'This is sensitive and it’s yours, so it starts as Only me: only you can see it. You can change who can see it before you save.';
+  'This is sensitive and it’s yours, so it starts as Only me: only you can see it. You can change its visibility before you save.';
 
 /**
  * Said on the cards when a teen's own vaccination record starts where their
  * parents can see it (H3), in place of SENSITIVE_ONLY_ME_NOTE.
  */
 export const PARENTS_KEEP_NOTE =
-  'Vaccination records start as Everyone, so your parents can see them: schools and doctors ask the family for them. Everyone means everybody in the family who uses the vault, viewers too. You can change who can see it, now or later.';
+  'Vaccination records start as Everyone, so your parents can see them: schools and doctors ask the family for them. Everyone means everybody in the family who uses the vault, viewers too. You can change its visibility, now or later.';
 
 /**
  * `409 sensitive_confirm` (H1a): a sensitive document shared outside the

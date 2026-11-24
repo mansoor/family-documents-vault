@@ -1537,7 +1537,7 @@ export function ConfirmForm(props: {
     // Made wider by whose it is: said, never done silently (the I2 review).
     if (visibility === 'private' && next !== 'private') {
       setWidened(
-        `Who can see it is now ${next === 'adults' ? 'Adults only' : 'Everyone'}: Only me is for your own documents.`,
+        `Visibility is now ${next === 'adults' ? 'Adults only' : 'Everyone'}: Only me is for your own documents.`,
       );
     }
   };
@@ -2198,8 +2198,8 @@ export function ConfirmForm(props: {
         <p role="status" className="visually-hidden">
           {widened}
         </p>
-        <div className="field" role="group" aria-label="Who can see it">
-          <span className="field-label">Who can see it</span>
+        <div className="field" role="group" aria-label="Visibility">
+          <span className="field-label">Visibility</span>
           <div className="pills">
             {(
               [

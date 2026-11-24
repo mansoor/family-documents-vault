@@ -68,12 +68,7 @@ import { PagesOffers } from '../renewal.js';
 import { OlderVersionBanner, OlderVersionDetails } from '../version-view.js';
 import { SharePanel } from './Share.js';
 import { TagSection } from '../tags.js';
-import {
-  mayChangeWhoSees,
-  VISIBILITY_SHORT,
-  VISIBILITY_WORDS,
-  VisibilityControl,
-} from './Visibility.js';
+import { mayChangeWhoSees, VisibilityControl } from './Visibility.js';
 import { ActionIcon, ActionRow, countBadge } from '../action-row.js';
 import { DocumentActivityPanel } from '../document-activity.js';
 import { createUploadKeys, whileInProgress } from '../upload-keys.js';
@@ -805,13 +800,11 @@ function OneDocumentView(props: DocumentViewProps) {
             ? [
                 {
                   key: 'visibility' as const,
-                  label: 'Who can see it',
+                  // Its words without its value: the details say that (the
+                  // owner's request of 24 Nov 2026).
+                  label: 'Visibility',
                   icon: <ActionIcon name="eye" />,
-                  badge: {
-                    shown: VISIBILITY_SHORT[doc.visibility],
-                    spoken: VISIBILITY_WORDS[doc.visibility],
-                  },
-                  heading: 'Who can see it',
+                  heading: 'Visibility',
                   busy: busy.visibility === true,
                   render: (done: () => void) => (
                     <VisibilityControl

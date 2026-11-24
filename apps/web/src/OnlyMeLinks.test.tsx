@@ -43,7 +43,7 @@ const visibilityCalls = (state: FakeState) =>
 
 const makeItOnlyMe = async () => {
   // Who can see it: a section of the action row (0.9.0), opened from its button.
-  const opener = await screen.findByRole('button', { name: /^Who can see it/ });
+  const opener = await screen.findByRole('button', { name: /^Visibility/ });
   if (opener.getAttribute('aria-expanded') !== 'true') fireEvent.click(opener);
   fireEvent.click(screen.getByRole('button', { name: 'Only me' }));
   fireEvent.click(screen.getByRole('button', { name: 'Save' }));
@@ -148,7 +148,7 @@ describe('the same choice, wherever Only me is chosen (the third round)', () => 
     signedIn();
     window.history.replaceState({}, '', '/documents/doc-1/confirm');
     render(<App />);
-    const who = await screen.findByRole('group', { name: 'Who can see it' });
+    const who = await screen.findByRole('group', { name: 'Visibility' });
     fireEvent.click(within(who).getByRole('button', { name: 'Only me' }));
     const save = screen.getByRole('button', { name: 'Save to the vault' });
     fireEvent.click(save);
@@ -184,8 +184,8 @@ describe('the same choice, wherever Only me is chosen (the third round)', () => 
     more.focus();
     fireEvent.click(more);
     const menu = await screen.findByRole('menu', { name: "Actions for “Mansoor's passport”" });
-    fireEvent.click(await within(menu).findByRole('menuitem', { name: 'Who can see it' }));
-    const sheet = await screen.findByRole('dialog', { name: "Who can see “Mansoor's passport”" });
+    fireEvent.click(await within(menu).findByRole('menuitem', { name: 'Visibility' }));
+    const sheet = await screen.findByRole('dialog', { name: "Visibility of “Mansoor's passport”" });
     fireEvent.click(within(sheet).getByRole('button', { name: 'Only me' }));
     fireEvent.click(within(sheet).getByRole('button', { name: 'Save' }));
     const dialog = await screen.findByRole('alertdialog', { name: 'Your links to this document' });
@@ -198,7 +198,7 @@ describe('the same choice, wherever Only me is chosen (the third round)', () => 
       expect(screen.queryByRole('alertdialog', { name: 'Your links to this document' })).toBeNull(),
     );
     expect(
-      screen.getByRole('dialog', { name: "Who can see “Mansoor's passport”" }),
+      screen.getByRole('dialog', { name: "Visibility of “Mansoor's passport”" }),
     ).toBeInTheDocument();
   });
 
@@ -231,7 +231,7 @@ describe('the same choice, wherever Only me is chosen (the third round)', () => 
       signedIn();
       window.history.replaceState({}, '', '/documents/doc-1/confirm');
       render(<App />);
-      const who = await screen.findByRole('group', { name: 'Who can see it' });
+      const who = await screen.findByRole('group', { name: 'Visibility' });
       fireEvent.click(within(who).getByRole('button', { name: 'Only me' }));
       const save = screen.getByRole('button', { name: 'Save to the vault' });
       save.focus();

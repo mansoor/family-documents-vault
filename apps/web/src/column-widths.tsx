@@ -61,7 +61,7 @@ export const COLUMN_SIZES: Record<ColumnKey, ColumnSize> = {
   // "Valid for 1 year 1 month" (149 px, bold) after its dot (10 px, 6 px
   // from it); drawn by itself no narrower than "Expired 1 Mar 2025" (122 px).
   status: { min: 84, tight: 156, base: 184, max: 640, weight: 2 },
-  // Its header, "Who sees it" (84 px), is wider than "Adults only" (71 px).
+  // Its header, "Visibility" in capitals, is wider than "Adults only" (71 px).
   visibility: { min: 118, tight: 118, base: 118, max: 640, weight: 1 },
   // "Safe deposit box" (106 px).
   location: { min: 104, tight: 104, base: 122, max: 640, weight: 2 },
