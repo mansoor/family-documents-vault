@@ -8,12 +8,12 @@ import type { OwnersAlert } from '../ai-send.js';
 import { installationHousehold, lastTry, noteVaultCheck, noticeHealth } from './vault-health.js';
 
 /**
- * Settings → Security & health (0.9.0-dev.78), the worker's side: a line in
+ * Settings → System health (0.9.0-dev.78), the worker's side: a line in
  * every household's log as it makes a backup, checks the activity log or
  * runs the drill; and the owners emailed once when the backups stop or the
  * check fails, not again until it clears.
  */
-describe.skipIf(!testAdminUrl())('security and health, from the worker', () => {
+describe.skipIf(!testAdminUrl())('system health, from the worker', () => {
   let vault: TestDatabase;
   let admin: pg.Pool;
   let appPool: pg.Pool;
@@ -129,7 +129,7 @@ describe.skipIf(!testAdminUrl())('security and health, from the worker', () => {
     expect(told[0]?.account_ids).toEqual([owner]);
     expect(told[0]?.body).toContain('No backup has been made yet.');
     expect(told[0]?.body).toContain('docker compose ps');
-    expect(told[0]?.body).toContain('Settings → Security & health');
+    expect(told[0]?.body).toContain('Settings → System health');
     // Once: not again while it stands.
     expect(await notice()).toBe(0);
     expect(await lines(hh, HEALTH_EVENTS.ownersTold)).toEqual([

@@ -16,7 +16,7 @@ import type { Principal } from '../auth/service.js';
 import { ApiError } from '../errors.js';
 
 /**
- * Settings → Security & health (0.9.0), an owner's: the last backup and its
+ * Settings → System health (0.9.0), an owner's: the last backup and its
  * copy off-site, the last restore drill, the activity log's last check,
  * and the day's failed sign-ins and sign-ins used from two places — all
  * read from what the vault already keeps (its activity log, the off-site
@@ -25,7 +25,7 @@ import { ApiError } from '../errors.js';
  */
 
 const ownersOnly = () =>
-  new ApiError(403, 'forbidden', 'Only an owner can see the vault’s security and health.');
+  new ApiError(403, 'forbidden', 'Only an owner can see the vault’s system health.');
 
 const DAY = 24 * 3600_000;
 

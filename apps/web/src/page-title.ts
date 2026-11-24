@@ -56,6 +56,7 @@ const PAGES: ReadonlyArray<readonly [pattern: string, title: string]> = [
   ['/settings/notifications', 'Settings: notifications'],
   ['/settings/appearance', 'Settings: appearance'],
   ['/settings/time-zone', 'Settings: time zone'],
+  ['/settings/security', 'Settings: security'],
   ['/settings/privacy', 'Settings: privacy'],
   ['/settings/data', 'Settings: your data'],
   // Server and reading (0.9.0): each part of a page that holds two, the page's.
@@ -67,7 +68,7 @@ const PAGES: ReadonlyArray<readonly [pattern: string, title: string]> = [
   ['/settings/reading-check', 'Settings: reading and the check'],
   ['/settings/texts', 'Settings: text messages'],
   ['/settings/backups', 'Settings: backups'],
-  ['/settings/health', 'Settings: security and health'],
+  ['/settings/health', 'Settings: system health'],
   ['/settings/caregivers', 'Settings: caregivers'],
   ['/settings/family', 'Family'],
   ['/settings/kinds', 'Settings: kinds of document'],

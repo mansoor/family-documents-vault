@@ -5,9 +5,7 @@ import { api, ApiRequestError } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
 import { TwoStepNeeded } from '../identity.js';
 import { EndedSharingCard } from '../ended-sharing.js';
-import { FamilyAutoLockCard } from '../auto-lock-settings.js';
 import { NeutralWordingCard } from '../neutral-wording.js';
-import { TwoStepRuleCard } from '../two-step-rule.js';
 import { endedSharingCard, privacyRows, SettingsRows, wordingCard } from '../settings-sections.js';
 import { storedRole } from '../session.js';
 import { ErrorNote, LoadFailed } from '../ui.js';
@@ -19,10 +17,11 @@ import { SettingsPage } from './Settings.js';
  * (0.9.0, H2), an owner's; the household's rule for Only me documents and
  * links outside the family (5.41); how long links and requests that no
  * longer work are kept (0.9.0, RQ), an owner's to change; and the way to
- * Family, who sees identity details. Kinds of document is a section of its own since 0.8.0 (the
- * owner's ask of 17 Oct 2026). The rule is an owner's to change, with
- * two-step sign-in and a passkey or a code (A54); an adult reads it, as it
- * decides what their share sheet offers.
+ * Family, who sees identity details. Kinds of document is a section of its
+ * own since 0.8.0 (the owner's ask of 17 Oct 2026). The rule is an owner's
+ * to change, with two-step sign-in and a passkey or a code (A54); an adult
+ * reads it, as it decides what their share sheet offers. The two-step rule
+ * and locking after a while away are in Security since 24 Nov 2026.
  */
 export function PrivacyScreen() {
   const { caps, session } = useApp();
@@ -35,10 +34,6 @@ export function PrivacyScreen() {
       <OnlyMeSharingCard />
       {/* Ended links and requests (0.9.0, RQ): how long they are kept. */}
       {endedSharingCard(role, caps) && <EndedSharingCard />}
-      {/* Two-step sign-in for adults (0.9.0): an owner's to change. */}
-      {role === 'owner' && <TwoStepRuleCard />}
-      {/* Lock after a while away (0.9.0-dev.87): the family's time, an owner's. */}
-      {role === 'owner' && caps?.features.auto_lock === true && <FamilyAutoLockCard />}
       {/* Its page: who sees identity details, where it was shown before. */}
       <SettingsRows rows={rows} label="More about privacy" />
     </SettingsPage>

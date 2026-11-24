@@ -285,7 +285,7 @@ export interface HarnessOptions {
    * only the S3 test server's address.
    */
   offsiteTest?: (b: OffsiteBucket) => Promise<OffsiteTestFound>;
-  /** Settings → Security & health's clock (0.9.0): what is late, and what is due. */
+  /** Settings → System health's clock (0.9.0): what is late, and what is due. */
   healthNow?: () => Date;
   /** FDV_AI_READER_SETTINGS (AIR1): on unless a test says off. */
   aiReaderSettings?: 'on' | 'off';

@@ -302,7 +302,7 @@ export function buildCapabilities(config: CapabilityConfig): Capabilities {
       // Settings → Backups; never on the hosted edition, whose operator
       // keeps the backups.
       ...(config.edition === 'hosted' ? {} : { backup_offsite: true }),
-      // 0.9.0-dev.78: Settings → Security & health, an owner's.
+      // 0.9.0-dev.78: Settings → System health, an owner's.
       security_health: true,
       // 0.9.0-dev.82: the activity log as CSV (GET /audit/export).
       activity_export: true,

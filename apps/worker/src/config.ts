@@ -27,7 +27,7 @@ const schema = z.object({
   // How many days without an off-site copy, while it is on, is late: the
   // owners are told. Two assumes nightly backups (FDV_BACKUP_CRON's default).
   FDV_BACKUP_OFFSITE_LATE_DAYS: z.coerce.number().int().min(1).max(60).default(2),
-  // Days without a backup before Security & health says so and the owners are told.
+  // Days without a backup before System health says so and the owners are told.
   FDV_BACKUP_LATE_DAYS: z.coerce.number().int().min(1).max(60).default(2),
   FDV_WEEKLY_HOUR: z.coerce
     .number()

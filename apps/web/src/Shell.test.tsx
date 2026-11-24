@@ -832,7 +832,8 @@ describe('Settings in three groups, with a menu beside the page (0.9.0, the owne
   const GROUPS: Record<Role, Array<[string, string[]]>> = {
     owner: [
       ['You', ['Your account', 'Notifications', 'Appearance', 'Your data']],
-      ['Household', ['Privacy', 'Time zone', 'Kinds of document', 'Tags']],
+      // Security before Privacy (24 Nov 2026): the two-step rule, an owner's.
+      ['Household', ['Security', 'Privacy', 'Time zone', 'Kinds of document', 'Tags']],
       [
         'Server and reading · owners',
         ['Storage', 'Email, in and out', 'Scanner folder', 'Reading and the check'],
@@ -1561,6 +1562,7 @@ describe('every address Settings had still works (R1)', () => {
     ['/settings/computers', '/settings/computers', 'Your computers'],
     ['/settings/connected-apps', '/settings/connected-apps', 'Connected apps'],
     ['/settings/data', '/settings/data', 'Your data'],
+    ['/settings/security', '/settings/security', 'Security'],
     ['/settings/privacy', '/settings/privacy', 'Privacy'],
     ['/settings/household', '/settings/privacy', 'Privacy'],
     ['/settings/family', '/settings/family', 'Family'],
@@ -1583,8 +1585,8 @@ describe('every address Settings had still works (R1)', () => {
     ['/settings/texts', '/settings/texts', 'Text messages'],
     // Backups, and their copy off-site (0.9.0-dev.76).
     ['/settings/backups', '/settings/backups', 'Backups'],
-    // Security & health (0.9.0-dev.78).
-    ['/settings/health', '/settings/health', 'Security & health'],
+    // System health (0.9.0-dev.78; Security & health until 24 Nov 2026).
+    ['/settings/health', '/settings/health', 'System health'],
     // Caregivers (0.9.0, H1b).
     ['/settings/caregivers', '/settings/caregivers', 'Caregivers'],
     ['/settings/activity', '/activity', 'What has been happening'],

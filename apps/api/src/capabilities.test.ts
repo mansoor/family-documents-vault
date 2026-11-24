@@ -192,7 +192,7 @@ describe('buildCapabilities', () => {
       connected_apps: true,
       // 0.9.0-dev.76: an off-site copy of the nightly backups.
       backup_offsite: true,
-      // 0.9.0-dev.78: Settings → Security & health.
+      // 0.9.0-dev.78: Settings → System health.
       security_health: true,
       // 0.9.0-dev.82: the activity log as CSV.
       activity_export: true,

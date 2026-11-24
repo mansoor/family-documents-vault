@@ -977,7 +977,7 @@ h3 {
   display: block;
 }
 
-/* Settings → Security & health (0.9.0-dev.78): one line a check, fine or not. */
+/* Settings → System health (0.9.0-dev.78): one line a check, fine or not. */
 .health-lines {
   list-style: none;
   margin: 12px 0 0;
@@ -1652,6 +1652,12 @@ fieldset.limits-set {
 
 .icon {
   flex-shrink: 0;
+}
+
+/* A dropdown's ▾ (ui.tsx Caret): on the words' line, a little apart. */
+.caret {
+  flex: none;
+  margin-left: 2px;
 }
 
 .data-table {
@@ -3833,6 +3839,8 @@ kbd {
 }
 
 .btn.app-add {
+  display: inline-flex;
+  align-items: center;
   min-height: var(--tap);
   gap: 6px;
   padding: 0 16px;
@@ -4590,10 +4598,6 @@ a.menu-item {
   outline-offset: 2px;
 }
 
-.multi-filter-caret {
-  font-size: 11px;
-}
-
 .multi-filter-menu {
   position: absolute;
   left: 0;
@@ -5116,7 +5120,33 @@ a.menu-item {
   font-size: 14px;
 }
 
+/* The count, at the foot before the sort (24 Nov 2026). */
+.tablefoot-count {
+  margin: 0 0 0 auto;
+}
+
+.tablefoot-count + .tablefoot-sort {
+  margin-left: 0;
+}
+
 .tablefoot-sort {
+  margin-left: auto;
+}
+
+/* The filters, and Columns at the end of their row where the count was. */
+.filters-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.filters-row > .filters {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.filters-tool {
+  flex: none;
   margin-left: auto;
 }
 
@@ -8108,6 +8138,47 @@ html:has(.shell-phone):has(.has-toast) {
   color: var(--accent);
 }
 
+/* Cabinet's ▾ (24 Nov 2026): Arrange my cabinet, in a menu under it. */
+.view-toggle-wrap {
+  position: relative;
+}
+
+.view-toggle-cabinet {
+  padding-right: 4px;
+}
+
+/* The ▾ is Cabinet's own: no line between them, and filled with it. */
+.view-toggle-more {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 14px 0 2px;
+}
+
+.view-toggle-cabinet[aria-pressed='true'] + .view-toggle-more {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.view-toggle-more:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.view-toggle-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  z-index: 40;
+  min-width: 200px;
+  display: flex;
+  flex-direction: column;
+  padding: 6px;
+  background: var(--raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-m);
+  box-shadow: 0 8px 24px var(--scrim);
+}
+
 .view-toggle-btn:focus-visible {
   outline: 2px solid var(--ink);
   outline-offset: -2px;
@@ -8816,16 +8887,6 @@ html:has(.shell-phone):has(.has-toast) {
   gap: 2px;
 }
 
-/* DL: the Documents page's second control — Columns for the table, Arrange
-   my cabinet for the cabinet — in one slot beside Table and Cabinet, as
-   wide as the wider of the two, so toggling the view moves neither it nor
-   the toggle (the owner, 15 Nov 2026). */
-.table-head-tool {
-  display: flex;
-  justify-content: flex-start;
-  min-width: 11.5rem;
-}
-
 /* C3: where the original is, as a place in a cabinet — on a document's
    page, the place (a way to the folder for whoever set it) and then the
    words, after a middle dot. */
@@ -9194,6 +9255,13 @@ html:has(.shell-phone):has(.has-toast) {
   white-space: nowrap;
 }
 
+/* Its lock and its word on one line, centred (24 Nov 2026). */
+.btn.lock-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
 /*
  * Lock after a while away (0.9.0-dev.87): a minute before it locks, a quiet
  * line where the renewal's wait is said, never over what is being read for
@@ -9538,4 +9606,16 @@ button.arrange-scope {
   flex-direction: column;
   gap: 6px;
   padding-left: 18px;
+}
+
+/* Lock after a while away (Settings → Security): For the family and For
+   you side by side, one under the other when the page is narrow. */
+.auto-lock-pair {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 280px));
+  gap: 12px 24px;
+  /* Within a form's width, as every other field in Settings is: never
+     the second far across a wide card. */
+  max-width: 600px;
+  align-items: start;
 }

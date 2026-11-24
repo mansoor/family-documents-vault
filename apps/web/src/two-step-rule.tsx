@@ -4,7 +4,7 @@ import { describeError, useApp, useLoad } from './app-context.js';
 import { ErrorNote, LoadFailed } from './ui.js';
 
 /**
- * Settings → Privacy: whether every adult must have two-step sign-in
+ * Settings → Security: whether every adult must have two-step sign-in
  * (0.9.0) — a code from an authenticator app, or a passkey — before a
  * password sign-in opens anything else. Owners always must. On for every
  * household made since 0.9.0; off for those made before, until an owner

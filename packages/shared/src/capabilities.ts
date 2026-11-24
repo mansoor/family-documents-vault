@@ -826,7 +826,7 @@ export interface CapabilityFeatures {
    */
   backup_offsite?: boolean;
   /**
-   * Settings → Security & health (0.9.0-dev.78): `GET /household/health`,
+   * Settings → System health (0.9.0-dev.78): `GET /household/health`,
    * an owner's — the last backup and its copy off-site, the last restore
    * drill, the activity log's check, the day's failed sign-ins and sign-ins
    * used from two places. Absent from older vaults.

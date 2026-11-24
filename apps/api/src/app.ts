@@ -174,7 +174,7 @@ export interface AppDeps {
   aiReader?: AiReaderService;
   /** Settings → Backups: an off-site copy of the nightly backups, an owner's (0.9.0-dev.76). */
   backupOffsite?: BackupOffsiteService;
-  /** Settings → Security & health: backups, the log's check, sign-ins; an owner's (0.9.0). */
+  /** Settings → System health: backups, the log's check, sign-ins; an owner's (0.9.0). */
   securityHealth?: SecurityHealthService;
   logger?: boolean | object;
   /**

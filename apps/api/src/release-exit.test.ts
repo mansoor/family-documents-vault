@@ -1660,7 +1660,7 @@ const RULES: Record<string, Rule> = {
   'PUT /api/v1/backups/offsite/enabled': { who: 'ownerPower', body: () => ({ enabled: true }) },
   'DELETE /api/v1/backups/offsite': { who: 'ownerPower' },
   'POST /api/v1/backups/offsite/test': { who: 'owners', body: () => ({}) },
-  // Settings → Security & health (0.9.0-dev.78): the owners' to read, with
+  // Settings → System health (0.9.0-dev.78): the owners' to read, with
   // any credential — it changes nothing.
   'GET /api/v1/household/health': { who: 'owners' },
 };

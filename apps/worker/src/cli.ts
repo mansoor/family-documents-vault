@@ -61,7 +61,7 @@ async function main() {
     previous: process.env.FDV_MASTER_KEY_PREVIOUS || undefined,
   };
   /**
-   * A line in each household's log for Settings → Security & health
+   * A line in each household's log for Settings → System health
    * (0.9.0): a backup made here, and a drill run. Never in the way: a vault
    * whose database cannot take it still has its backup, or its drill's word.
    */
@@ -74,7 +74,7 @@ async function main() {
     try {
       await noteVaultCheck({ admin, db: createDb(appPool) }, action, () => detail);
     } catch (err) {
-      console.error(`(not noted in Settings → Security & health: ${(err as Error).message})`);
+      console.error(`(not noted in Settings → System health: ${(err as Error).message})`);
     } finally {
       await admin.end();
       await appPool.end();

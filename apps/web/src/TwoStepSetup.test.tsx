@@ -104,11 +104,11 @@ describe('two-step sign-in, set up first (0.9.0)', () => {
     expect(screen.getByText(/FDV_SETUP_TOKEN/)).toBeInTheDocument();
   });
 
-  it('an owner asks it of every adult, or stops, in Privacy', async () => {
+  it('an owner asks it of every adult, or stops, in Security', async () => {
     const state = fresh({ twoStepAdults: true });
     installFakeApi(state);
     signedIn();
-    window.history.replaceState({}, '', '/settings/privacy');
+    window.history.replaceState({}, '', '/settings/security');
     render(<App />);
     const box = await screen.findByLabelText('Ask every adult to use two-step sign-in');
     expect(box).toBeChecked();

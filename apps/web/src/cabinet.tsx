@@ -71,6 +71,7 @@ import {
   LockIcon,
   Sheet,
   useSheetFocus,
+  Caret,
 } from './ui.js';
 import { DocRow } from './screens/Home.js';
 import { useChangesBeside, useOpenDocument } from './flyout-context.js';
@@ -110,31 +111,99 @@ export function cabinetHref(
   return `/documents?${p.toString()}`;
 }
 
-/** Table or Cabinet: the two ways to see the same documents. */
-export function ViewToggle({ current }: { current: 'table' | 'cabinet' }) {
+/**
+ * Table or Cabinet: the two ways to see the same documents. Cabinet's ▾
+ * opens Arrange my cabinet (24 Nov 2026), from either view; while
+ * arranging, it is not offered again.
+ */
+export function ViewToggle({
+  current,
+  arranging = false,
+}: {
+  current: 'table' | 'cabinet';
+  arranging?: boolean;
+}) {
   const navigate = useNavigate();
+  const [open, setOpen] = useState(false);
+  const id = useId();
+  const more = useRef<HTMLButtonElement>(null);
+  const wrap = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      setOpen(false);
+      more.current?.focus();
+    };
+    const onDown = (e: MouseEvent) => {
+      if (!wrap.current?.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener('keydown', onKey);
+    document.addEventListener('mousedown', onDown);
+    return () => {
+      document.removeEventListener('keydown', onKey);
+      document.removeEventListener('mousedown', onDown);
+    };
+  }, [open]);
   return (
-    <div className="view-toggle" role="group" aria-label="Show documents as">
-      <button
-        type="button"
-        className="view-toggle-btn"
-        aria-pressed={current === 'table'}
-        onClick={() => {
-          if (current !== 'table') void navigate('/documents');
-        }}
-      >
-        Table
-      </button>
-      <button
-        type="button"
-        className="view-toggle-btn"
-        aria-pressed={current === 'cabinet'}
-        onClick={() => {
-          if (current !== 'cabinet') void navigate(cabinetHref());
-        }}
-      >
-        Cabinet
-      </button>
+    <div
+      ref={wrap}
+      className="view-toggle-wrap"
+      onBlur={(e) => {
+        if (open && e.relatedTarget && !e.currentTarget.contains(e.relatedTarget)) setOpen(false);
+      }}
+    >
+      <div className="view-toggle" role="group" aria-label="Show documents as">
+        <button
+          type="button"
+          className="view-toggle-btn"
+          aria-pressed={current === 'table'}
+          onClick={() => {
+            if (current !== 'table') void navigate('/documents');
+          }}
+        >
+          Table
+        </button>
+        <button
+          type="button"
+          className="view-toggle-btn view-toggle-cabinet"
+          aria-pressed={current === 'cabinet'}
+          onClick={() => {
+            if (current !== 'cabinet') void navigate(cabinetHref());
+          }}
+        >
+          Cabinet
+        </button>
+        <button
+          ref={more}
+          type="button"
+          className="view-toggle-btn view-toggle-more"
+          aria-label="More for the cabinet"
+          aria-haspopup="menu"
+          aria-expanded={open}
+          aria-controls={open ? id : undefined}
+          disabled={arranging}
+          onClick={() => setOpen((o) => !o)}
+        >
+          <Caret />
+        </button>
+      </div>
+      {open && (
+        <div id={id} className="view-toggle-menu" role="menu" aria-label="Cabinet">
+          <button
+            type="button"
+            role="menuitem"
+            className="menu-item"
+            autoFocus
+            onClick={() => {
+              setOpen(false);
+              void navigate(cabinetHref({ arrange: true }));
+            }}
+          >
+            Arrange my cabinet
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -317,20 +386,8 @@ export function CabinetDocuments() {
         <h1 ref={heading} tabIndex={-1}>
           Documents
         </h1>
-        <ViewToggle current="cabinet" />
-        {/* Where the table's Columns is (DL): the same slot, so toggling
-            Table and Cabinet moves neither. */}
-        <div className="table-head-tool">
-          {!arranging && mine.data && layout && (
-            <button
-              type="button"
-              className="btn btn-quiet btn-small"
-              onClick={() => go({ arrange: true })}
-            >
-              Arrange my cabinet
-            </button>
-          )}
-        </div>
+        {/* Right-most, as on the table; Arrange my cabinet is in its ▾. */}
+        <ViewToggle current="cabinet" arranging={arranging} />
       </div>
       {!arranging && mine.data && (
         <div className="cab-bar">

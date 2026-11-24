@@ -5,7 +5,8 @@ export default defineConfig({
   plugins: [react()],
   server: {
     port: 5173,
-    proxy: { '/api': 'http://localhost:3000' },
+    // FDV_API points the dev server at another vault's api (a running stack).
+    proxy: { '/api': process.env.FDV_API ?? 'http://localhost:3000' },
   },
   build: { outDir: 'dist', sourcemap: true },
   test: {

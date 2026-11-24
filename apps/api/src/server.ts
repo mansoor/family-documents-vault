@@ -374,7 +374,7 @@ async function main(): Promise<void> {
       lateDays: config.FDV_BACKUP_OFFSITE_LATE_DAYS,
       alert,
     }),
-    // Settings → Security & health (0.9.0): read from the activity log and
+    // Settings → System health (0.9.0): read from the activity log and
     // the off-site copy's setting, an owner's.
     securityHealth: new SecurityHealthService(db, {
       edition: config.FDV_EDITION,

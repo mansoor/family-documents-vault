@@ -1,7 +1,7 @@
 import { offsiteProblemWords, type OffsiteProblem } from './backup-offsite.js';
 
 /**
- * Security & health (0.9.0): an owner's card, read from what the vault
+ * System health (0.9.0; Security & health until 24 Nov 2026): an owner's card, read from what the vault
  * already keeps — its activity log and its off-site copy's setting. Nothing
  * new is collected about anybody: the worker writes one line to the log
  * when it makes a backup (or one fails), when it checks the activity log,

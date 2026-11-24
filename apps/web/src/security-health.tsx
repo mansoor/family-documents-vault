@@ -7,7 +7,7 @@ import { SettingsPage } from './screens/Settings.js';
 import { LoadFailed } from './ui.js';
 
 /**
- * Settings → Server and reading → Security & health (0.9.0-dev.78), an
+ * Settings → Server and reading → System health (0.9.0-dev.78), an
  * owner's: the last backup and its copy off-site, the last restore drill,
  * the activity log's check, and the day's failed sign-ins and sign-ins
  * used from two places — each fine, or a problem in plain words with where
@@ -21,9 +21,9 @@ export function SecurityHealthScreen() {
   // A note (a restore drill to run) is worth doing, and no problem.
   const problems = lines?.filter((l) => l.tone === 'problem').length ?? 0;
   return (
-    <SettingsPage title="Security & health" subtitle="Backups, the activity log’s check, sign-ins">
+    <SettingsPage title="System health" subtitle="Backups, the activity log’s check, sign-ins">
       {lines === null && error ? (
-        <LoadFailed message={error} what="security and health" onRetry={() => void reload()} />
+        <LoadFailed message={error} what="system health" onRetry={() => void reload()} />
       ) : lines === null ? (
         <p className="muted">Loading…</p>
       ) : (
@@ -40,7 +40,7 @@ export function SecurityHealthScreen() {
                 ? 'One thing needs looking at.'
                 : `${problems} things need looking at.`}
           </p>
-          <ul className="health-lines" aria-label="Security and health">
+          <ul className="health-lines" aria-label="System health">
             {lines.map((l) => (
               <HealthRow key={l.key} line={l} />
             ))}

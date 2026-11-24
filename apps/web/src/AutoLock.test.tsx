@@ -310,11 +310,11 @@ describe('in Settings', () => {
     vi.restoreAllMocks();
   });
 
-  it("an owner chooses the family's time in Privacy, saved as it is chosen", async () => {
+  it("an owner chooses the family's time in Security, saved as it is chosen", async () => {
     const state = fresh({ members: [ME], documents: [], sessionLock: true, autoLockMinutes: 15 });
     installFakeApi(state);
     signedIn('owner');
-    window.history.replaceState({}, '', '/settings/privacy');
+    window.history.replaceState({}, '', '/settings/security');
     render(<App />);
     const family = await screen.findByRole('combobox', { name: 'For the family' });
     expect(family).toHaveValue('15');
@@ -324,7 +324,11 @@ describe('in Settings', () => {
     fireEvent.click(
       within(family.closest('section') as HTMLElement).getByRole('button', { name: 'Save' }),
     );
-    expect(await screen.findByText('Saved: After 5 minutes.')).toBeInTheDocument();
+    expect(
+      await screen.findByText(
+        'Saved. For the family: 5 minutes. For you: it locks after 5 minutes.',
+      ),
+    ).toBeInTheDocument();
     expect(localStorage.getItem('fdv.autoLockChanged')).not.toBeNull();
     expect(
       state.calls.find((c) => c.method === 'PUT' && c.url === '/api/v1/household/auto-lock')?.body,
@@ -333,7 +337,67 @@ describe('in Settings', () => {
     fireEvent.click(
       within(family.closest('section') as HTMLElement).getByRole('button', { name: 'Save' }),
     );
-    expect(await screen.findByText('Saved: Off.')).toBeInTheDocument();
+    expect(
+      await screen.findByText(
+        'Saved. For the family: Off. For you: it stays unlocked until you lock it.',
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("an owner's two choices in one card, saved together with one Save, the family's first", async () => {
+    const state = fresh({ members: [ME], documents: [], sessionLock: true, autoLockMinutes: 15 });
+    installFakeApi(state);
+    signedIn('owner');
+    window.history.replaceState({}, '', '/settings/security');
+    render(<App />);
+    const family = await screen.findByRole('combobox', { name: 'For the family' });
+    const card = family.closest('section') as HTMLElement;
+    const mine = within(card).getByRole('combobox', { name: 'For you' });
+    fireEvent.change(family, { target: { value: '30' } });
+    // Yours follows the family's as it is chosen, before it is saved.
+    expect(
+      within(mine)
+        .getAllByRole('option')
+        .map((o) => o.textContent),
+    ).toContain('As the family’s (30 minutes)');
+    fireEvent.change(mine, { target: { value: '10' } });
+    expect(within(card).getAllByRole('button', { name: 'Save' })).toHaveLength(1);
+    fireEvent.click(within(card).getByRole('button', { name: 'Save' }));
+    expect(
+      await screen.findByText(
+        'Saved. For the family: 30 minutes. For you: it locks after 10 minutes.',
+      ),
+    ).toBeInTheDocument();
+    const puts = state.calls.filter((c) => c.method === 'PUT').map((c) => c.url);
+    expect(puts).toEqual(['/api/v1/household/auto-lock', '/api/v1/me/auto-lock']);
+  });
+
+  it('a time of yours no longer shorter than the family’s, as it is chosen, goes back to yours as saved', async () => {
+    const state = fresh({
+      members: [ME],
+      documents: [],
+      sessionLock: true,
+      autoLockMinutes: 60,
+      autoLockHousehold: 60,
+    });
+    installFakeApi(state);
+    signedIn('owner');
+    window.history.replaceState({}, '', '/settings/security');
+    render(<App />);
+    const family = await screen.findByRole('combobox', { name: 'For the family' });
+    const mine = screen.getByRole('combobox', { name: 'For you' });
+    fireEvent.change(mine, { target: { value: '30' } });
+    expect(mine).toHaveValue('30');
+    // The family's shorter than 30: never sent as yours, which the vault would refuse.
+    fireEvent.change(family, { target: { value: '15' } });
+    expect(mine).toHaveValue('');
+    fireEvent.click(
+      within(family.closest('section') as HTMLElement).getByRole('button', { name: 'Save' }),
+    );
+    await screen.findByText(/^Saved\. For the family: 15 minutes\./);
+    expect(state.calls.filter((c) => c.method === 'PUT').map((c) => c.url)).toEqual([
+      '/api/v1/household/auto-lock',
+    ]);
   });
 
   it('anybody chooses a shorter time for themselves, never a longer one', async () => {
@@ -346,9 +410,11 @@ describe('in Settings', () => {
     });
     installFakeApi(state);
     signedIn('adult');
-    window.history.replaceState({}, '', '/settings/account');
+    window.history.replaceState({}, '', '/settings/security');
     render(<App />);
     const mine = await screen.findByRole('combobox', { name: 'For you' });
+    // The family's, read beside it: an owner's to change.
+    expect(screen.queryByRole('combobox', { name: 'For the family' })).toBeNull();
     const offered = within(mine)
       .getAllByRole('option')
       .map((o) => o.textContent);

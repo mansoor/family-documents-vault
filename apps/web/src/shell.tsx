@@ -27,7 +27,7 @@ import { storedRole } from './session.js';
 import { shortcutsOn, useShortcutsOn } from './shortcuts.js';
 import { CollapseButton, ResizeHandle, useSidebar } from './sidebar.js';
 import { setThemeChoice, THEME_CHOICES, useThemeChoice } from './theme.js';
-import { ConfirmDialog, useSheetFocus } from './ui.js';
+import { Caret, ConfirmDialog, useSheetFocus } from './ui.js';
 import { useFamilyZone } from './family-time.js';
 import { FlyoutProvider, useFlyouts } from './flyout-context.js';
 import { frontOf } from './flyout-store.js';
@@ -101,7 +101,6 @@ type IconName =
   | 'plus'
   | 'menu'
   | 'close'
-  | 'chevron'
   | 'signOut'
   | 'lock'
   | 'file'
@@ -182,7 +181,6 @@ const DRAWN: Record<IconName, ReactNode> = {
   plus: <path d="M12 5v14M5 12h14" />,
   menu: <path d="M4 7h16M4 12h16M4 17h16" />,
   close: <path d="m6 6 12 12M18 6 6 18" />,
-  chevron: <path d="m7 10 5 5 5-5" />,
   signOut: (
     <>
       <path d="M10 4.5H5.5v15H10" />
@@ -959,7 +957,7 @@ function AddControl({
       >
         <Icon name="plus" size={18} />
         Add
-        <Icon name="chevron" size={16} />
+        <Caret />
       </button>
       {menu && (
         <AddMenuBox
@@ -1152,7 +1150,7 @@ function AccountMenu(props: {
         {!props.compact && (
           <>
             <span className="account-name">{name}</span>
-            <Icon name="chevron" size={16} />
+            <Caret />
           </>
         )}
       </button>

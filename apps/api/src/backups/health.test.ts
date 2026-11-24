@@ -12,7 +12,7 @@ import { createHarness, type Harness } from '../test-harness.js';
 import { SecurityHealthService } from './health.js';
 
 /**
- * Settings → Security & health (0.9.0-dev.78): an owner's card, read from
+ * Settings → System health (0.9.0-dev.78): an owner's card, read from
  * the activity log and the off-site copy's setting. Each line fine, late,
  * failed or due as the vault's own lines say; the day's failed sign-ins and
  * sign-ins used from two places counted from what dev.75 already writes.
