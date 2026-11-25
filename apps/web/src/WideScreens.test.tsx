@@ -219,7 +219,7 @@ const homeState = (over: Partial<FakeState>): Partial<FakeState> => ({
 
 /** Home as it is drawn, loaded: its links, its buttons, its headings and its words. */
 async function homeFacts(wide: boolean, uploads: boolean) {
-  await screen.findByRole('heading', { name: 'Recently added' });
+  await screen.findByRole('heading', { name: 'Recent' });
   await screen.findAllByText('Council tax bill');
   await screen.findByRole('link', { name: /Travel/ });
   if (wide && uploads) await screen.findByText('4 waiting for you');
@@ -256,7 +256,7 @@ describe('Home from 768 px: a dashboard of cards (R4)', () => {
     expect(
       await within(attention).findByRole('link', { name: /1 thing needs attention/ }),
     ).toBeInTheDocument();
-    const recent = await card('Recently added');
+    const recent = await card('Recent');
     expect(within(recent).getByRole('link', { name: 'All documents' })).toHaveAttribute(
       'href',
       '/documents',
@@ -291,7 +291,7 @@ describe('Home from 768 px: a dashboard of cards (R4)', () => {
       within(columns[0] as HTMLElement)
         .getAllByRole('heading', { level: 2 })
         .map((h) => h.textContent),
-    ).toEqual(['Needs attention', 'Recently added', 'Categories']);
+    ).toEqual(['Needs attention', 'Recent', 'Categories']);
     await expectAccessible();
   });
 
@@ -346,12 +346,12 @@ describe('Home from 768 px: a dashboard of cards (R4)', () => {
   it('768–1023 px: the same cards; on a phone, today’s Home with no cards at all', async () => {
     atWidth(MID);
     open('/', homeState({}));
-    await screen.findByRole('region', { name: 'Recently added' });
+    await screen.findByRole('region', { name: 'Recent' });
     expect(main().querySelectorAll('.dash > .dash-col')).toHaveLength(2);
     cleanup();
     atWidth(PHONE);
     open('/', homeState({}));
-    await screen.findByRole('heading', { name: 'Recently added' });
+    await screen.findByRole('heading', { name: 'Recent' });
     expect(main().querySelector('.dash')).toBeNull();
     expect(main().querySelector('.dash-card')).toBeNull();
     expect(screen.queryByText('Your uploads waiting')).toBeNull();

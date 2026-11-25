@@ -79,6 +79,8 @@ import {
   type TextCodePurpose,
   type TextCodeSettings,
   NOTE_KIND,
+  RECENTLY_OPENED_DEFAULT,
+  RECENTLY_OPENED_MAX,
   ZIP_LEFT_OUT,
   ZIP_MAX_DOCUMENTS,
   attachmentDisposition,
@@ -510,6 +512,12 @@ export interface FakeVaultState {
     string,
     Array<{ folder_id: string; document_id: string; pinned_at: string }>
   >;
+  /**
+   * The documents each person opened (0.9.0-dev.102), by member id, newest
+   * first, each once, the newest 50 kept: listed only while they may open
+   * the paper, out of the Trash, never a note.
+   */
+  recentlyOpened?: Record<string, Array<{ document_id: string; opened_at: string }>>;
   /**
    * The household's "Same as" list of issuers (0.9.0-dev.91): an issuer
    * key, from, said to be the same as another, to — one level only.
@@ -4145,6 +4153,8 @@ export function createFakeVault(): {
           notes_confirm: true,
           // Password rules an owner sets.
           password_rules: true,
+          // The documents somebody opened most recently (0.9.0-dev.102).
+          recently_opened: true,
           // Connected apps (0.9.0, APP1).
           connected_apps: true,
           connected_app_reads: true,
@@ -4757,6 +4767,55 @@ export function createFakeVault(): {
       const s = session();
       if (!('id' in s)) return s;
       return answerTags(state.documents, whoOf(s), path, url, init.method, body);
+    }
+    // The documents somebody opened most recently (0.9.0-dev.102), as the
+    // real vault keeps them: their own alone, newest open first, each once;
+    // only those they may open now, out of the Trash, never a note.
+    if (path === '/api/v1/me/recently-opened') {
+      const s = session();
+      if (!('id' in s)) return s;
+      const who = whoOf(s);
+      const all = (state.recentlyOpened ??= {});
+      const mine = (all[who.memberId] ??= []);
+      const readable = (id: string) => {
+        const doc = state.documents.find((d) => d.id === id);
+        return doc &&
+          canSee(who, {
+            visibility: doc.visibility ?? 'household',
+            owner_member_id: doc.owner_member_id ?? null,
+          })
+          ? doc
+          : null;
+      };
+      if ((init.method ?? 'GET') === 'GET') {
+        const asked = param(url, 'limit');
+        const limit = asked === undefined ? RECENTLY_OPENED_DEFAULT : Number(asked);
+        if (!Number.isInteger(limit) || limit < 1 || limit > RECENTLY_OPENED_MAX) {
+          return fail(422, 'validation_failed', 'That limit is not one.', 'limit');
+        }
+        const items = mine
+          .map((x) => readable(x.document_id))
+          .filter((d): d is FakeDocument => d !== null && !d.deleted_at && d.type_key !== NOTE_KIND)
+          .slice(0, limit)
+          .map(listedOf);
+        return ok({ items });
+      }
+      if (init.method === 'POST') {
+        // The fake's ids are its own, not the vault's UUIDs: any id, and an
+        // unknown one the 404 of a document that is not there.
+        const id = body.document_id;
+        if (typeof id !== 'string' || id === '') {
+          return fail(422, 'validation_failed', 'Say which document was opened.', 'document_id');
+        }
+        const doc = readable(id);
+        if (!doc) return fail(404, 'not_found', 'Not found.');
+        if (doc.deleted_at || doc.type_key === NOTE_KIND) return empty();
+        all[who.memberId] = [
+          { document_id: id, opened_at: new Date().toISOString() },
+          ...mine.filter((x) => x.document_id !== id),
+        ].slice(0, RECENTLY_OPENED_MAX);
+        return empty();
+      }
     }
     // Notes kept on their own (0.9.0, N1), as the real vault lists them:
     // the caller's, newest words first, each with its preview; nobody else's

@@ -295,6 +295,12 @@ export interface FakeCollection {
 }
 
 export interface FakeState {
+  /**
+   * The documents this person opened, newest first (0.9.0-dev.102): GET
+   * /me/recently-opened answers those in `documents`, out of the Trash; a
+   * POST puts one first, as the vault does.
+   */
+  recentlyOpened?: string[];
   /** Emergency information (0.9.0, H4): said when a test asks. */
   emergency?: boolean;
   /** GET /members/{id}/emergency, by person: none is a 404, as the vault answers anybody not given it. */
@@ -1784,6 +1790,8 @@ export function installFakeApi(state: FakeState) {
           ...(state.autoLockMinutes !== undefined ? { auto_lock: true } : {}),
           // Password rules an owner sets: said when a test gives them.
           ...(state.passwordRules ? { password_rules: true } : {}),
+          // The documents somebody opened most recently (0.9.0-dev.102).
+          recently_opened: true,
           // Who opened a link; health records kept as they are (0.9.0, H5).
           ...(state.linkOpenings ? { share_opens: true, record_formats: true } : {}),
           // Caregivers and turning 18 (0.9.0, H1b): said when a test asks.
@@ -1998,6 +2006,26 @@ export function installFakeApi(state: FakeState) {
           ? { auto_lock_minutes: state.autoLockMinutes }
           : {}),
       });
+    // The documents this person opened most recently (0.9.0-dev.102).
+    if (path === '/api/v1/me/recently-opened') {
+      const ids = state.recentlyOpened ?? [];
+      if (method === 'POST') {
+        const id = (body as { document_id?: string }).document_id as string;
+        const doc = state.documents.find((d) => d.id === id);
+        if (!doc) return refuse(404, 'not_found', 'Not found.');
+        if (!doc.deleted_at && doc.type_key !== 'note') {
+          state.recentlyOpened = [id, ...ids.filter((x) => x !== id)];
+        }
+        return Promise.resolve(new Response(null, { status: 204 }));
+      }
+      const limit = Number(query.get('limit') ?? 5);
+      const items = ids
+        .map((id) => state.documents.find((d) => d.id === id))
+        .filter((d): d is (typeof state.documents)[number] => d !== undefined && !d.deleted_at)
+        .slice(0, limit)
+        .map(listed);
+      return json({ items });
+    }
     if (path === '/api/v1/me/reset-notice' && method === 'DELETE') {
       state.resetNotice = null;
       return Promise.resolve(new Response(null, { status: 204 }));

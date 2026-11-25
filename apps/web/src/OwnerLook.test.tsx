@@ -475,7 +475,7 @@ describe('Home uses the width (the owner’s report)', () => {
   it('from 1024 px, the whole of the content’s width: its cards’ grid fills it', async () => {
     atWidth(WIDE);
     open('/', household());
-    await screen.findByRole('region', { name: 'Recently added' });
+    await screen.findByRole('region', { name: 'Recent' });
     expect(main()).toHaveClass('page-dash');
     expect(widthOf(main())).toBe('none');
     const dash = main().querySelector('.dash') as HTMLElement;
@@ -486,7 +486,7 @@ describe('Home uses the width (the owner’s report)', () => {
   it('from 768 to 1023 px, two columns across the whole width', async () => {
     atWidth(MID);
     open('/', household());
-    await screen.findByRole('region', { name: 'Recently added' });
+    await screen.findByRole('region', { name: 'Recent' });
     expect(widthOf(main())).toBe('none');
     const dash = main().querySelector('.dash') as HTMLElement;
     expect(getComputedStyle(dash).gridTemplateColumns).toBe('minmax(0, 1fr) minmax(0, 1fr)');
@@ -496,7 +496,7 @@ describe('Home uses the width (the owner’s report)', () => {
   it('under 768 px, as it was: no cards', async () => {
     atWidth(PHONE);
     open('/', household());
-    await screen.findByRole('heading', { name: 'Recently added' });
+    await screen.findByRole('heading', { name: 'Recent' });
     expect(main()).not.toHaveClass('page-dash');
     expect(main().querySelector('.dash')).toBeNull();
   });

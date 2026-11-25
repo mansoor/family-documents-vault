@@ -4238,6 +4238,33 @@ a.menu-item {
   outline-offset: -2px;
 }
 
+/* Home's Recent (0.9.0-dev.102): tabs that are buttons, not links, drawn
+   as People's and the Inbox's are, the chosen one marked the same. */
+button.tab {
+  background: none;
+  border: 0;
+  border-bottom: 3px solid transparent;
+  border-radius: 0;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.tab[aria-selected='true'] {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+
+.recent-tabs {
+  margin-bottom: 4px;
+}
+
+/* Its panel is a stop for Tab, rows or none: its outline said as a tab's. */
+.recent-panel:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
 /* Settings: four groups, and where what it used to hold is now. */
 .settings-group {
   display: flex;

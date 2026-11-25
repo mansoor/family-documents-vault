@@ -11,6 +11,7 @@ import {
 } from 'react';
 import { useLocation, useNavigate } from 'react-router';
 import { useApp } from './app-context.js';
+import { openingAsPage, tellOpened } from './recently-opened.js';
 import {
   besideIn,
   closedIn,
@@ -249,7 +250,9 @@ function focusFirst(...to: Array<HTMLElement | null | undefined>): void {
 
 export function FlyoutProvider(props: { memberId: string | null; children: ReactNode }) {
   const { memberId } = props;
-  const { session } = useApp();
+  const { session, withToken, caps } = useApp();
+  // Home's Recent, its Opened tab (0.9.0-dev.102): told as the person opens one here.
+  const tellsOpens = caps?.features.recently_opened === true;
   const narrow = useNarrowFlyouts();
   const sideOk = useSideBySideWidth() && !narrow;
   // How many side by side: none below 1,100 px, then two, and three where
@@ -436,6 +439,9 @@ export function FlyoutProvider(props: { memberId: string | null; children: React
       if (ask.toPage) pageHooks.current.set(id, ask.toPage);
       else pageHooks.current.delete(id);
       commit(done.set);
+      // The person opened it: told the vault once, now — never again as it
+      // is drawn again by itself (a reload, an unlock), which calls no open.
+      if (tellsOpens) tellOpened(withToken, id);
       focusNext.current = () => focusFirst(headingOf(id));
       const title = ask.title ?? named.current.get(id);
       const out = frontOf(before);
@@ -457,7 +463,7 @@ export function FlyoutProvider(props: { memberId: string | null; children: React
         );
       }
     },
-    [commit, name, say, setPicking],
+    [commit, name, say, setPicking, tellsOpens, withToken],
   );
 
   const beside = useCallback((id: string) => open(id, { beside: true }), [open]);
@@ -608,6 +614,8 @@ export function FlyoutProvider(props: { memberId: string | null; children: React
       const told = pageHooks.current.get(id);
       pageHooks.current.delete(id);
       told?.();
+      // Told as it was opened here: its page tells nothing more.
+      openingAsPage(id);
       close(id, 'quiet');
     },
     [close],

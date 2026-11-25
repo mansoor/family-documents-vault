@@ -171,7 +171,7 @@ async function loaded(
 ) {
   at(stored, px, '/', over);
   await sidebar();
-  await screen.findByRole('heading', { name: 'Recently added' });
+  await screen.findByRole('heading', { name: 'Recent' });
 }
 
 /** This long passes, on the fake clock. */
@@ -703,7 +703,7 @@ describe('the bar on top, across the window (the owner’s ask)', () => {
     expect(focusable[0]).toHaveTextContent('Skip to main content');
     expect(focusable[1]).toBe(brand());
     fireEvent.click(brand());
-    await screen.findByRole('heading', { name: 'Recently added' });
+    await screen.findByRole('heading', { name: 'Recent' });
     expect(window.location.pathname).toBe('/');
   });
 

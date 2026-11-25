@@ -79,6 +79,9 @@ describe.skipIf(!testAdminUrl())('foreign keys to a document', () => {
         // A connected app's link (0111, APP3): nothing without its document,
         // so it goes with it.
         'connected_app_link',
+        // Somebody's open of it, for Home's Recent (0132, 0.9.0-dev.102):
+        // goes with it.
+        'document_recent_open',
       ]),
     );
     // 'c': on delete cascade, every one — but a document no longer needed,

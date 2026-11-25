@@ -587,11 +587,12 @@ describe('collections on the web (5.15)', () => {
       { documents: [{ ...PASSPORT }], collections: [{ ...HOLIDAY }] },
       'viewer',
     );
-    expect(await screen.findByRole('heading', { name: 'Recently added' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Recent' })).toBeInTheDocument();
     expect(screen.queryByRole('heading', { name: 'Collections' })).not.toBeInTheDocument();
     expect(screen.queryByRole('link', { name: 'All collections' })).not.toBeInTheDocument();
     const { menu } = await openMenu();
-    expect(offered(menu)).toEqual(['Open', 'Download']);
+    // No Add to a collection; Print, as on every Home row since 0.9.0-dev.102.
+    expect(offered(menu)).toEqual(['Open', 'Download', 'Print']);
 
     reopen(state, '/documents/doc-1');
     expect(
@@ -616,7 +617,7 @@ describe('collections on the web (5.15)', () => {
 
   it('a vault from before collections offers none', async () => {
     const state = at('/', { documents: [{ ...PASSPORT }] });
-    expect(await screen.findByRole('heading', { name: 'Recently added' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Recent' })).toBeInTheDocument();
     expect(screen.queryByRole('heading', { name: 'Collections' })).not.toBeInTheDocument();
     const { menu } = await openMenu();
     expect(offered(menu)).not.toContain('Add to a collection');

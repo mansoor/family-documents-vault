@@ -604,7 +604,7 @@ describe('Print from a row’s ⋯', () => {
     expect(
       actionsFor('owner', 'me', null, { collections: true, uncollect: false, print: true }),
     ).toEqual(['open']);
-    // A list that does not offer it (Home's) offers none.
+    // A list that does not offer it offers none.
     expect(actionsFor('owner', 'me', PASSPORT as unknown as DocumentView)).not.toContain('print');
   });
 

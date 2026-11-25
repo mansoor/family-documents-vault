@@ -6,6 +6,14 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.9.0-dev.102] - 2026-11-24 — Recent on Home, with what you opened; and Print from Home and the cabinet
+
+### Added
+
+- **Home's "Recently added" is now "Recent", with two tabs: Added and Opened.** Added shows what it always did. Opened shows the documents you opened most recently, on their own page or beside the list, newest first and each once. It only shows documents you can still open, so nothing in the Trash and nothing kept from you since. Notes are left out, as they are no longer in Documents. Your list is yours alone: nobody else, owners included, can see what you opened. With nothing opened yet it says "Nothing opened yet." Home opens on the tab you chose last in this browser. The tabs work with the arrow keys too.
+- **Print is in each document's ⋯ on Home and in the cabinet**, as in the Documents table: on both of Recent's tabs, and on a folder's papers, its pinned papers and the papers in no folder. It is the document's own Print, with "What to print", the reminder first for anything Sensitive, and "Confirm it's you" wherever its page asks.
+- **For apps:** `GET /api/v1/me/recently-opened` lists the documents the person signed in opened most recently, and `POST /api/v1/me/recently-opened` says they opened one. The vault says it has them with `features.recently_opened`, so the phone app can show the Opened tab later.
+
 ## [0.9.0-dev.101] - 2026-11-24 — connected apps use access tokens only, and what they list shows on each document
 
 ### Added

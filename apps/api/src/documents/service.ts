@@ -13,6 +13,7 @@ import {
   noteFirstWords,
   notePreview,
   notesPlainText,
+  RECENTLY_OPENED_MAX,
   tagsProblem,
   PRIVATE_BY_DEFAULT,
   PRIVATE_TO_THEM,
@@ -1696,6 +1697,61 @@ export class DocumentService {
       // A caregiver's look, for its person to read (H1b).
       if (byGrant(p, row)) await recordCaregiverLook(trx, row.id, 'opened');
       return this.view(trx, p, row, typeLookup(trx), await this.opened(trx, p, row));
+    });
+  }
+
+  /**
+   * The caller opened a document, its page or beside the list
+   * (0.9.0-dev.102, POST /me/recently-opened): remembered for Home's Recent,
+   * theirs alone. Only a document they may open now: anything else is the
+   * 404 of a document that is not there. One in the Trash, or a note, is
+   * not remembered, and nothing is said of it. Their newest 50 are kept.
+   */
+  async noteOpened(p: Principal, id: string): Promise<void> {
+    await withPrincipal(this.db, p, async (trx) => {
+      const row = await this.fetchToRead(trx, p, id, true);
+      if (row.deleted_at || row.type_key === NOTE_KIND) return;
+      // One of the person's opens at a time, from however many tabs: the
+      // newest 50 are kept exactly, and two never wait on each other's rows.
+      await sql`select pg_advisory_xact_lock(hashtextextended(${`recently-opened:${p.memberId}`}, 0))`.execute(
+        trx,
+      );
+      await sql`
+        insert into document_recent_open (household_id, member_id, document_id)
+        values (${p.householdId}::uuid, ${p.memberId}::uuid, ${row.id}::uuid)
+        on conflict (member_id, document_id) do update set opened_at = now()`.execute(trx);
+      await sql`
+        delete from document_recent_open
+         where member_id = ${p.memberId}::uuid
+           and document_id in (
+             select document_id from document_recent_open
+              where member_id = ${p.memberId}::uuid
+              order by opened_at desc, document_id
+              offset ${RECENTLY_OPENED_MAX})`.execute(trx);
+    });
+  }
+
+  /**
+   * The documents the caller opened most recently (0.9.0-dev.102, GET
+   * /me/recently-opened), newest open first, each once: only those they
+   * may open now, by the rule every list keeps, out of the Trash, and no
+   * note — as every list gives them. Nobody is given anybody else's.
+   */
+  async recentlyOpened(p: Principal, limit: number): Promise<DocumentView[]> {
+    return withPrincipal(this.db, p, async (trx) => {
+      const rows = (await trx
+        .selectFrom('document_recent_open as r')
+        .innerJoin('document', 'document.id', 'r.document_id')
+        .selectAll('document')
+        .where('r.member_id', '=', p.memberId)
+        .where(readDocument(p, 'document'))
+        .where('document.deleted_at', 'is', null)
+        .where(sql<boolean>`document.type_key is distinct from ${NOTE_KIND}`)
+        .orderBy('r.opened_at', 'desc')
+        .orderBy('r.document_id')
+        .limit(limit)
+        .execute()) as unknown as DocRow[];
+      return this.listed(trx, p, rows);
     });
   }
 

@@ -38,7 +38,17 @@ import { mayBringBack, purgeAskedWords } from './Trash.js';
 import { loadScannerNotices, ScannerNotices } from '../watch-folder.js';
 import { EmailInLine } from '../mail-in.js';
 import { GrownUpQuestions } from '../caregivers.js';
+import {
+  OPENED_EVENT,
+  RecentTabs,
+  rememberRecentTab,
+  rememberedRecentTab,
+  type RecentTab,
+} from '../recently-opened.js';
 import { dayWordsOf, familyZoneNow } from '../family-time.js';
+
+/** How many rows Recent shows, on either tab. */
+const RECENT_ROWS = 5;
 
 /**
  * Home is the whole product in one view: the needs-attention strip (the
@@ -63,7 +73,7 @@ export function HomeScreen() {
         await Promise.all([
           api.members(t),
           api.counts(t),
-          api.documents(t, { limit: 5, sort: 'recent' }),
+          api.documents(t, { limit: RECENT_ROWS, sort: 'recent' }),
           api.documents(t, { limit: 50, sort: 'expiring' }),
           api.me(t),
           api.reminders(t, 'due'),
@@ -122,14 +132,37 @@ export function HomeScreen() {
     },
     [authVersion],
   );
+  // Recent's tab (0.9.0-dev.102): Added, or what this person opened, as
+  // they last chose in this browser. Opened is asked for only while it is
+  // the one showing, and again whenever a document is opened.
+  const memberId = session.info?.member_id;
+  const [recentTab, setRecentTab] = useState<RecentTab>(() => rememberedRecentTab(memberId));
+  const chooseRecent = (tab: RecentTab) => {
+    setRecentTab(tab);
+    rememberRecentTab(memberId, tab);
+  };
+  const opened = useLoad(
+    async (t) =>
+      recentTab === 'opened' ? (await api.recentlyOpened(t, { limit: RECENT_ROWS })).items : null,
+    [authVersion, recentTab],
+  );
+  const reloadOpened = opened.reload;
+  useEffect(() => {
+    if (recentTab !== 'opened') return;
+    const again = () => void reloadOpened();
+    window.addEventListener(OPENED_EVENT, again);
+    return () => window.removeEventListener(OPENED_EVENT, again);
+  }, [recentTab, reloadOpened]);
   // Bumped when a row's ⋯ changed something (5.4): put in a collection, moved to
   // the Trash. The collections' counts are the vault's, so they are asked again.
   const [changes, setChanges] = useState(0);
   // Changed beside the list: loaded again, and one moved to the Trash there gone at once.
-  const gone = useChangesBeside(reload);
+  const gone = useChangesBeside(() =>
+    Promise.all([reload(), recentTab === 'opened' ? reloadOpened() : null]),
+  );
   const changed = () => {
     setChanges((n) => n + 1);
-    return reload();
+    return Promise.all([reload(), recentTab === 'opened' ? reloadOpened() : null]);
   };
 
   const letters = initialsFor(data?.members ?? []);
@@ -249,29 +282,49 @@ export function HomeScreen() {
 
   // A recent row moved to the Trash from its ⋯: said above the rows.
   const trashed = useTrashedNote();
+  /** A row of Recent, either tab: as Recently added's always were, Print in its ⋯ too. */
+  const recentRows = (docs: ReadonlyArray<DocumentView>) => (
+    <ul className="list">
+      {docs
+        .filter((d) => !gone.has(d.id))
+        .map((d) => (
+          <DocRow
+            key={d.id}
+            doc={d}
+            types={data?.types}
+            onOpen={(e) => openDocument(d.id, { title: d.title, event: e })}
+            onChanged={changed}
+            onTrashed={trashed.onTrashed}
+            // Print in its ⋯, as in the Documents table's (the owner's ask of 24 Nov 2026).
+            print
+          />
+        ))}
+    </ul>
+  );
+  // One section, Recent, with what was added and what you opened as its
+  // two tabs (0.9.0-dev.102): the one chosen last, in this browser, first.
   const recent = part({
     id: 'recent-h',
-    title: 'Recently added',
+    title: 'Recent',
     to: { href: '/documents', label: 'All documents' },
     className: 'dash-recent',
     children: (
-      <>
+      <RecentTabs labelledBy="recent-h" current={recentTab} onChoose={chooseRecent}>
         {trashed.note}
-        <ul className="list">
-          {(data?.recent ?? [])
-            .filter((d) => !gone.has(d.id))
-            .map((d) => (
-              <DocRow
-                key={d.id}
-                doc={d}
-                types={data?.types}
-                onOpen={(e) => openDocument(d.id, { title: d.title, event: e })}
-                onChanged={changed}
-                onTrashed={trashed.onTrashed}
-              />
-            ))}
-        </ul>
-      </>
+        {recentTab === 'added' ? (
+          recentRows(data?.recent ?? [])
+        ) : opened.error ? (
+          <ErrorNote message={opened.error} />
+        ) : !opened.data ? (
+          <p className="muted">Loading…</p>
+        ) : opened.data.length === 0 ? (
+          <p className="muted">Nothing opened yet.</p>
+        ) : (
+          // Every row moved to the Trash: none, until the list is back, and
+          // never "Nothing opened yet" — something was.
+          recentRows(opened.data)
+        )}
+      </RecentTabs>
     ),
   });
 
@@ -778,7 +831,7 @@ export function DocRow({
   onRemoved?: ((removed: Removed) => void) | undefined;
   /** Pinned into the cabinet folder it is shown in (0.9.0, C2): marked, with Unpin beside it. */
   pinned?: { onUnpin: () => void; busy?: boolean } | undefined;
-  /** Print in its ⋯: the Documents list's rows, on a phone (DocActions). */
+  /** Print in its ⋯ (DocActions): the narrow Documents list, Home's Recent, the cabinet. */
   print?: boolean | undefined;
 }) {
   // Somebody else's Only me, seen as their caregiver (H1b), says so.

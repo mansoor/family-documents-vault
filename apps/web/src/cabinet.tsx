@@ -506,6 +506,8 @@ function UnfiledPane(props: {
                 types={names.types}
                 onOpen={(e) => openDocument(d.id, { title: d.title, event: e })}
                 onChanged={() => setAsked((n) => n + 1)}
+                // Print in its ⋯, as in the Documents table's (0.9.0-dev.102).
+                print
               />
             ))}
         </ul>
@@ -895,6 +897,7 @@ function FolderPane(props: {
                   onOpen={(e) => openDocument(d.id, { title: d.title, event: e })}
                   onChanged={changed}
                   pinned={{ onUnpin: () => void unpin(d), busy: busy === d.id }}
+                  print
                 />
               ))}
           </ul>
@@ -1114,6 +1117,7 @@ function DividerSection(props: {
                 types={names.types}
                 onOpen={(e) => openDocument(d.id, { title: d.title, event: e })}
                 onChanged={props.onChanged}
+                print
               />
             ))}
         </ul>

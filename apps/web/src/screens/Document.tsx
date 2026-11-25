@@ -46,6 +46,7 @@ import {
 } from '../no-longer-needed.js';
 import { DocPanes, type DocPanesView } from '../doc-panes.js';
 import { PageViewer } from '../page-viewer.js';
+import { useOpenedOnPage } from '../recently-opened.js';
 import { useShellMode } from '../shell.js';
 import {
   Button,
@@ -397,6 +398,15 @@ function OneDocumentView(props: DocumentViewProps) {
   useEffect(() => {
     if (!onPage && noteId !== null) closed.current?.({ reason: 'note', noteId });
   }, [onPage, noteId]);
+  // Its page arrived at: Home's Recent remembers it (0.9.0-dev.102), once
+  // for each arrival. Beside the list, the open itself told it
+  // (flyout-context), so a reload or an unlock drawing it again tells nothing.
+  // (Its own document only: not the one before it, still shown while it loads.)
+  useOpenedOnPage(
+    onPage && data?.doc.id === id ? data.doc : null,
+    data?.doc.type_key === NOTE_KIND,
+    justFiled,
+  );
   // What its host beside the list needs of it (DocumentViewLoaded).
   const loadedTitle = data ? (data.doc.title ?? 'Needs a name') : null;
   const loadedInTrash = Boolean(data?.doc.deleted_at);

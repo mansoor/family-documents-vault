@@ -3952,6 +3952,71 @@ export const contractScenarios: Scenario[] = [
     },
   },
   {
+    name: 'the documents somebody opened most recently: their own alone, newest open first, each once, out of the Trash and back with it, never a note (0.9.0-dev.102)',
+    run: async (api, ctx) => {
+      expect((await api.capabilities()).features.recently_opened).toBe(true);
+      const { access_token: token } = await signIn(api, ctx);
+      expect((await api.recentlyOpened(token)).items).toEqual([]);
+      const first = await api.createDocument(token, { title: 'Contract opened first' });
+      const second = await api.createDocument(token, { title: 'Contract opened second' });
+      const third = await api.createDocument(token, { title: 'Contract opened third' });
+      const titles = async (t: string, limit?: number) =>
+        (await api.recentlyOpened(t, limit === undefined ? {} : { limit })).items.map(
+          (d) => d.title,
+        );
+      // Made is not opened: nothing until somebody opens it.
+      expect(await titles(token)).toEqual([]);
+      await api.openedDocument(token, first.id);
+      await api.openedDocument(token, second.id);
+      await api.openedDocument(token, third.id);
+      // Opened again: first once more, and only once.
+      await api.openedDocument(token, first.id);
+      expect(await titles(token)).toEqual([
+        'Contract opened first',
+        'Contract opened third',
+        'Contract opened second',
+      ]);
+      expect(await titles(token, 2)).toEqual(['Contract opened first', 'Contract opened third']);
+      // As every list gives them.
+      const [top] = (await api.recentlyOpened(token, { limit: 1 })).items;
+      expect(top).toMatchObject({ id: first.id, title: 'Contract opened first' });
+      // In the Trash, not listed; restored, back where it was.
+      await api.deleteDocument(token, third.id);
+      expect(await titles(token)).toEqual(['Contract opened first', 'Contract opened second']);
+      // Opened in the Trash, nothing changes.
+      await api.openedDocument(token, third.id);
+      await api.restoreDocument(token, third.id);
+      expect(await titles(token)).toEqual([
+        'Contract opened first',
+        'Contract opened third',
+        'Contract opened second',
+      ]);
+      // A note is never listed.
+      const note = await api.createDocument(token, {
+        type_key: 'note',
+        title: 'Contract opened note',
+        notes: 'Words',
+      });
+      await api.openedDocument(token, note.id);
+      expect(await titles(token, 1)).toEqual(['Contract opened first']);
+      // A limit that is not one; a document that is not there.
+      const odd = await refusal(api.recentlyOpened(token, { limit: 51 }));
+      expect([odd.status, odd.code]).toEqual([422, 'validation_failed']);
+      const none = await refusal(api.openedDocument(token, '00000000-0000-4000-8000-000000000000'));
+      expect([none.status, none.code]).toEqual([404, 'not_found']);
+      // Somebody else's are their own: the owner's opens are not theirs.
+      const other = { email: 'recent-teen@example.test', password: 'the teen’s own password' };
+      await ctx.addSignIn(token, { name: 'Recent Teen', role: 'teen', ...other });
+      const theirs = await signInAs(api, other.email, other.password);
+      expect(await titles(theirs.access_token)).toEqual([]);
+      await api.openedDocument(theirs.access_token, second.id);
+      expect(await titles(theirs.access_token)).toEqual(['Contract opened second']);
+      expect(await titles(token, 1)).toEqual(['Contract opened first']);
+      await api.logout(theirs.access_token);
+      await api.logout(token);
+    },
+  },
+  {
     name: 'password rules an owner sets: 10 characters and common passwords refused unless one chose otherwise, every sign-in password set held to them, and a refusal that says everything missing',
     run: async (api, ctx) => {
       expect((await api.capabilities()).features.password_rules).toBe(true);

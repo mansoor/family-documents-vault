@@ -50,7 +50,7 @@ const COUNCIL_TAX = {
   etag: '"tax"',
 };
 
-/** Home and its "Recently added", signed in as `role`. */
+/** Home and its Recent, signed in as `role`. */
 function home(
   documents: Array<Record<string, unknown>>,
   role: 'owner' | 'adult' | 'teen' | 'viewer' = 'owner',
@@ -136,10 +136,11 @@ describe('quick actions on every document (5.4)', () => {
     expect(window.location.pathname).toBe('/');
   });
 
-  it('a viewer sees Open and Download only', async () => {
+  it('a viewer sees Open, Download and Print only', async () => {
     home([{ ...PASSPORT }], 'viewer');
     const { menu } = await openMenu();
-    expect(offered(menu)).toEqual(['Open', 'Download']);
+    // Print as on Home's every row since 0.9.0-dev.102: its page lets a viewer print.
+    expect(offered(menu)).toEqual(['Open', 'Download', 'Print']);
     await expectAccessible();
   });
 
@@ -151,6 +152,7 @@ describe('quick actions on every document (5.4)', () => {
     expect(offered(menu)).toEqual([
       'Open',
       'Download',
+      'Print',
       'Read full size',
       'Edit details',
       // Their own, between Only me and Everyone (A72).
@@ -163,7 +165,7 @@ describe('quick actions on every document (5.4)', () => {
     fireEvent.keyDown(within(menu).getByRole('menuitem', { name: 'Open' }), { key: 'Escape' });
 
     const theirs = await openMenu('Actions for “Council tax bill”');
-    expect(offered(theirs.menu)).toEqual(['Open', 'Download', 'Read full size']);
+    expect(offered(theirs.menu)).toEqual(['Open', 'Download', 'Print', 'Read full size']);
     for (const never of ['Share a link', 'Visibility', 'Edit details', 'Move to the Trash']) {
       expect(within(theirs.menu).queryByRole('menuitem', { name: never })).not.toBeInTheDocument();
     }
@@ -258,6 +260,7 @@ describe('quick actions on every document (5.4)', () => {
     expect(items.map((i) => i.textContent)).toEqual([
       'Open',
       'Download',
+      'Print',
       'Read full size',
       'Edit details',
       'Share a link',
@@ -527,7 +530,7 @@ describe('quick actions on every document (5.4)', () => {
       expect(screen.queryByRole('button', { name: PASSPORT_MENU })).not.toBeInTheDocument(),
     );
     // Something that stays, which says where the person is: not nowhere.
-    expect(screen.getByRole('heading', { name: 'Recently added' })).toHaveFocus();
+    expect(screen.getByRole('heading', { name: 'Recent' })).toHaveFocus();
   });
 
   it('Essential turned off and on again before the list is back uses the copy it saved', async () => {
@@ -672,6 +675,8 @@ describe('quick actions on every document (5.4)', () => {
     const { menu } = await openMenu();
     expect(offered(menu)).toEqual([
       'Open',
+      // A document with no file prints the sheet of its details.
+      'Print',
       'Edit details',
       'Visibility',
       'Stop it being Essential',

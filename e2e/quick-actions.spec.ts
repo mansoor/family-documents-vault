@@ -57,13 +57,13 @@ test('the ⋯ on a row works from the keyboard alone', async ({ page, request })
   await expect(page).toHaveURL(/\/$/);
 
   // The ⋯ is the next stop after the row's own button: beside it, not in it.
-  // Looked for in Home's Recently added, so nothing is pressed until Home is
+  // Looked for in Home's Recent (its Added tab), so nothing is pressed until Home is
   // drawn: until then Search, which lists the same row, is still on screen,
   // and a focus given to its row was lost when Home replaced it. The row is
   // the one with this ⋯ inside it: a `has` locator is looked for within each
   // row, so it names the button from the page, not from the region.
   const name = `Actions for “${title}”`;
-  const recent = page.getByRole('region', { name: 'Recently added' });
+  const recent = page.getByRole('region', { name: 'Recent', exact: true });
   const row = recent.getByRole('listitem').filter({ has: page.getByRole('button', { name }) });
   const more = row.getByRole('button', { name });
   await expect(more).toBeVisible();
@@ -77,8 +77,12 @@ test('the ⋯ on a row works from the keyboard alone', async ({ page, request })
   await expect(menu).toBeVisible();
   await expect(more).toHaveAttribute('aria-expanded', 'true');
   await expect(menu.getByRole('menuitem', { name: 'Open' })).toBeFocused();
+  // Print next (0.9.0-dev.102): a document with no file prints its details.
+  await page.keyboard.press('ArrowDown');
+  await expect(menu.getByRole('menuitem', { name: 'Print' })).toBeFocused();
   await page.keyboard.press('ArrowDown');
   await expect(menu.getByRole('menuitem', { name: 'Edit details' })).toBeFocused();
+  await page.keyboard.press('ArrowUp');
   await page.keyboard.press('ArrowUp');
   await page.keyboard.press('ArrowUp');
   await expect(menu.getByRole('menuitem', { name: 'Move to the Trash' })).toBeFocused();

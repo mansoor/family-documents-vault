@@ -1234,6 +1234,21 @@ export interface NotesList {
 }
 
 /**
+ * GET /me/recently-opened (0.9.0-dev.102, `features.recently_opened`): the
+ * documents the caller opened most recently — their page, or beside the
+ * list — newest open first, each once, as every list gives them. Only those
+ * they may open now, out of the Trash, never a note; nobody else's.
+ */
+export interface RecentlyOpened {
+  items: DocumentView[];
+}
+
+/** GET /me/recently-opened's `limit`: 5 unless asked, 1 to 50. */
+export const RECENTLY_OPENED_DEFAULT = 5;
+/** And the most kept for anybody: their newest 50 opens. */
+export const RECENTLY_OPENED_MAX = 50;
+
+/**
  * What an opened link gives (0.5.14): `POST /api/v1/shared/unlock` and
  * `GET /api/v1/shared/items`. The session lasts 30 minutes from its last
  * use, and ends at `session_expires_at` at the latest.
