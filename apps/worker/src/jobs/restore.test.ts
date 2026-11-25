@@ -3396,6 +3396,7 @@ describe.skipIf(!testAdminUrl())('checking a restored vault', { timeout: 60_000 
         'doc_collection_item',
         'document',
         'document_link',
+        'document_tag_use',
         'document_text',
         'document_text_sealed',
         'document_tombstone',
