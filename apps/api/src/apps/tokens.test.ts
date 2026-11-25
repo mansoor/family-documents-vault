@@ -2,7 +2,6 @@ import { createHash } from 'node:crypto';
 import { createPool } from '@fdv/db';
 import { testAdminUrl } from '@fdv/db/testing';
 import {
-  APP_BASIC_DEPRECATION,
   APP_BUSY_DAY_MIN,
   APP_TOKEN_SECONDS,
   APP_KEY_NETWORKS_MAX,
@@ -191,21 +190,10 @@ describe.skipIf(!testAdminUrl())(
         'select row_to_json(x)::text as t from connected_app_token x',
       );
       expect(dump.rows.map((r) => r.t).join()).not.toContain(t.access_token.slice(5));
-      // Bearer: answered, with no Deprecation; the key as Basic: answered, deprecated.
+      // Bearer: answered, with no Deprecation.
       const viaToken = await call('GET', '/api/v1/apps/me', `Bearer ${t.access_token}`);
       expect(viaToken.statusCode, viaToken.body).toBe(200);
       expect(viaToken.headers.deprecation).toBeUndefined();
-      const viaBasic = await call('GET', '/api/v1/apps/me', basic(k));
-      expect(viaBasic.statusCode).toBe(200);
-      expect(viaBasic.headers.deprecation).toBe(APP_BASIC_DEPRECATION);
-      // Refused as Basic: no header (it was never let through).
-      const wrong = await call(
-        'GET',
-        '/api/v1/apps/me',
-        basicFor({ clientId: k.clientId, secret: `fdvs_${'A'.repeat(43)}` }).authorization,
-      );
-      expect(codeOf(wrong)).toEqual([401, 'app_key_invalid']);
-      expect(wrong.headers.deprecation).toBeUndefined();
       // And the token is never in the request log's words, nor the activity log.
       expect(JSON.stringify(await lines())).not.toContain(t.access_token);
     });
@@ -239,6 +227,35 @@ describe.skipIf(!testAdminUrl())(
       // A GET of it is no route at all; and its key is the app's alone.
       const get = await call('GET', '/api/v1/apps/token', basic(k));
       expect(codeOf(get)).toEqual([401, 'app_key_not_accepted']);
+    });
+
+    it('the key as Basic is taken on the token route alone: refused on every other app route, with no Deprecation (0.9.0-dev.101)', async () => {
+      const k = await connect(['documents.send', 'documents.read']);
+      for (const url of ['/api/v1/apps/me', '/api/v1/apps/documents', '/api/v1/apps/changes']) {
+        const viaBasic = await call('GET', url, basic(k));
+        expect(codeOf(viaBasic), url).toEqual([401, 'app_key_required']);
+        expect(viaBasic.headers.deprecation, url).toBeUndefined();
+        // Told where the key goes.
+        expect(viaBasic.json<{ error: { message: string } }>().error.message).toContain(
+          'POST /api/v1/apps/token',
+        );
+      }
+      // A wrong secret there is refused the same, before anything is looked
+      // up: no guess counted off the token route.
+      const wrong = basicFor({ clientId: k.clientId, secret: `fdvs_${'A'.repeat(43)}` });
+      for (let i = 0; i < 12; i++) {
+        expect(codeOf(await call('GET', '/api/v1/apps/me', wrong.authorization))).toEqual([
+          401,
+          'app_key_required',
+        ]);
+      }
+      // The same key, traded for a token: taken.
+      const t = await tokenFor(k);
+      for (const url of ['/api/v1/apps/me', '/api/v1/apps/documents']) {
+        const viaToken = await call('GET', url, `Bearer ${t}`);
+        expect(viaToken.statusCode, url).toBe(200);
+        expect(viaToken.headers.deprecation, url).toBeUndefined();
+      }
     });
 
     it('a token is refused once it ends, one the vault never gave is a guess, and either is refused off the app routes', async () => {

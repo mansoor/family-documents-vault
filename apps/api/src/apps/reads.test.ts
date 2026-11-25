@@ -20,7 +20,7 @@ import type { LightMyRequestResponse } from 'fastify';
 import FormData from 'form-data';
 import { sql } from 'kysely';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { appKeyFor, basicFor, alertsSent, createHarness, type Harness } from '../test-harness.js';
+import { appKeyFor, alertsSent, createHarness, type Harness } from '../test-harness.js';
 import { paperDate } from './reads.js';
 
 /**
@@ -47,6 +47,40 @@ const peer = () => `10.73.${(peers >> 8) & 0xff}.${peers++ & 0xff}`;
 const codeOf = (r: { json: () => unknown }) =>
   (r.json() as { error?: { code?: string } }).error?.code;
 const ALL = ['documents.send', 'documents.read', 'documents.download'];
+
+/** The connected apps' clock, ahead of the real one by this much: a test moves it. */
+let clockOffset = 0;
+
+/** A CSV as RFC 4180 has it, the byte-order mark taken off: rows of cells. */
+function csvRows(text: string): string[][] {
+  const rows: string[][] = [];
+  let row: string[] = [];
+  let cell = '';
+  let quoted = false;
+  const body = text.replace(/^\uFEFF/, '');
+  for (let i = 0; i < body.length; i++) {
+    const c = body[i] as string;
+    if (quoted) {
+      if (c === '"' && body[i + 1] === '"') {
+        cell += '"';
+        i++;
+      } else if (c === '"') quoted = false;
+      else cell += c;
+    } else if (c === '"') quoted = true;
+    else if (c === ',') {
+      row.push(cell);
+      cell = '';
+    } else if (c === '\r' && body[i + 1] === '\n') {
+      row.push(cell);
+      rows.push(row);
+      row = [];
+      cell = '';
+      i++;
+    } else cell += c;
+  }
+  if (cell || row.length) rows.push([...row, cell]);
+  return rows;
+}
 
 describe.skipIf(!testAdminUrl())('connected apps read (0.9.0, APP2)', () => {
   let h: Harness;
@@ -92,7 +126,7 @@ describe.skipIf(!testAdminUrl())('connected apps read (0.9.0, APP2)', () => {
     headers: Record<string, string> = {},
     method: 'GET' | 'DELETE' = 'GET',
   ): Promise<LightMyRequestResponse> {
-    const signed = basicFor(a);
+    const signed = await h.bearerFor(a);
     return h.app.inject({
       method,
       url: target,
@@ -203,7 +237,11 @@ describe.skipIf(!testAdminUrl())('connected apps read (0.9.0, APP2)', () => {
     );
 
   beforeAll(async () => {
-    h = await createHarness({ rateLimitPerMinute: 50_000, publicApps: 'on' });
+    h = await createHarness({
+      rateLimitPerMinute: 50_000,
+      publicApps: 'on',
+      appsNow: () => Date.now() + clockOffset,
+    });
     admin = createPool(h.adminUrl, 2);
     owner = await h.setup();
     ahmed = await h.join(owner, {
@@ -1029,6 +1067,116 @@ describe.skipIf(!testAdminUrl())('connected apps read (0.9.0, APP2)', () => {
     ).toHaveLength(1);
   });
 
+  it('what a list page or the feed hands an app is on each document’s own Activity, once an app a household day (0.9.0-dev.101)', async () => {
+    const lister = await connect(owner, {}, 'Daily lister');
+    const feeder = await connect(owner, {}, 'Daily feeder');
+    for (const a of [lister, feeder]) {
+      await grants(owner, a, { grants: [{ kind: 'utility_bill', lookback_months: 36 }] });
+    }
+    // Two papers of one day nothing else here has: the list narrowed to them.
+    const day = daysAgo(500);
+    const family = await make(owner, { title: 'Listed bill L', ...issued(day) });
+    const adults = await make(owner, {
+      title: 'Listed bill A',
+      visibility: 'adults',
+      ...issued(day),
+    });
+    const listed = async (a: TestApp, doc: string) =>
+      Number(
+        (
+          await admin.query<{ n: string }>(
+            `select count(*) as n from audit_event
+              where action = 'app.listed' and object_type = 'document'
+                and object_id = $1 and detail->>'app_id' = $2`,
+            [doc, a.appId],
+          )
+        ).rows[0]?.n,
+      );
+    const page = async () =>
+      (await listOf(lister, `?from=${day}&to=${day}`)).items.map((d) => d.id).sort();
+    // The list: a line on each document it gave, once the day, however often asked.
+    expect(await page()).toEqual([family, adults].sort());
+    expect([await listed(lister, family), await listed(lister, adults)]).toEqual([1, 1]);
+    expect(await page()).toEqual([family, adults].sort());
+    expect([await listed(lister, family), await listed(lister, adults)]).toEqual([1, 1]);
+    // In the document's own Activity, worded as a read's; and one answer's
+    // lines are one line in the household's log, for each as they may see.
+    const activity = (await send(owner, 'GET', `/api/v1/documents/${family}/activity?limit=50`))
+      .json<{ items: ActivityLine[] }>()
+      .items.map((l) => l.text);
+    expect(activity).toContain('Owner via Daily lister listed “Listed bill L”');
+    expect(await lines(owner)).toContain('Owner via Daily lister listed 2 documents');
+    // A teen, who does not see Adults only papers, is told of the one they see alone.
+    const teens = await lines(teen);
+    expect(teens).toContain('Owner via Daily lister listed “Listed bill L”');
+    expect(teens.join('\n')).not.toContain('Listed bill A');
+    expect(teens.join('\n')).not.toContain('Daily lister listed 2 documents');
+    expect(
+      (await send(teen, 'GET', `/api/v1/documents/${adults}/activity?limit=50`)).statusCode,
+    ).toBe(404);
+    // Folded, the line is about no one document: it opens none, and the
+    // Activity export names none beside it; a line of one names it.
+    const folded = (await send(owner, 'GET', '/api/v1/audit?limit=100'))
+      .json<{ items: ActivityLine[] }>()
+      .items.find((l) => l.text === 'Owner via Daily lister listed 2 documents');
+    expect(folded?.document_id).toBeNull();
+    const single = (await send(teen, 'GET', '/api/v1/audit?limit=100'))
+      .json<{ items: ActivityLine[] }>()
+      .items.find((l) => l.text === 'Owner via Daily lister listed “Listed bill L”');
+    expect(single?.document_id).toBe(family);
+    const exportRow = async (who: Tokens, text: string) => {
+      const res = await send(who, 'GET', '/api/v1/audit/export?kind=opened');
+      expect(res.statusCode, res.body).toBe(200);
+      const [head = [], ...rows] = csvRows(res.body);
+      const row = rows.find((r) => r.includes(text)) ?? [];
+      return row[head.indexOf('Document')];
+    };
+    expect(await exportRow(owner, 'Owner via Daily lister listed 2 documents')).toBe('');
+    expect(await exportRow(teen, 'Owner via Daily lister listed “Listed bill L”')).toBe(
+      'Listed bill L',
+    );
+
+    // The feed: everything first, then what changed — each line once the day.
+    const feed = async (cursor?: string) => {
+      const r = await call(feeder, `/api/v1/apps/changes${cursor ? `?cursor=${cursor}` : ''}`);
+      expect(r.statusCode, r.body).toBe(200);
+      return r.json<AppChanges>();
+    };
+    let start = await feed();
+    while (start.more) start = await feed(start.cursor);
+    expect([await listed(feeder, family), await listed(feeder, adults)]).toEqual([1, 1]);
+    await send(owner, 'PATCH', `/api/v1/documents/${family}`, { title: 'Listed bill L, paid' });
+    const changed = await feed(start.cursor);
+    expect(changed.changes).toMatchObject([{ change: 'changed', document: { id: family } }]);
+    expect(await listed(feeder, family)).toBe(1);
+    // An unavailable line says nothing of its document: no line.
+    await send(owner, 'DELETE', `/api/v1/documents/${adults}`);
+    const gone = await feed(changed.cursor);
+    expect(gone.changes).toMatchObject([{ change: 'unavailable', document_id: adults }]);
+    expect(await listed(feeder, adults)).toBe(1);
+    // The household's next day: given again, written again, once.
+    clockOffset = 24 * 60 * 60_000;
+    try {
+      await send(owner, 'PATCH', `/api/v1/documents/${family}`, { title: 'Listed bill L, filed' });
+      const nextDay = await feed(gone.cursor);
+      expect(nextDay.changes).toMatchObject([{ change: 'changed', document: { id: family } }]);
+      expect(await listed(feeder, family)).toBe(2);
+      expect(await page()).toEqual([family]);
+      expect(await listed(lister, family)).toBe(2);
+      // The lister's line for the paper in the Trash: nothing more.
+      expect(await listed(lister, adults)).toBe(1);
+      // Asked again on that day: nothing more either.
+      expect(await page()).toEqual([family]);
+      await send(owner, 'PATCH', `/api/v1/documents/${family}`, { title: 'Listed bill L, kept' });
+      expect((await feed(nextDay.cursor)).changes).toMatchObject([
+        { change: 'changed', document: { id: family } },
+      ]);
+      expect([await listed(lister, family), await listed(feeder, family)]).toEqual([2, 2]);
+    } finally {
+      clockOffset = 0;
+    }
+  });
+
   it('reading needs its scope, and an app paused reads nothing', async () => {
     const a = await connect(owner, { scopes: ['documents.send'] }, 'Sender only');
     for (const url of [
@@ -1269,7 +1417,7 @@ describe.skipIf(!testAdminUrl())('connected apps read (0.9.0, APP2)', () => {
     const part = await call(a, url, { range: 'bytes=0-1023' });
     expect(part.statusCode).toBe(206);
     // A HEAD with the app's key is no download: refused, counted nowhere.
-    const signed = basicFor(a);
+    const signed = await h.bearerFor(a);
     const head = await h.app.inject({
       method: 'HEAD',
       url,

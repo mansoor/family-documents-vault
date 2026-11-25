@@ -1,7 +1,6 @@
 import {
   APP_ACTS_AS_DEFAULT,
   APP_AUTH_FAILURES_PER_MINUTE,
-  APP_BASIC_DEPRECATION,
   APP_CLIENT_ID_PATTERN,
   APP_CONNECTION_PREFIX,
   APP_GRANTABLE_CATEGORIES,
@@ -95,8 +94,8 @@ import type { FetchLike, ResponseLike } from '../http.js';
  * traded at `POST /apps/token` (`grant_type=client_credentials`, a form)
  * for a token kept on its key as a SHA-256 alone, fifteen minutes long;
  * every other app route takes `Bearer` with one, and ends it with its key
- * or its app. Basic there is still taken, with a `Deprecation` header. A
- * test ends every token with `fakeExpireAppTokens` (the fake vault's
+ * or its app. The key as Basic there is `401 app_key_required`
+ * (0.9.0-dev.101). A test ends every token with `fakeExpireAppTokens` (the fake vault's
  * `expireAppTokens`).
  *
  * Acting as itself (APP8), by the vault's rules: an app connected without a
@@ -420,12 +419,6 @@ export function fakeExpireAppTokens(apps: readonly FakeApp[]): number {
   }
   return n;
 }
-
-/** An answer with one more header. */
-const withHeader = (res: ResponseLike, name: string, value: string): ResponseLike => ({
-  ...res,
-  headers: { get: (n) => (n.toLowerCase() === name ? value : res.headers.get(n)) },
-});
 
 /** Failed authentications this minute, per fake vault (it knows no addresses: one bucket). */
 const FAILURES = new WeakMap<FakeApp[], { minute: number; n: number }>();
@@ -1252,16 +1245,15 @@ export function fakeAppRoutes(d: FakeAppDeps) {
     scope: AppScope | null,
     anyState: boolean,
     tokenRoute = false,
-  ): Promise<
-    { a: FakeApp; key: FakeAppKey; scopes: AppScope[]; via: 'basic' | 'token' } | ResponseLike
-  > => {
-    // 1. An access token (0.9.0-dev.72) or Basic with an app's client ID,
-    // and nothing else that names a caller; the token route, the key alone.
+  ): Promise<{ a: FakeApp; key: FakeAppKey; scopes: AppScope[] } | ResponseLike> => {
+    // 1. The token route takes Basic with an app's client ID alone; every
+    // other app route an access token alone (0.9.0-dev.101: the key as
+    // Basic there is no longer taken). Nothing else that names a caller.
     const basic = basicOf(headers.authorization);
     const token = appTokenOf(headers.authorization);
+    const isKey = token === null && basic !== null && basic.user.startsWith('fdvc_');
     if (
-      (token === null && (!basic || !basic.user.startsWith('fdvc_'))) ||
-      (tokenRoute && token !== null) ||
+      (tokenRoute ? !isKey : token === null) ||
       headers.cookie ||
       headers['signature'] ||
       headers['signature-input']
@@ -1357,7 +1349,7 @@ export function fakeAppRoutes(d: FakeAppDeps) {
     if (scope && !scopes.includes(scope)) {
       return d.fail(403, 'scope_not_granted', APP_REFUSALS.scope_not_granted);
     }
-    return { a, key, scopes, via: token !== null ? 'token' : 'basic' };
+    return { a, key, scopes };
   };
 
   /**
@@ -1434,25 +1426,8 @@ export function fakeAppRoutes(d: FakeAppDeps) {
     );
   };
 
-  /**
-   * The app's side, with its API key or a token for it; the key as Basic
-   * anywhere but the token route answered with a `Deprecation` header
-   * (0.9.0-dev.72), once it is let through.
-   */
-  const app = async (
-    url: string,
-    init: Parameters<FetchLike>[1],
-    parts: Parameters<typeof appRoutes>[2],
-  ): Promise<ResponseLike | null> => {
-    const seen: { via: 'basic' | 'token' | null } = { via: null };
-    const res = await appRoutes(url, init, parts, seen);
-    return res && seen.via === 'basic'
-      ? withHeader(res, 'deprecation', APP_BASIC_DEPRECATION)
-      : res;
-  };
-
-  /** The app routes themselves. */
-  const appRoutes: (
+  /** The app's side: its API key on the token route, a token for it on every other. */
+  const app: (
     url: string,
     init: Parameters<FetchLike>[1],
     parts: (body: unknown) => Array<{
@@ -1462,8 +1437,7 @@ export function fakeAppRoutes(d: FakeAppDeps) {
       type?: string;
       filename?: string;
     }> | null,
-    seen: { via: 'basic' | 'token' | null },
-  ) => Promise<ResponseLike | null> = async (url, init, parts, seen) => {
+  ) => Promise<ResponseLike | null> = async (url, init, parts) => {
     const target = url.replace(/^[a-z]+:\/\/[^/]+/i, '');
     const path = target.split('?')[0] as string;
     const method = init.method ?? 'GET';
@@ -1503,7 +1477,6 @@ export function fakeAppRoutes(d: FakeAppDeps) {
     if (!('a' in authed)) return authed;
     const { a, key, scopes } = authed;
     if (tokenRoute) return mintToken(key, scopes, init);
-    seen.via = authed.via;
     const params = new Map(
       (target.split('?')[1] ?? '')
         .split('&')

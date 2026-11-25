@@ -186,7 +186,10 @@ export function activityKind(action: string): ActivityKind {
     case 'app':
       return action === 'app.sent' || action === 'app.withdrawn'
         ? 'added'
-        : action === 'app.read' || action === 'app.looked_up' || action === 'app.link_made'
+        : action === 'app.read' ||
+            action === 'app.listed' ||
+            action === 'app.looked_up' ||
+            action === 'app.link_made'
           ? 'opened'
           : // A document it sent let go of (APP3): the document changed hands.
             action === 'app.unlinked'
@@ -798,6 +801,11 @@ export function eventWords(e: ActivityEvent): (ActivityLine & { named: boolean }
     // and its looking up documents, once an hour.
     case 'app.read':
       return byApp(`read the details of ${doc}`);
+    // A document handed it in a list or its feed (0.9.0-dev.101): that
+    // document's line, once a day. The lines of one answer fold into one in
+    // the household's log ("Acme Money listed 12 documents").
+    case 'app.listed':
+      return byApp(`listed ${doc}`);
     case 'app.looked_up':
       return byApp('looked up documents');
     // A link it made to one document (0.9.0-dev.77): that document's line,
@@ -1495,8 +1503,9 @@ export function describeEventSpans(
   const spans: Array<{ line: ActivityLine; oldest: number }> = [];
   /**
    * What the last line may fold: a sitting's views of a document, an app's
-   * downloads of one (APP2), or the files an app sent (APP2), each by one
-   * person with nothing shown in between.
+   * downloads of one (APP2), the files an app sent (APP2), or the documents
+   * a list or a feed handed an app (0.9.0-dev.101), each by one person with
+   * nothing shown in between.
    */
   let run: {
     action: string;
@@ -1509,11 +1518,19 @@ export function describeEventSpans(
   } | null = null;
   const appIdOf = (e: ActivityEvent) =>
     typeof e.detail?.app_id === 'string' ? e.detail.app_id : null;
-  /** Which run an event may start or join: views, an app's downloads, an app's sends. */
+  /** Which run an event may start or join: views, an app's downloads, sends and lists. */
   const foldable = (e: ActivityEvent) =>
     e.action === 'document.viewed' ||
     (e.action === 'document.downloaded' && appIdOf(e) !== null) ||
-    (e.action === 'app.sent' && appIdOf(e) !== null);
+    ((e.action === 'app.sent' || e.action === 'app.listed') && appIdOf(e) !== null);
+  /** Whether an event is close enough to the run's last to join it. */
+  const near = (action: string, runAt: number, at: number) =>
+    action === 'app.sent'
+      ? runAt - at <= APP_SENT_FOLD_MS
+      : // The documents one answer handed an app: written together, at one instant.
+        action === 'app.listed'
+        ? runAt === at
+        : runAt - at <= SITTING_MS;
   for (const e of events) {
     const at = Date.parse(e.at);
     const last = spans[spans.length - 1];
@@ -1524,15 +1541,19 @@ export function describeEventSpans(
       run.action === e.action &&
       run.actor === (e.actor_id ?? null) &&
       run.app === appIdOf(e) &&
-      // An app's sends fold per Inbox (APP5): the person each went to.
-      run.doc === e.object_id &&
-      (e.action === 'app.sent' ? run.at - at <= APP_SENT_FOLD_MS : run.at - at <= SITTING_MS)
+      // An app's sends fold per Inbox (APP5): the person each went to. The
+      // documents one answer handed it fold whichever each was.
+      (e.action === 'app.listed' || run.doc === e.object_id) &&
+      near(e.action, run.at, at)
     ) {
       run.at = at;
       run.n += 1;
       last.oldest = e.id;
       if (e.action === 'app.sent') {
         last.line = { ...last.line, text: appSentWords(run.first, run.n) };
+      } else if (e.action === 'app.listed') {
+        // Several documents: the line is about none of them, so it opens none.
+        last.line = { ...last.line, text: appListedWords(run.first, run.n), document_id: null };
       }
       continue;
     }
@@ -1561,6 +1582,18 @@ function appSentWords(e: ActivityEvent, n: number): string {
   const by =
     e.detail?.as_itself === true ? appOf(e.detail ?? {}) : `${who} via ${appOf(e.detail ?? {})}`;
   return n === 1 ? `${by} sent a file to ${inboxOf(e)}` : `${by} sent ${n} files to ${inboxOf(e)}`;
+}
+
+/**
+ * The documents one list page or feed answer handed an app, folded into one
+ * line (0.9.0-dev.101): "Acme Money listed 12 documents". Which ones, each
+ * document's own Activity says.
+ */
+function appListedWords(e: ActivityEvent, n: number): string {
+  const who = e.actor ?? (e.actor_label ? capitalise(e.actor_label) : 'Somebody');
+  const by =
+    e.detail?.as_itself === true ? appOf(e.detail ?? {}) : `${who} via ${appOf(e.detail ?? {})}`;
+  return `${by} listed ${n} documents`;
 }
 
 /**

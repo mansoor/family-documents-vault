@@ -66,6 +66,7 @@ import { PurgeService } from './documents/purge.js';
 import { IncomingService, type IncomingOptions } from './uploads/incoming.js';
 import { BatchService, type BatchOptions } from './uploads/batches.js';
 import { DEVICE_KEY_PURPOSE, DeviceService } from './devices/service.js';
+import { newAccessToken, secretHash } from './apps/keys.js';
 import { AppService } from './apps/service.js';
 import { AuditService } from './audit/service.js';
 import { OfflineService } from './offline/service.js';
@@ -183,6 +184,18 @@ export interface Harness {
   batches: BatchService;
   /** The connected apps' service (APP1), for a test that moves its clock. */
   apps: AppService;
+  /**
+   * The header an app sends on every app route but the token route
+   * (0.9.0-dev.101): `Authorization: Bearer` with an access token for its
+   * key. For the tests that are not about the token route: the token is
+   * written as the vault writes one, bound to the key, but its fifteen
+   * minutes are set far ahead, so a test that moves the clock keeps it, and
+   * no request to the token route is counted on the app. One a key, kept.
+   * A wrong secret is given a token the vault never gave
+   * (`401 app_token_invalid`, counted as a guess, as a wrong secret is).
+   * tokens.test.ts tries the token route itself.
+   */
+  bearerFor(k: { clientId: string; secret: string }): Promise<{ authorization: string }>;
   /**
    * Every text the harness's own SMS Gate was asked to send (SMS1), in
    * order: nothing leaves it. Each is Delivered at once. Empty when a test
@@ -531,6 +544,7 @@ export async function createHarness(opts: HarnessOptions = {}): Promise<Harness>
   let joined = 1;
   /** The owning role, for `join`'s viewers: made when first asked for. */
   let admin: ReturnType<typeof createPool> | null = null;
+  const bearers = new Map<string, { authorization: string }>();
   const stepUp = new StepUpService(db, passkeys, totp, textCodes, guard);
   // As if the operator had set FDV_SMTP_URL, unless the test said not
   // (operatorMail: false); passwords.test.ts also builds one without it.
@@ -780,6 +794,24 @@ export async function createHarness(opts: HarnessOptions = {}): Promise<Harness>
       return res.json<Tokens>();
     },
     as: (t) => ({ authorization: `Bearer ${t.access_token}` }),
+    async bearerFor(k) {
+      const kept = bearers.get(`${k.clientId}:${k.secret}`);
+      if (kept) return kept;
+      admin ??= createPool(tdb.adminUrl, 1);
+      const token = newAccessToken();
+      const { rowCount } = await admin.query(
+        `insert into connected_app_token
+           (household_id, app_id, key_id, token_hash, created_at, expires_at)
+         select household_id, app_id, id, $3,
+                '2999-01-01T00:00:00Z', '2999-01-01T00:15:00Z'
+           from connected_app_key
+          where client_id = $1 and secret_hash = $2`,
+        [k.clientId, secretHash(k.secret), secretHash(token)],
+      );
+      const header = { authorization: `Bearer ${token}` };
+      if (rowCount === 1) bearers.set(`${k.clientId}:${k.secret}`, header);
+      return header;
+    },
     async decider(t) {
       admin ??= createPool(tdb.adminUrl, 1);
       const { rows } = await admin.query<{ account_id: string; on: boolean }>(

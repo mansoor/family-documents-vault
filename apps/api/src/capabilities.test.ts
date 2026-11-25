@@ -235,11 +235,6 @@ describe('buildCapabilities', () => {
       { field: 'POST /api/v1/password-resets/{token}', removed_in: '0.9.0' },
       { field: 'GET /api/v1/invitations/{token}', removed_in: '0.9.0' },
       { field: 'POST /api/v1/invitations/{token}/accept', removed_in: '0.9.0' },
-      // A connected app's key as Basic off the token route (0.9.0-dev.72).
-      {
-        field: 'Authorization: Basic on /api/v1/apps/* but POST /api/v1/apps/token',
-        removed_in: '0.9.0',
-      },
       // A cabinet's three ways to arrange it, now levels (0.9.0-dev.90).
       { field: 'CabinetLayout.arranged_by', removed_in: '0.13.0' },
       { field: 'POST /api/v1/cabinet/preview arrange_by', removed_in: '0.13.0' },

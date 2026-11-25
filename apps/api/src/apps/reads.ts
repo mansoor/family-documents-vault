@@ -1,6 +1,13 @@
 import { createHash } from 'node:crypto';
 import type { Readable } from 'node:stream';
-import { appendAudit, householdZone, readAsApp, withSystem, type Db } from '@fdv/db';
+import {
+  appendAudit,
+  appendAuditMany,
+  householdZone,
+  readAsApp,
+  withSystem,
+  type Db,
+} from '@fdv/db';
 import {
   APP_CHANGES_DEFAULT,
   APP_LIST_DEFAULT,
@@ -554,16 +561,40 @@ export class AppReads {
   }
 
   /**
+   * What a list page or the feed answered, in the activity log
+   * (0.9.0-dev.101).
+   *
    * Reading the list or the feed is one line an hour an app — "looked up
-   * documents" — for the owners and the app's person, so a list or a feed
-   * polled never floods the log. Not a line on each document it lists: an
-   * app syncing a few hundred papers every few minutes would bury every
-   * document's own Activity under its reads. What it reads of one document
-   * is that document's line, for its people: its details (`app.read`, once
-   * an hour), its file (`document.downloaded`), a link made to it
-   * (`app.link_made`, links.ts) and that link opened (`document.viewed`).
+   * documents" — for the owners and the app's person: the overview of an
+   * app's reading, which a list or a feed polled never floods. And each
+   * document the answer hands the app has its own line, `app.listed` —
+   * "Acme Money listed …" — for the same people as `app.read`'s, at most
+   * once an app a document a household day, so a document's Activity says
+   * it was given to the app without an app syncing every few minutes
+   * burying it. Only what the answer carries: a feed's `unavailable` line
+   * names a document and says nothing of it. What it reads of one document
+   * is that document's line too: its details (`app.read`, once an hour),
+   * its file (`document.downloaded`), a link made to it (`app.link_made`,
+   * links.ts) and that link opened (`document.viewed`).
+   *
+   * In the order the vault's other writers take them, so none waits on
+   * another that waits on it: the app's row (whether the hour's line is
+   * due, as a refusal counted on it is), then the documents, held as a read
+   * holds one (`holdForReading`; one taken away meanwhile, by an Undo of
+   * its filing say, is left out), then the household's log, as `appendAudit`
+   * holds it — taken before asking which documents have the day's line
+   * already, so two answers at once never write one twice. Asked once for
+   * the whole page, and the rest written together. The day is the vault's
+   * (its clock, the household's time zone), kept in the line (`day`), so the
+   * check never hangs on the database's clock agreeing with the vault's
+   * near midnight.
    */
-  private async lookedUp(trx: Db, c: AppCaller, meta: RequestMeta): Promise<void> {
+  private async inTheLog(
+    trx: Db,
+    c: AppCaller,
+    ids: readonly string[],
+    meta: RequestMeta,
+  ): Promise<void> {
     const due = await trx
       .updateTable('connected_app')
       .set({ looked_line_at: sql<Date>`now()` })
@@ -576,6 +607,46 @@ export class AppReads {
       )
       .returning('id')
       .executeTakeFirst();
+    const wanted = [...new Set(ids)].sort();
+    const held =
+      wanted.length === 0
+        ? []
+        : (
+            await sql<{ id: string }>`
+              select id::text as id from document
+               where id = any(${wanted}::uuid[])
+               order by id
+                 for key share`.execute(trx)
+          ).rows.map((r) => r.id);
+    if (held.length > 0) {
+      await sql`select pg_advisory_xact_lock(hashtext('audit:' || ${c.householdId}::uuid::text))`.execute(
+        trx,
+      );
+      const day = localToday(householdZone(c.timezone), new Date(this.opts.now()));
+      const already = await sql<{ object_id: string }>`
+        select e.object_id::text as object_id
+          from audit_event e
+         where e.action = 'app.listed'
+           and e.object_type = 'document'
+           and e.object_id = any(${held}::uuid[])
+           and e.detail->>'app_id' = ${c.appId}
+           and e.detail->>'day' = ${day}`.execute(trx);
+      const told = new Set(already.rows.map((r) => r.object_id));
+      await appendAuditMany(
+        trx,
+        held
+          .filter((id) => !told.has(id))
+          .map((id) => ({
+            householdId: c.householdId,
+            actorAccountId: c.accountId,
+            action: 'app.listed',
+            objectType: 'document',
+            objectId: id,
+            detail: appLine(c, { day }),
+            ip: meta.ip,
+          })),
+      );
+    }
     if (due) {
       await appendAudit(trx, {
         householdId: c.householdId,
@@ -652,7 +723,12 @@ export class AppReads {
         : picked;
       const items = rest.slice(0, limit);
       const last = items[items.length - 1];
-      await this.lookedUp(trx, c, meta);
+      await this.inTheLog(
+        trx,
+        c,
+        items.map((d) => d.id),
+        meta,
+      );
       return {
         items,
         next: rest.length > limit && last ? encode(`l1|${last.paper_date}|${last.id}`) : null,
@@ -768,7 +844,6 @@ export class AppReads {
 
       const now = await this.readable(trx, c);
       await this.refresh(trx, c, now);
-      await this.lookedUp(trx, c, meta);
 
       const headOf = async () =>
         Number(
@@ -807,6 +882,12 @@ export class AppReads {
           at: d.updated_at,
           document: d,
         }));
+        await this.inTheLog(
+          trx,
+          c,
+          page.map((d) => d.id),
+          meta,
+        );
         const last = page[page.length - 1];
         if (all.length > limit && last) {
           return { changes, cursor: encode(`s1|${epoch}|${head}|${last.id}`), more: true };
@@ -836,6 +917,12 @@ export class AppReads {
         const doc = now.get(r.document_id)?.doc;
         if (doc) changes.push({ change: 'changed', at: r.at.toISOString(), document: doc });
       }
+      await this.inTheLog(
+        trx,
+        c,
+        changes.flatMap((x) => (x.change === 'changed' ? [x.document.id] : [])),
+        meta,
+      );
       const lastSeq = rows.length > 0 ? Number(rows[rows.length - 1]?.seq) : cursor.seq;
       return {
         changes,

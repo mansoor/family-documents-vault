@@ -9,7 +9,7 @@ import {
   sealBytes,
   unwrapKey,
 } from '@fdv/crypto';
-import { createPool, withSystem } from '@fdv/db';
+import { appendAudit, createPool, withSystem } from '@fdv/db';
 import { testAdminUrl } from '@fdv/db/testing';
 import {
   ACCEPT_READY_MAX,
@@ -674,6 +674,34 @@ describe.skipIf(!testAdminUrl())('the review queue: Accept all Ready and Undo (I
     expect(files.filter((f) => f.endsWith('.enc') && !f.includes('.p') && !named.has(f))).toEqual(
       [],
     );
+  });
+
+  it('a connected app given the document in a list does not keep its filing from being undone; one that read its details does (0.9.0-dev.101)', async () => {
+    const b = await made(adult, { name: 'Listed meanwhile' });
+    const listedOnly = await readyItem(adult, b.id);
+    const readToo = await readyItem(adult, b.id);
+    const out = await accepted(adult, b.id);
+    const docOf = (id: string) => out.accepted.find((a) => a.item_id === id)?.document_id as string;
+    // The lines an app acting as itself writes on a document: nobody's account.
+    const app = { app_id: randomUUID(), app: 'Acme Money', as_itself: true };
+    const line = (action: string, documentId: string, detail: Record<string, unknown> = {}) =>
+      withSystem(h.db, hh, (trx) =>
+        appendAudit(trx, {
+          householdId: hh,
+          action,
+          objectType: 'document',
+          objectId: documentId,
+          detail: { ...app, ...detail },
+        }),
+      );
+    await line('app.listed', docOf(listedOnly.id), { day: '2026-11-24' });
+    await line('app.listed', docOf(readToo.id), { day: '2026-11-24' });
+    await line('app.read', docOf(readToo.id));
+    const back = await undone(adult, b.id, [listedOnly.id, readToo.id]);
+    expect(back.restored).toEqual([listedOnly.id]);
+    expect(back.kept.map((k) => [k.item_id, k.reason])).toEqual([[readToo.id, 'changed']]);
+    expect((await doc(adult, docOf(listedOnly.id))).statusCode).toBe(404);
+    expect((await doc(adult, docOf(readToo.id))).statusCode).toBe(200);
   });
 
   it('races: Accept all Ready twice at once files each item once', async () => {

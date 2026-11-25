@@ -52,12 +52,9 @@ other request carries `Authorization: Bearer <token>`. The client asks for a tok
 first needed, keeps it in memory alone, asks for a new one a minute before it ends or when the
 vault answers `401 app_token_expired` (or `app_token_invalid`) — sending that request again
 once — and never logs it. A token ends at once with its key (revoked or expired) or its app
-(paused or removed): those refusals are the app's to handle, as before. A vault from before
-tokens — whose token route answers `401 app_key_not_accepted` or `404`, and whose capability
-document does not say `connected_app_tokens` — is sent the key as Basic, as before, and the
-token route is asked again every 10 minutes, so an upgraded vault moves the app to tokens. On a
-vault that has tokens, Basic is deprecated and will be removed in a later 0.9.0 development
-build.
+(paused or removed): those refusals are the app's to handle, as before. The key itself goes to
+the token route alone: since 0.9.0-dev.101 the vault refuses it anywhere else (`401
+app_key_required`), and the client never sends it there.
 
 ```ts
 import { createAppClient, parseConnectionString } from '@fdv/client/apps';
@@ -175,7 +172,7 @@ fake.expireAppTokens(); // every token ended: the client asks for another
 The fake checks every API key as the vault does, and keeps an app's keys by the vault's
 rules: an owner's alone, two live at most, each with its permissions and expiry, revoked at
 once. It gives access tokens at `POST /api/v1/apps/token` as the vault does, ends them with
-their key or app, and answers Basic elsewhere with a `Deprecation` header. Generating or
+their key or app, and refuses the key as Basic elsewhere (`401 app_key_required`). Generating or
 revoking a key asks for a passkey or a code: the fake's owner has none
 until `fake.state.ownerTwoStep = true`. It keeps a file's bytes exactly as they were sent —
 bytes, a stream, a Blob or a platform FormData — and gives back those bytes from every

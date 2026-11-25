@@ -1,7 +1,6 @@
 import {
   ACTIVITY_CSV_COLUMNS,
   activityCsvCapped,
-  APP_BASIC_DEPRECATION,
   APP_KEYS_MAX,
   CATEGORY_LABELS,
   CORE_FIELDS,
@@ -5786,7 +5785,7 @@ export const contractScenarios: Scenario[] = [
     },
   },
   {
-    name: 'a connected app trades its API key for a short-lived access token and calls with Bearer; the key as Basic still works, deprecated; a new key lasts 90 days unless said (0.9.0-dev.72)',
+    name: 'a connected app trades its API key for a short-lived access token and calls with Bearer; the key as Basic is taken on the token route alone (0.9.0-dev.101); a new key lasts 90 days unless said (0.9.0-dev.72)',
     run: async (api, ctx) => {
       if (!ctx.fetch) throw new Error('the contract needs the fetch its vault answers on');
       const fetch = ctx.fetch;
@@ -5839,15 +5838,18 @@ export const contractScenarios: Scenario[] = [
         expires_in: 900,
         scope: 'documents.send',
       });
-      // Bearer on every other app route, and no word of deprecation.
+      // Bearer on every other app route.
       const viaToken = await call('/api/v1/apps/me', bearer(t.access_token));
       expect(viaToken.status).toBe(200);
       expect(viaToken.headers.get('deprecation')).toBeNull();
       expect(((await viaToken.json()) as AppMe).key.client_id).toBe(key.client_id);
-      // The key as Basic there: still taken, and said to be deprecated.
-      const viaBasic = await call('/api/v1/apps/me', { headers: { authorization: basic } });
-      expect(viaBasic.status).toBe(200);
-      expect(viaBasic.headers.get('deprecation')).toBe(APP_BASIC_DEPRECATION);
+      // The key as Basic there: refused since 0.9.0-dev.101 — the token
+      // route alone takes it — with no word of deprecation.
+      for (const path of ['/api/v1/apps/me', '/api/v1/apps/documents']) {
+        const viaBasic = await call(path, { headers: { authorization: basic } });
+        expect(viaBasic.headers.get('deprecation')).toBeNull();
+        expect(await codeOf(viaBasic)).toEqual([401, 'app_key_required']);
+      }
       // Client credentials alone, and the key alone on the token route.
       expect(await codeOf(await grant('grant_type=password'))).toEqual([
         400,

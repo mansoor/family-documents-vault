@@ -34,12 +34,17 @@ export interface DerivedReminder {
   acknowledged_at: string | null;
 }
 
-/** A look at a document, or a phone keeping it: not a change to it. */
+/**
+ * A look at a document, or a phone keeping it: not a change to it. Nor is a
+ * connected app being handed it in a list or its feed (0.9.0-dev.101): an
+ * app that polls would otherwise keep every Undo from working.
+ */
 export const LOOKS = [
   'document.viewed',
   'document.downloaded',
   'document.cached_offline',
   'document.opened_offline',
+  'app.listed',
 ];
 
 export const REMINDER_OPEN = new Set(['scheduled', 'due', 'snoozed']);

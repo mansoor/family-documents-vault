@@ -24,7 +24,7 @@ import type {
 import type { LightMyRequestResponse } from 'fastify';
 import { sql } from 'kysely';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { appKeyFor, basicFor, createHarness, TEST_MASTER, type Harness } from '../test-harness.js';
+import { appKeyFor, createHarness, TEST_MASTER, type Harness } from '../test-harness.js';
 import { SENT_VERSION_COLUMNS } from './reads.js';
 import type { AppCaller, AppFile } from './service.js';
 
@@ -100,7 +100,7 @@ describe.skipIf(!testAdminUrl())(
       body?: { bytes: Uint8Array; contentType: string },
       headers: Record<string, string> = {},
     ): Promise<LightMyRequestResponse> {
-      const signed = basicFor(a);
+      const signed = await h.bearerFor(a);
       return h.app.inject({
         method,
         url: target,

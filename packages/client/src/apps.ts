@@ -28,21 +28,19 @@ import { multipartBody } from './multipart.js';
  *
  * Since 0.9.0-dev.63 (APP6) an app proves who it is with an API key an
  * owner generated for it in Settings → Connected apps: a client ID and a
- * secret, sent on every request as `Authorization: Basic
- * base64(client_id:secret)`. The vault shows the secret once and keeps only
- * a hash of it; an app never makes, renews or retires its own keys. A key
- * lasts as long as the owner chose (or never expires): `me().key.expires_at`
- * says when, so an app can warn its own users in time.
+ * secret, sent as `Authorization: Basic base64(client_id:secret)`. The
+ * vault shows the secret once and keeps only a hash of it; an app never
+ * makes, renews or retires its own keys. A key lasts as long as the owner
+ * chose (or never expires): `me().key.expires_at` says when, so an app can
+ * warn its own users in time.
  *
  * Since 0.9.0-dev.72 the key is sent once, to `POST /api/v1/apps/token`
  * (OAuth 2.0 client credentials), for a short-lived access token, and every
  * other request carries `Authorization: Bearer` with that: the client asks
  * for one as it is first needed, keeps it in memory alone, asks again a
  * minute before it ends or when the vault answers `401 app_token_expired`
- * (or `app_token_invalid`), and never logs it. A vault from before tokens
- * (its token route not there, or the key refused there as off its app
- * routes, and its capability document not saying `connected_app_tokens`) is
- * sent the key as Basic, as before, and asked again every 10 minutes.
+ * (or `app_token_invalid`), and never logs it. The key itself goes to the
+ * token route alone: since 0.9.0-dev.101 the vault takes it nowhere else.
  *
  * Its own entry (`@fdv/client/apps`), platform-neutral as the rest.
  */
@@ -202,9 +200,6 @@ export interface AppClientOptions {
   now?: () => number;
 }
 
-/** A vault that gave no token is asked again after this long (0.9.0-dev.72). */
-export const APP_TOKEN_REPROBE_MS = 10 * 60_000;
-
 /** Whether a refusal says the access token sent no longer works, and another may be asked for. */
 const tokenEnded = (e: unknown): boolean =>
   e instanceof ApiRequestError &&
@@ -316,37 +311,10 @@ export function createAppClient(opts: AppClientOptions): AppClient {
   /** The token held, and until when it is used: in memory alone, never logged. */
   let held: { token: string; until: number } | null = null;
   /** The token being asked for, which every request waiting on one shares. */
-  let asking: Promise<string | null> | null = null;
-  /**
-   * Until when the key is sent as Basic: the vault gave no token (one from
-   * before 0.9.0-dev.72). Asked again after APP_TOKEN_REPROBE_MS, so a vault
-   * upgraded meanwhile is moved to tokens.
-   */
-  let basicUntil = 0;
+  let asking: Promise<string> | null = null;
 
-  /**
-   * Whether the vault says it gives tokens (`features.connected_app_tokens`),
-   * asked without the key (its capability document is public, and a vault
-   * before dev.72 refuses the key off the app routes); false when it cannot
-   * be asked.
-   */
-  const givesTokens = async (): Promise<boolean> => {
-    try {
-      const res = await fetch(`${baseUrl}/api/v1/capabilities`, {
-        method: 'GET',
-        headers: { accept: 'application/json', 'cache-control': 'no-cache, no-store' },
-        cache: 'no-store',
-      });
-      if (!res.ok) return false;
-      const caps = (await res.json()) as { features?: { connected_app_tokens?: unknown } };
-      return caps.features?.connected_app_tokens === true;
-    } catch {
-      return false;
-    }
-  };
-
-  /** A token, asked for with the key; null when the vault gives none. */
-  const mint = async (): Promise<string | null> => {
+  /** A token, asked for with the key. */
+  const mint = async (): Promise<string> => {
     let res: ResponseLike;
     try {
       res = await fetch(`${baseUrl}/api/v1/apps/token`, {
@@ -363,21 +331,7 @@ export function createAppClient(opts: AppClientOptions): AppClient {
     } catch (cause) {
       throw new NetworkError('offline', undefined, { cause });
     }
-    if (!res.ok) {
-      const e = await toError(res, clock());
-      // A vault from before tokens: no such route (404), or — as every vault
-      // from dev.63 to dev.71 answers the key off its app routes — `401
-      // app_key_not_accepted`. Unless the vault says it gives tokens, the key
-      // goes as Basic for a while, then the route is asked again.
-      const older =
-        (e.status === 404 && e.code === 'not_found') ||
-        (e.status === 401 && e.code === 'app_key_not_accepted');
-      if (older && !(await givesTokens())) {
-        basicUntil = clock() + APP_TOKEN_REPROBE_MS;
-        return null;
-      }
-      throw e;
-    }
+    if (!res.ok) throw await toError(res, clock());
     const t = (await res.json()) as Partial<AppAccessToken>;
     if (
       typeof t.access_token !== 'string' ||
@@ -399,14 +353,12 @@ export function createAppClient(opts: AppClientOptions): AppClient {
    * dropped first (unless another has taken its place meanwhile).
    */
   const authorization = async (failed?: string): Promise<string> => {
-    if (clock() < basicUntil) return basic;
     if (failed !== undefined && held?.token === failed) held = null;
     if (held && clock() < held.until) return `Bearer ${held.token}`;
     asking ??= mint().finally(() => {
       asking = null;
     });
-    const t = await asking;
-    return t === null ? basic : `Bearer ${t}`;
+    return `Bearer ${await asking}`;
   };
 
   /** A request with the token; once more with a new one when the vault says it ended. */
@@ -417,7 +369,7 @@ export function createAppClient(opts: AppClientOptions): AppClient {
     try {
       return await call(first);
     } catch (e) {
-      if (!tokenEnded(e) || !first.startsWith('Bearer ')) throw e;
+      if (!tokenEnded(e)) throw e;
       return call(await authorization(first.slice('Bearer '.length)));
     }
   };

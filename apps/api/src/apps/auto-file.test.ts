@@ -22,7 +22,7 @@ import {
 } from '@fdv/shared';
 import type { LightMyRequestResponse } from 'fastify';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { appKeyFor, basicFor, createHarness, TEST_MASTER, type Harness } from '../test-harness.js';
+import { appKeyFor, createHarness, TEST_MASTER, type Harness } from '../test-harness.js';
 import { autoFileOn, consumeFileReady, type FileReadyQueue } from './auto-file.js';
 
 /**
@@ -176,7 +176,7 @@ describe.skipIf(!testAdminUrl())('connected apps file automatically (0.9.0, APP4
     target: string,
     body?: { bytes: Uint8Array; contentType: string },
   ): Promise<LightMyRequestResponse> {
-    const signed = basicFor(a);
+    const signed = await h.bearerFor(a);
     return h.app.inject({
       method,
       url: target,

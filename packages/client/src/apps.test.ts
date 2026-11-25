@@ -175,7 +175,7 @@ describe("a connected app's API key (0.9.0, APP6)", () => {
     });
   });
 
-  it('requests at once share one token, and a vault from before tokens is sent the key as Basic (0.9.0-dev.72)', async () => {
+  it('requests at once share one token, and the key goes to the token route alone (0.9.0-dev.101)', async () => {
     const vault = tokenVault();
     const app = createAppClient({
       url: 'https://vault.example.com',
@@ -185,86 +185,31 @@ describe("a connected app's API key (0.9.0, APP6)", () => {
     });
     await Promise.all([app.me(), app.status('a'), app.list()]);
     expect(vault.minted()).toBe(1);
-    // A vault from dev.63 to dev.71: the token route is not an app route
-    // there, so the key is refused on it as anywhere else (401
-    // app_key_not_accepted), and its capability document says nothing of
-    // tokens. Basic, as before, asked again after ten minutes — when an
-    // upgraded vault moves it to tokens.
-    let now = Date.parse('2026-11-19T09:00:00Z');
-    let upgraded = false;
-    const seen: string[] = [];
-    const older = createAppClient({
-      url: 'https://vault.example.com',
-      clientId: CLIENT_ID,
-      secret: SECRET,
-      now: () => now,
-      fetch: async (url, init) => {
-        seen.push(`${url.replace('https://vault.example.com', '')} ${init.headers.authorization}`);
-        if (url.endsWith('/capabilities')) {
-          return answer(200, { features: upgraded ? { connected_app_tokens: true } : {} });
-        }
-        if (url.endsWith('/token') && !upgraded) {
-          return answer(401, {
-            error: {
-              code: 'app_key_not_accepted',
-              message: 'A connected app can only use the app routes.',
-            },
-          });
-        }
-        return url.endsWith('/token')
-          ? answer(200, { access_token: tokenNo(1), token_type: 'Bearer', expires_in: 900 })
-          : answer(200);
-      },
-    });
-    await older.me();
-    await older.me();
+    // The key goes to the token route alone (0.9.0-dev.101): whatever the
+    // vault answers there — no such route, or the key refused — is the
+    // app's refusal, and nothing else is asked with the key.
     const basic = basicAuthorization(CLIENT_ID, SECRET);
-    expect(seen).toEqual([
-      `/api/v1/apps/token ${basic}`,
-      // Asked without the key: the vault's capability document is public.
-      '/api/v1/capabilities undefined',
-      `/api/v1/apps/me ${basic}`,
-      `/api/v1/apps/me ${basic}`,
-    ]);
-    // Ten minutes on, and the vault upgraded: the token route asked again, and used.
-    upgraded = true;
-    now += 10 * 60_000;
-    seen.length = 0;
-    await older.me();
-    expect(seen).toEqual([`/api/v1/apps/token ${basic}`, `/api/v1/apps/me Bearer ${tokenNo(1)}`]);
-    // No route at all (a 404) is an older vault too.
-    const missing: string[] = [];
-    await createAppClient({
-      url: 'https://vault.example.com',
-      clientId: CLIENT_ID,
-      secret: SECRET,
-      fetch: async (url, init) => {
-        missing.push(
-          `${url.replace('https://vault.example.com', '')} ${init.headers.authorization}`,
-        );
-        return url.endsWith('/token')
-          ? answer(404, { error: { code: 'not_found', message: 'That page does not exist.' } })
-          : answer(200, {});
-      },
-    }).me();
-    expect(missing.at(-1)).toBe(`/api/v1/apps/me ${basic}`);
-    // A vault that says it gives tokens is never sent Basic for that refusal:
-    // the refusal is the app's.
-    const newer = createAppClient({
-      url: 'https://vault.example.com',
-      clientId: CLIENT_ID,
-      secret: SECRET,
-      fetch: async (url) =>
-        url.endsWith('/capabilities')
-          ? answer(200, { features: { connected_app_tokens: true } })
-          : url.endsWith('/token')
-            ? answer(404, { error: { code: 'not_found', message: 'That page does not exist.' } })
-            : answer(200),
-    });
-    expect(await newer.me().catch((e: unknown) => e)).toMatchObject({
-      status: 404,
-      code: 'not_found',
-    });
+    for (const [status, code] of [
+      [404, 'not_found'],
+      [401, 'app_key_not_accepted'],
+    ] as const) {
+      const seen: string[] = [];
+      const refused = createAppClient({
+        url: 'https://vault.example.com',
+        clientId: CLIENT_ID,
+        secret: SECRET,
+        fetch: async (url, init) => {
+          seen.push(
+            `${url.replace('https://vault.example.com', '')} ${init.headers.authorization}`,
+          );
+          return url.endsWith('/token')
+            ? answer(status, { error: { code, message: 'No.' } })
+            : answer(200, {});
+        },
+      });
+      expect(await refused.me().catch((e: unknown) => e)).toMatchObject({ status, code });
+      expect(seen).toEqual([`/api/v1/apps/token ${basic}`]);
+    }
   });
 
   it('never sends the key but over https, or plain http to this machine alone', async () => {

@@ -51,8 +51,10 @@ const tagBefore = (a: string, b: string): boolean => {
  * older client's scenarios are frozen at its tag; the server is this
  * commit's. None is the phone's own doing: the two of 0.9.0-dev.94 save a
  * cabinet arranged by no levels, which PUT /cabinet now refuses — a write
- * only the web makes, never the phone app, which only reads My cabinet. Every
- * other scenario of the phone's still runs.
+ * only the web makes, never the phone app, which only reads My cabinet; and
+ * the one of 0.9.0-dev.101 is a connected app's, which the phone never is,
+ * expecting its key taken as Basic off the token route. Every other
+ * scenario of the phone's still runs.
  */
 const CHANGED_ON_PURPOSE: readonly { before: string; scenario: RegExp; why: string }[] = [
   {
@@ -75,6 +77,11 @@ const CHANGED_ON_PURPOSE: readonly { before: string; scenario: RegExp; why: stri
     scenario: /^the folder a paper came from: kept as it is filed/,
     why: 'it saved the folder tree’s "My folders" cabinet, drawn by no levels, which PUT /cabinet refuses',
   },
+  {
+    before: 'v0.9.0-dev.101',
+    scenario: /^a connected app trades its API key for a short-lived access token/,
+    why: 'it sent the key as Basic on GET /apps/me and expected it taken, deprecated; refused since 0.9.0-dev.101',
+  },
 ];
 const leftOut = (name: string): boolean =>
   OLDER_CLIENT !== undefined &&
@@ -94,14 +101,65 @@ describe.skipIf(!testAdminUrl())('the client contract, against the real API', ()
   let h: Harness;
   let peer = 0;
 
+  /**
+   * An older client's app client from before access tokens (0.9.0-dev.72)
+   * sends its key as Basic on every app route, which the vault takes on the
+   * token route alone since 0.9.0-dev.101: that `@fdv/client` can no longer
+   * call an app's routes at all. The phone is never a connected app, but
+   * the scenarios it carries cannot simply leave the connected app's out
+   * (`CHANGED_ON_PURPOSE`): its family scenario "a file of every byte value
+   * comes back exactly as the family sent it" (CL3) signs in as the owner
+   * the first connected app scenario set up (`connectedAppOwner`), and fails
+   * without it. So this run, and only for those clients, trades the key for
+   * a token on the way, as every app client since 0.9.0-dev.72 does itself.
+   * A refusal of the key is then the token route's, in the same words.
+   */
+  const tradesBasic = OLDER_CLIENT !== undefined && tagBefore(OLDER_CLIENT, 'v0.9.0-dev.72');
+  const traded = new Map<string, string>();
+  const tradeKey = async (
+    basic: string,
+    headers: Record<string, string>,
+  ): Promise<string | Awaited<ReturnType<Harness['app']['inject']>>> => {
+    const known = traded.get(basic);
+    if (known) return known;
+    const res = await h.app.inject({
+      method: 'POST',
+      url: '/api/v1/apps/token',
+      headers: {
+        ...headers,
+        authorization: basic,
+        'content-type': 'application/x-www-form-urlencoded',
+      },
+      payload: 'grant_type=client_credentials',
+      remoteAddress: '127.0.0.1',
+    });
+    if (res.statusCode !== 200) return res;
+    const token = `Bearer ${res.json<{ access_token: string }>().access_token}`;
+    traded.set(basic, token);
+    return token;
+  };
+
   /** fetch, as the client sees it, answered by Fastify's inject. */
   const viaInject: FetchLike = async (url, init) => {
     // An older client is run as the phone app that carries it: its
     // User-Agent, which the vault checks against min_client_version.
-    const headers =
+    let headers =
       PHONE_AGENT && !Object.keys(init.headers).some((k) => k.toLowerCase() === 'user-agent')
         ? { ...init.headers, 'user-agent': PHONE_AGENT }
         : init.headers;
+    const keyHeader = Object.keys(headers).find((k) => k.toLowerCase() === 'authorization');
+    const basic = keyHeader ? headers[keyHeader] : undefined;
+    if (
+      tradesBasic &&
+      keyHeader &&
+      basic?.startsWith('Basic ') &&
+      /^https?:\/\/[^/]+\/api\/v1\/apps\//.test(url) &&
+      !/\/api\/v1\/apps\/token$/.test(url)
+    ) {
+      const got = await tradeKey(basic, headers);
+      if (typeof got !== 'string') return answerOf(got);
+      headers = { ...headers, [keyHeader]: got };
+    }
     // First-run setup takes a code since 0.9.0, which a client older than
     // that never sends: no phone sets a vault up (the web does), but the
     // contract an older client carries does. Given here, as the person
@@ -126,6 +184,13 @@ describe.skipIf(!testAdminUrl())('the client contract, against the real API', ()
         ? '127.0.0.1'
         : `10.66.${++peer >> 8}.${peer & 0xff}`,
     });
+    return answerOf(res);
+  };
+
+  /** An answer of inject's, as the client's fetch gives one. */
+  const answerOf = (
+    res: Awaited<ReturnType<Harness['app']['inject']>>,
+  ): Awaited<ReturnType<FetchLike>> => {
     return {
       ok: res.statusCode < 400,
       status: res.statusCode,
