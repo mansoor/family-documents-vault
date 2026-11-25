@@ -282,6 +282,31 @@ describe('browsing my cabinet', () => {
     await expectAccessible();
   });
 
+  it('offers Print in a paper’s ⋯, as the table does; Escape gives the focus back to the ⋯ (0.9.0-dev.102)', async () => {
+    at('/documents?show=cabinet&folder=f-id-this', {
+      cabinet: { layout: LAYOUT, version: 1, updated_at: new Date().toISOString() },
+    });
+    const pane = await screen.findByRole('region', { name: String(thisYear) });
+    const name = "Actions for “Mansoor's passport”";
+    const more = await within(pane).findByRole('button', { name });
+    more.focus();
+    fireEvent.click(more);
+    const menu = await screen.findByRole('menu', { name });
+    expect(
+      within(menu)
+        .getAllByRole('menuitem')
+        .map((i) => i.textContent)
+        .slice(0, 3),
+    ).toEqual(['Open', 'Download', 'Print']);
+    fireEvent.click(within(menu).getByRole('menuitem', { name: 'Print' }));
+    const dialog = await screen.findByRole('dialog', { name: "Print “Mansoor's passport”" });
+    fireEvent.keyDown(within(dialog).getByRole('checkbox', { name: 'Its pages' }), {
+      key: 'Escape',
+    });
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: /^Print/ })).toBeNull());
+    await waitFor(() => expect(more).toHaveFocus());
+  });
+
   it('says plainly when a folder holds nothing', async () => {
     at('/documents?show=cabinet&folder=f-id-last', {
       cabinet: { layout: LAYOUT, version: 1, updated_at: new Date().toISOString() },

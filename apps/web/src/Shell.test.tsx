@@ -341,7 +341,7 @@ describe('the sidebar, from 1024 px (R1)', () => {
     for (const px of [WIDE, MID]) {
       at('/', EVERYTHING, 'owner', px);
       const nav = await sidebar();
-      await screen.findByRole('heading', { name: 'Recently added' });
+      await screen.findByRole('heading', { name: 'Recent' });
       // The bar on top is the shell's own, above the sidebar and the page,
       // with the household's name in it (0.7.0): the sidebar has none.
       const bar = appBar();
@@ -434,7 +434,7 @@ describe('an address that names a place on the page (the review)', () => {
     try {
       at('/', EVERYTHING);
       await sidebar();
-      await screen.findByRole('heading', { name: 'Recently added' });
+      await screen.findByRole('heading', { name: 'Recent' });
       // As "Set up two-step sign-in" does, from a person's page.
       act(() => {
         window.history.pushState({}, '', '/settings#two-step');
@@ -610,7 +610,7 @@ describe('the bar on top', () => {
     await sidebar();
     const before = document.activeElement;
     fireEvent.keyDown(document.body, { key: 'n' });
-    await screen.findByRole('heading', { name: 'Recently added' });
+    await screen.findByRole('heading', { name: 'Recent' });
     expect(window.location.pathname).toBe('/');
     expect(document.activeElement).toBe(before);
   });
@@ -806,7 +806,7 @@ describe('on a phone: the bottom bar and the drawer', () => {
   it('nothing axe finds, the drawer closed', async () => {
     at('/', EVERYTHING, 'owner', PHONE);
     await screen.findByRole('navigation', { name: 'Main' });
-    await screen.findByRole('heading', { name: 'Recently added' });
+    await screen.findByRole('heading', { name: 'Recent' });
     await expectAccessible();
   });
 });

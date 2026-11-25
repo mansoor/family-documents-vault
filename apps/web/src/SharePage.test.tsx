@@ -844,7 +844,7 @@ describe('After a restore, from Home', () => {
     signedIn();
     window.history.replaceState({}, '', '/');
     render(<App />);
-    await screen.findByRole('heading', { name: 'Recently added' });
+    await screen.findByRole('heading', { name: 'Recent' });
     await waitFor(() =>
       expect(state.calls.some((c) => c.url === '/api/v1/after-restore')).toBe(true),
     );

@@ -240,7 +240,8 @@ export function DocActions(props: {
   onTrashed?: ((title: string) => void) | undefined;
   /**
    * Print offered, beside Download (the owner's ask of 24 Nov 2026): the
-   * Documents table's ⋯ and a collection's, on a phone as on a wide screen.
+   * Documents table's ⋯ and a collection's, on a phone as on a wide screen;
+   * since 0.9.0-dev.102 Home's Recent and the cabinet's papers too.
    */
   print?: boolean | undefined;
 }) {

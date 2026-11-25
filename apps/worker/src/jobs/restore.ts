@@ -2044,6 +2044,9 @@ const ACTOR_GUARDED = [
   // by owners and adults, and the vault's.
   'issuer_alias',
   'issuer_apart',
+  // The documents somebody opened most recently (0132, 0.9.0-dev.102):
+  // theirs alone, and the vault's.
+  'document_recent_open',
 ];
 
 /**
@@ -2169,6 +2172,8 @@ const MAKER_ONLY = [
   { table: 'connected_app_key', where: 'true', what: "a connected app's key" },
   { table: 'connected_app_intake', where: 'true', what: 'what a connected app sent' },
   { table: 'connected_app_grant', where: 'true', what: 'what a connected app may read' },
+  // The documents somebody opened most recently (0132, 0.9.0-dev.102).
+  { table: 'document_recent_open', where: 'true', what: "somebody's recently opened documents" },
 ];
 
 /**
@@ -2206,6 +2211,8 @@ const NOT_EVEN_OWNERS = [
   // What a connected app was told, and its feed (0110, APP2): the vault's.
   { table: 'connected_app_seen', what: 'what a connected app was told' },
   { table: 'connected_app_change', what: "a connected app's feed" },
+  // Which papers somebody opened, and when (0132, 0.9.0-dev.102): theirs alone.
+  { table: 'document_recent_open', what: "somebody's recently opened documents" },
 ];
 
 /**

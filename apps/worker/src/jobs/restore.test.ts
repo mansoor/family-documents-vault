@@ -849,6 +849,17 @@ async function seed(url: string): Promise<string> {
         );
       }
     }
+    // A document they opened lately, where the schema has it (0132): theirs alone.
+    const opens = await c.query<{ has: boolean }>(
+      "select to_regclass('public.document_recent_open') is not null as has",
+    );
+    if (opens.rows[0]?.has) {
+      await c.query(
+        `insert into document_recent_open (household_id, member_id, document_id)
+         values ($1, $2, (select id from document where household_id = $1 order by id limit 1))`,
+        [hh, m.rows[0]?.id],
+      );
+    }
     // A caregiver for Two's medical papers, a look they took, and Two's
     // turning-18 question, where the schema has them (0098, H1b).
     const care = await c.query<{ has: boolean }>(

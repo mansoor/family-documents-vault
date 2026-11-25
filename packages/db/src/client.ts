@@ -2352,6 +2352,18 @@ export interface Schema {
   };
 
   /**
+   * A document somebody opened, and when they last did (0132,
+   * 0.9.0-dev.102): theirs alone, the newest 50 kept, gone with the paper or
+   * with them. Listed only while they may still open the paper.
+   */
+  document_recent_open: {
+    household_id: string;
+    member_id: string;
+    document_id: string;
+    opened_at: GeneratedTimestamp;
+  };
+
+  /**
    * The household's "Same as" list (0129, 0.9.0-dev.91): an issuer key said
    * to be the same issuer as another, one level only. Read by the household,
    * written by owners and adults.

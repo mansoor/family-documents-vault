@@ -6,6 +6,8 @@ import {
   isDocumentSort,
   NOTES_MAX,
   ORIGINAL_PLACE_MOST,
+  RECENTLY_OPENED_DEFAULT,
+  RECENTLY_OPENED_MAX,
   type CaptureMetadata,
 } from '@fdv/shared';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
@@ -503,6 +505,25 @@ export function registerDocuments(
     const d = await docs.get(principal(req), req.params.id);
     reply.header('etag', d.etag);
     return d;
+  });
+
+  // The documents the caller opened most recently, for Home's Recent
+  // (0.9.0-dev.102): their own alone. An app says each open as its person
+  // opens a document — never a document fetched for a list, a search or a
+  // ⋯ — and reading one (GET above) remembers nothing.
+  const recentQuery = z.object({
+    limit: z.coerce.number().int().min(1).max(RECENTLY_OPENED_MAX).optional(),
+  });
+  app.get('/api/v1/me/recently-opened', auth, async (req) => ({
+    items: await docs.recentlyOpened(
+      principal(req),
+      parse(recentQuery, req.query).limit ?? RECENTLY_OPENED_DEFAULT,
+    ),
+  }));
+  const openedBody = z.object({ document_id: z.string().uuid() }).strict();
+  app.post('/api/v1/me/recently-opened', auth, async (req, reply) => {
+    await docs.noteOpened(principal(req), parse(openedBody, req.body ?? {}).document_id);
+    return reply.status(204).send();
   });
 
   app.patch<{ Params: { id: string } }>('/api/v1/documents/:id', auth, async (req, reply) => {

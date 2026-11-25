@@ -141,6 +141,7 @@ import type {
   SharedNote,
   SharedSession,
   NotesList,
+  RecentlyOpened,
   ShareInput,
   ShareLinkPreview,
   SharePreview,
@@ -1302,6 +1303,29 @@ export function createApi(http: Http) {
       request<NotesList>(`/api/v1/notes${qs(params)}`, { token }),
     document: (token: string, id: string) =>
       request<DocumentView>(`/api/v1/documents/${id}`, { token }),
+    /**
+     * The documents this person opened most recently (0.9.0-dev.102,
+     * `features.recently_opened`): newest open first, each once, `limit` of
+     * them (5 unless asked, at most 50) — only those they may open now, out
+     * of the Trash, never a note. Nobody is given anybody else's.
+     */
+    recentlyOpened: (token: string, opts: { limit?: number } = {}) =>
+      request<RecentlyOpened>(`/api/v1/me/recently-opened${qs({ limit: opts.limit })}`, {
+        token,
+      }),
+    /**
+     * This person opened a document — its page, or beside a list — for
+     * `recentlyOpened` (0.9.0-dev.102, `features.recently_opened`). Send it
+     * only as they open it: never for a document fetched for a list, a
+     * search or a menu. One in the Trash, or a note, is not remembered; one
+     * they may not open is `404 not_found`.
+     */
+    openedDocument: (token: string, documentId: string) =>
+      request<void>('/api/v1/me/recently-opened', {
+        method: 'POST',
+        body: { document_id: documentId },
+        token,
+      }),
     /**
      * A new document, or a note. `idempotencyKey` (a vault with
      * `features.idempotent_create`, 0.9.0-dev.45): the same key and body sent

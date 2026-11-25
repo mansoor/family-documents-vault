@@ -877,6 +877,16 @@ export interface CapabilityFeatures {
    * older vaults, which ask 10 characters and nothing else.
    */
   password_rules?: boolean;
+  /**
+   * The documents somebody opened most recently (0.9.0-dev.102): `GET
+   * /me/recently-opened` (`RecentlyOpened`) lists the caller's own, newest
+   * open first, each once — only those they may open now, out of the Trash,
+   * never a note. `POST /me/recently-opened` `{ document_id }` says the
+   * person opened one (its page, or beside a list): sent only when they
+   * open it, never for a document fetched for a list, a search or a menu.
+   * Absent from older vaults, which remember no opens.
+   */
+  recently_opened?: boolean;
 }
 
 export interface CapabilityLimits {

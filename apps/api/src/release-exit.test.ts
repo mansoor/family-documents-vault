@@ -1198,6 +1198,14 @@ const RULES: Record<string, Rule> = {
   'GET /api/v1/household/auto-lock': { who: 'signedIn' },
   'PUT /api/v1/household/auto-lock': { who: 'owners', body: () => ({ minutes: 5 }) },
   'PUT /api/v1/me/auto-lock': { who: 'signedIn', body: () => ({ minutes: 5 }) },
+  // The documents the caller opened most recently (0.9.0-dev.102): their
+  // own list alone, each a document they may open now; an open said of one
+  // they may not open is the 404 of one that is not there, nothing kept.
+  'GET /api/v1/me/recently-opened': { who: 'signedIn' },
+  'POST /api/v1/me/recently-opened': {
+    who: 'signedIn',
+    body: (f) => ({ document_id: f.document }),
+  },
   // 0.9.0: whether every adult must have two-step sign-in — read by
   // everybody signed in, an owner power to change (A54).
   'GET /api/v1/household/two-step': { who: 'signedIn' },
