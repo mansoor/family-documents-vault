@@ -614,3 +614,148 @@ describe('Settings → Tags (0.9.0, T1)', () => {
     await expectAccessible();
   });
 });
+
+describe('recently used tags, on focus (0.9.0-dev.103)', () => {
+  /**
+   * More documents and their tags, each put on at a time of its own: the
+   * higher, the more recently. Gym membership's own are the newest of all.
+   */
+  const MORE = [
+    doc({ id: 'doc-4', title: 'Tax return', tags: ['tax'] }),
+    doc({ id: 'doc-5', title: 'House deeds', tags: ['house'] }),
+    doc({ id: 'doc-6', title: 'Car and school', tags: ['car', 'school'] }),
+  ];
+  const USES = {
+    'doc-1': { 'locker: 12': 10, travel: 3 },
+    'doc-2': { 'locker: 7': 7, 'policy holder: ahmed': 6 },
+    'doc-3': { travel: 3 },
+    'doc-4': { tax: 9 },
+    'doc-5': { house: 8 },
+    'doc-6': { car: 5, school: 4 },
+  };
+  const atRecent = (path: string) =>
+    at(path, {
+      documents: [GYM, POOL, SARAS, ...MORE],
+      tagUses: structuredClone(USES),
+      tagUseTick: 10,
+    });
+  const pills = (group: HTMLElement) =>
+    within(group)
+      .getAllByRole('button')
+      .map((b) => b.getAttribute('aria-label'));
+
+  it('offers the five used most recently once the field has the focus, but those it has', async () => {
+    const state = atRecent('/documents/doc-1');
+    const section = await tags();
+    const field = within(section).getByRole('textbox', { name: 'Add a tag' });
+    expect(within(section).queryByRole('group', { name: 'Recently used' })).toBeNull();
+    fireEvent.focus(field);
+    const recent = await within(section).findByRole('group', { name: 'Recently used' });
+    // Asked for by the most recent, with room for the two this one has.
+    expect(state.calls.map((c) => c.url)).toContain('/api/v1/tags?limit=7&sort=recent');
+    // Its own locker: 12 and travel are never offered.
+    expect(pills(recent)).toEqual([
+      'Add: tax',
+      'Add: house',
+      'Add: Locker: 7',
+      'Add: Policy holder: Ahmed',
+      'Add: car',
+    ]);
+    expect(recent).toHaveTextContent(/^Recently used/);
+    // Heard with the field while they show.
+    const caption = recent.getAttribute('aria-labelledby') ?? 'none';
+    expect(field.getAttribute('aria-describedby')?.split(' ')).toContain(caption);
+    await expectAccessible();
+    // Typing: those that fit, as before.
+    fireEvent.change(field, { target: { value: 'sc' } });
+    const offered = await within(section).findByRole('group', { name: 'Tags already used' });
+    await waitFor(() => expect(pills(offered)).toEqual(['Add: school']));
+    expect(within(section).queryByRole('group', { name: 'Recently used' })).toBeNull();
+    expect(field.getAttribute('aria-describedby')?.split(' ')).not.toContain(caption);
+    // Nothing typed again: the recently used again.
+    fireEvent.change(field, { target: { value: '' } });
+    await within(section).findByRole('group', { name: 'Recently used' });
+    // One picked is added, as one typed is.
+    fireEvent.click(within(section).getByRole('button', { name: 'Add: tax' }));
+    await within(section).findByRole('link', { name: 'Documents tagged tax' });
+    expect(patches(state)).toEqual([
+      ['/api/v1/documents/doc-1', { tags: ['locker: 12', 'travel', 'tax'] }, '"doc-1"'],
+    ]);
+  });
+
+  it('a tag just added is first, here and on the next document', async () => {
+    const state = atRecent('/documents/doc-1');
+    let section = await tags();
+    let field = within(section).getByRole('textbox', { name: 'Add a tag' });
+    fireEvent.focus(field);
+    await within(section).findByRole('group', { name: 'Recently used' });
+    fireEvent.change(field, { target: { value: 'Brand new' } });
+    fireEvent.click(within(section).getByRole('button', { name: 'Add' }));
+    await within(section).findByRole('link', { name: 'Documents tagged brand new' });
+    // On another document's page, the field given the focus: first.
+    cleanup();
+    window.history.replaceState({}, '', '/documents/doc-2');
+    installFakeApiAgain(state);
+    section = await tags();
+    field = within(section).getByRole('textbox', { name: 'Add a tag' });
+    fireEvent.focus(field);
+    const recent = await within(section).findByRole('group', { name: 'Recently used' });
+    await waitFor(() =>
+      expect(pills(recent)).toEqual([
+        'Add: brand new',
+        'Add: Locker: 12',
+        'Add: tax',
+        'Add: house',
+        'Add: car',
+      ]),
+    );
+  });
+
+  it('offers them when tags are added to many at once too', async () => {
+    atRecent('/documents');
+    const t = await screen.findByRole('grid', { name: /^Documents, sorted by/ });
+    fireEvent.click(await within(t).findByRole('checkbox', { name: 'Select “Tax return”' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Tags' }));
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Add a tag…' }));
+    const sheet = screen.getByRole('dialog', { name: 'Add a tag to 1 document' });
+    fireEvent.focus(within(sheet).getByRole('textbox', { name: 'Tag' }));
+    const recent = await within(sheet).findByRole('group', { name: 'Recently used' });
+    expect(pills(recent)).toEqual([
+      'Add to 1 document: Locker: 12',
+      'Add to 1 document: tax',
+      'Add to 1 document: house',
+      'Add to 1 document: Locker: 7',
+      'Add to 1 document: Policy holder: Ahmed',
+    ]);
+  });
+
+  it('the Documents filter offers a tag just added, the most recently used first', async () => {
+    const state = atRecent('/documents');
+    const t = await screen.findByRole('grid', { name: /^Documents, sorted by/ });
+    await waitFor(() => expect(within(t).getAllByRole('row')).toHaveLength(7));
+    const filters = screen.getByRole('group', { name: 'Filters' });
+    const choices = () =>
+      within(openFilter(filters, 'Tag'))
+        .getAllByRole('checkbox')
+        .map((o) => o.closest('.check')?.textContent);
+    await waitFor(() => expect(choices()[0]).toBe('Locker · 12'));
+    expect(choices()).not.toContain('fresh');
+    fireEvent.keyDown(document, { key: 'Escape' });
+    // Added to one of them from the bar for the chosen.
+    fireEvent.click(within(t).getByRole('checkbox', { name: 'Select “Tax return”' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Tags' }));
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Add a tag…' }));
+    const sheet = screen.getByRole('dialog', { name: 'Add a tag to 1 document' });
+    fireEvent.change(within(sheet).getByRole('textbox', { name: 'Tag' }), {
+      target: { value: 'fresh' },
+    });
+    fireEvent.click(within(sheet).getByRole('button', { name: 'Add to 1 document' }));
+    expect(await screen.findByText('“fresh” added to 1 document.')).toBeVisible();
+    // There at once, first.
+    await waitFor(() => expect(choices()[0]).toBe('fresh'));
+    fireEvent.keyDown(document, { key: 'Escape' });
+    // One somebody else added (another tab): there once the filter is opened again.
+    (state.documents.find((d) => d.id === 'doc-5') as { tags: string[] }).tags.push('elsewhere');
+    await waitFor(() => expect(choices()).toContain('elsewhere'));
+  });
+});

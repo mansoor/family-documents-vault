@@ -887,6 +887,15 @@ export interface CapabilityFeatures {
    * Absent from older vaults, which remember no opens.
    */
   recently_opened?: boolean;
+  /**
+   * The tags used most recently (0.9.0-dev.103): `GET /tags?sort=recent`
+   * (`TagSort`) lists the tag put on a document most recently first — of
+   * the documents the reader can see, out of the Trash, and while they
+   * carry it — for a tag field's "Recently used" (`RECENT_TAGS_OFFERED`)
+   * before anything is typed. Absent from older vaults, which take no
+   * `sort` there.
+   */
+  recent_tags?: boolean;
 }
 
 export interface CapabilityLimits {

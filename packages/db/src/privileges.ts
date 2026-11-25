@@ -59,6 +59,11 @@ begin
   if to_regclass('public.master_key_canary') is not null then
     revoke insert, update, delete on public.master_key_canary from fdv_app;
   end if;
+  -- When each tag was put on each document (0133): written by its trigger
+  -- alone, with the owning role's rights; read by the API.
+  if to_regclass('public.document_tag_use') is not null then
+    revoke insert, update, delete on public.document_tag_use from fdv_app;
+  end if;
   if to_regprocedure('public.invitation_household(bytea)') is not null then
     grant execute on function public.invitation_household(bytea) to fdv_app;
   end if;

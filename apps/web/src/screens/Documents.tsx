@@ -129,6 +129,7 @@ import {
   useTrashedNote,
   type Removed,
 } from '../DocActions.js';
+import { tagsChanged, useTagsVersion } from '../tag-store.js';
 import { TagField } from '../tags.js';
 import { useSelect } from './SearchPeople.js';
 import { LinksChoiceDialog, linksAsk, linksChoice, type LinksAsk } from './Visibility.js';
@@ -219,10 +220,26 @@ export function useKnown(): Known {
     async (t) => (hasCollections ? (await api.collections(t)).items : []),
     [authVersion, hasCollections],
   );
-  // Every tag the reader can see, for the filters by a tag and by a detail's label (T1).
-  const { data: tags, error: tagsError } = useLoad(
-    async (t) => (await api.tags(t, undefined, { limit: 1000 })).items.map((x) => x.tag),
-    [authVersion],
+  // Every tag the reader can see, for the filters by a tag and by a detail's label (T1):
+  // since 0.9.0-dev.103 the most recently used first, and read again when a
+  // tag is added, taken off, renamed or deleted in this tab, and as the
+  // filter is opened (somebody else's, or another tab's).
+  const tagChanges = useTagsVersion();
+  const recentFirst = caps?.features.recent_tags === true;
+  const {
+    data: tags,
+    error: tagsError,
+    reload: reloadTags,
+  } = useLoad(
+    async (t) =>
+      (
+        await api.tags(
+          t,
+          undefined,
+          recentFirst ? { limit: 1000, sort: 'recent' } : { limit: 1000 },
+        )
+      ).items.map((x) => x.tag),
+    [authVersion, tagChanges, recentFirst],
   );
   return {
     settled: members !== null && types !== null && collections !== null && tags !== null,
@@ -234,6 +251,7 @@ export function useKnown(): Known {
     collections: collections ?? [],
     tags: tags ?? [],
     sensitive: caps?.features.sensitive_documents === true,
+    reloadTags: () => void reloadTags(),
   };
 }
 
@@ -364,6 +382,8 @@ export interface Known {
   settled?: boolean;
   /** What could not be loaded, said where it matters. */
   failed?: string | null;
+  /** The tags read again (0.9.0-dev.103): as the filter by a tag or a detail is opened. */
+  reloadTags?: () => void;
 }
 
 // ------------------------------------------------------------- the pages
@@ -793,6 +813,7 @@ function TableFilter(props: {
       find={FIND_WORDS[k]}
       field={k}
       room={ADDRESS_ROOM - paramsOf(view).toString().length}
+      onOpen={k === 'tag' || k === 'label' ? props.known.reloadTags : undefined}
       onChange={props.onChange}
     />
   );
@@ -2201,6 +2222,8 @@ function BulkBar(props: {
       return withToken((t) => api.updateDocument(t, d.id, { tags }, d.etag));
     });
     const changed = r.done.length - asWas.filter((d) => r.done.includes(d)).length;
+    // The filter by a tag offers it (or no longer does) at once.
+    if (changed > 0) tagsChanged();
     const shown = `“${tagWords(tag).text}”`;
     const already = asWas.length;
     finish({

@@ -206,6 +206,8 @@ describe('buildCapabilities', () => {
       password_rules: true,
       // The documents somebody opened most recently (0.9.0-dev.102).
       recently_opened: true,
+      // The tags used most recently (0.9.0-dev.103).
+      recent_tags: true,
     });
     // Never on the hosted edition, whose operator keeps the backups.
     expect(buildCapabilities({ ...config, edition: 'hosted' }).features).not.toHaveProperty(

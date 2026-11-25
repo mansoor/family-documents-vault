@@ -860,6 +860,18 @@ async function seed(url: string): Promise<string> {
         [hh, m.rows[0]?.id],
       );
     }
+    // A tag on a document, and when it was put there, where the schema has
+    // it (0133): the database writes it as the tag is put on.
+    const tagUse = await c.query<{ has: boolean }>(
+      "select to_regclass('public.document_tag_use') is not null as has",
+    );
+    if (tagUse.rows[0]?.has) {
+      await c.query(
+        `update document set tags = array['travel']
+          where id = (select id from document where household_id = $1 order by id limit 1)`,
+        [hh],
+      );
+    }
     // A caregiver for Two's medical papers, a look they took, and Two's
     // turning-18 question, where the schema has them (0098, H1b).
     const care = await c.query<{ has: boolean }>(

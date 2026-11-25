@@ -1200,6 +1200,14 @@ export interface FakeState {
    */
   tagManagement?: boolean;
   /**
+   * When each tag was put on each document (0.9.0-dev.103), by document id
+   * and the tag as compared: a count that only goes up. Stamped before and
+   * after every request, as the vault's database stamps them as tags
+   * change; GET /tags?sort=recent lists the newest first.
+   */
+  tagUses?: Record<string, Record<string, number>>;
+  tagUseTick?: number;
+  /**
    * How many of a tag's documents the signed-in person may not change (a
    * teen's of the family's), by tag: GET /tags's `changeable` is the rest,
    * and a rename or a delete keeps it on them.
@@ -1549,9 +1557,34 @@ export function installFakeApi(state: FakeState) {
     const body = typeof init?.body === 'string' ? (JSON.parse(init.body) as unknown) : undefined;
     state.calls.push({ method, url, body, headers: init?.headers as Record<string, string> });
     const held = state.hold?.(method, path);
-    const answer = () => respond(url, method, path, query, body, init);
+    const answer = () => {
+      stampTags();
+      const r = respond(url, method, path, query, body, init);
+      stampTags();
+      return r;
+    };
     return held ? held.then(answer) : answer();
   });
+  /** Each tag put on a document since the last look stamped, each taken off forgotten (0.9.0-dev.103). */
+  const stampTags = () => {
+    const uses = (state.tagUses ??= {});
+    const tick = (state.tagUseTick ?? 0) + 1;
+    let used = false;
+    for (const d of state.documents) {
+      const keys = new Set(
+        ((d.tags as string[] | undefined) ?? []).map(tagKey).filter((k) => k !== ''),
+      );
+      const had = (uses[d.id as string] ??= {});
+      for (const k of Object.keys(had)) if (!keys.has(k)) delete had[k];
+      for (const k of keys) {
+        if (had[k] === undefined) {
+          had[k] = tick;
+          used = true;
+        }
+      }
+    }
+    if (used) state.tagUseTick = tick;
+  };
 
   const respond = (
     url: string,
@@ -1792,6 +1825,8 @@ export function installFakeApi(state: FakeState) {
           ...(state.passwordRules ? { password_rules: true } : {}),
           // The documents somebody opened most recently (0.9.0-dev.102).
           recently_opened: true,
+          // The tags used most recently (0.9.0-dev.103).
+          recent_tags: true,
           // Who opened a link; health records kept as they are (0.9.0, H5).
           ...(state.linkOpenings ? { share_opens: true, record_formats: true } : {}),
           // Caregivers and turning 18 (0.9.0, H1b): said when a test asks.
@@ -6550,17 +6585,26 @@ export function installFakeApi(state: FakeState) {
       // counts them: whatever their case, those starting with `q`, with a
       // detail tag's halves and how many the person may change (T1).
       const q = (query.get('q') ?? '').replace(/\s+/g, ' ').replace(/^ /, '').toLowerCase();
-      const counts = new Map<string, { tag: string; count: number }>();
+      // Since 0.9.0-dev.103, `sort=recent`: the one put on a document most recently first.
+      const recent = query.get('sort') === 'recent';
+      const counts = new Map<string, { tag: string; count: number; used: number }>();
       for (const d of state.documents.filter((x) => !x.deleted_at)) {
         for (const t of (d.tags as string[] | undefined) ?? []) {
           if (!tagKey(t).startsWith(q)) continue;
           const had = counts.get(tagKey(t));
-          counts.set(tagKey(t), { tag: had?.tag ?? t, count: (had?.count ?? 0) + 1 });
+          counts.set(tagKey(t), {
+            tag: had?.tag ?? t,
+            count: (had?.count ?? 0) + 1,
+            used: Math.max(had?.used ?? 0, state.tagUses?.[d.id as string]?.[tagKey(t)] ?? 0),
+          });
         }
       }
       return json({
         items: [...counts.values()]
-          .sort((a, b) => b.count - a.count || a.tag.localeCompare(b.tag))
+          .sort(
+            (a, b) =>
+              (recent ? b.used - a.used : 0) || b.count - a.count || a.tag.localeCompare(b.tag),
+          )
           .slice(0, Number(query.get('limit') ?? 50))
           .map(({ tag, count }) => {
             const detail = tagDetail(tag);

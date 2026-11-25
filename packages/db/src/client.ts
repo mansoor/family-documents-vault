@@ -2364,6 +2364,18 @@ export interface Schema {
   };
 
   /**
+   * When a tag was last put on a document (0133, 0.9.0-dev.103): written
+   * by the database alone, as tags change; read only beside the documents
+   * the reader can see, for the tags they used most recently.
+   */
+  document_tag_use: {
+    household_id: string;
+    document_id: string;
+    tag_key: string;
+    used_at: GeneratedTimestamp;
+  };
+
+  /**
    * The household's "Same as" list (0129, 0.9.0-dev.91): an issuer key said
    * to be the same issuer as another, one level only. Read by the household,
    * written by owners and adults.

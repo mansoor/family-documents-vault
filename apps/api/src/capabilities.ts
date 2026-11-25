@@ -313,6 +313,9 @@ export function buildCapabilities(config: CapabilityConfig): Capabilities {
       // 0.9.0-dev.102: the documents somebody opened most recently, theirs
       // alone (GET and POST /me/recently-opened).
       recently_opened: true,
+      // 0.9.0-dev.103: the tags put on a document most recently first, of
+      // those the caller can see (GET /tags?sort=recent).
+      recent_tags: true,
       // 0.9.0 (AIR1): the AI reader set in Settings → Reading, unless the
       // operator keeps it out (FDV_AI_READER_SETTINGS=off); and the kinds
       // of reader this vault reads with — Ollama, Anthropic and an

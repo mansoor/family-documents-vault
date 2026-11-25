@@ -7741,6 +7741,17 @@ html:has(.shell-phone):has(.has-toast) {
   flex: none;
 }
 
+/* "Recently used" above its pills (0.9.0-dev.103). */
+.tag-offers-h {
+  flex-basis: 100%;
+  font-size: 14px;
+}
+
+/* A field of tags and its pills: laid out as the form's own fields. */
+.tag-picks {
+  display: contents;
+}
+
 .tag-warn {
   margin: 0;
   font-weight: 600;

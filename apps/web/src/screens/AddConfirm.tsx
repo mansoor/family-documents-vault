@@ -104,6 +104,7 @@ import { DocPanes } from '../doc-panes.js';
 import { useShellMode } from '../shell.js';
 import { DocumentPages } from './Document.js';
 import { storedRole } from '../session.js';
+import { TagPicks } from '../tags.js';
 import {
   bodyOf,
   draftOf,
@@ -2083,33 +2084,39 @@ export function ConfirmForm(props: {
                 role={myRole}
               />
             )}
-            <Field
-              id="f-tags"
-              label="Tags"
-              value={tags}
-              onChange={setTags}
-              required={false}
-              placeholder="house, car"
-              hint={(() => {
-                // The folder's tags still on the card, as typed now (S2): said, and no more once removed.
-                const still = (props.folder?.ticked ?? []).filter((t) =>
-                  tagsTyped.has(t.toLowerCase()),
-                );
-                return props.folder && still.length > 0
-                  ? `A comma between tags. ${still.join(', ')}: ${folderWords(props.folder.path)}.`
-                  : 'A comma between tags.';
-              })()}
-              // Who sees them, and a tag that looks like a secret, said (0.9.0, T1).
-              note={(() => {
-                const secret = tags.split(',').find((t) => looksSecret(t));
-                return (
-                  <>
-                    <p>{TAGS_SEEN_NOTE}</p>
-                    {secret && <p className="status-warn">{secretTagWarning(secret)}</p>}
-                  </>
-                );
-              })()}
-            />
+            {/* The tags used most recently, and those that fit, as pills (0.9.0-dev.103). */}
+            <TagPicks id="f-tags" value={tags} onChange={setTags} busy={busy}>
+              {(describedBy) => (
+                <Field
+                  id="f-tags"
+                  label="Tags"
+                  value={tags}
+                  onChange={setTags}
+                  required={false}
+                  placeholder="house, car"
+                  hint={(() => {
+                    // The folder's tags still on the card, as typed now (S2): said, and no more once removed.
+                    const still = (props.folder?.ticked ?? []).filter((t) =>
+                      tagsTyped.has(t.toLowerCase()),
+                    );
+                    return props.folder && still.length > 0
+                      ? `A comma between tags. ${still.join(', ')}: ${folderWords(props.folder.path)}.`
+                      : 'A comma between tags.';
+                  })()}
+                  // Who sees them, and a tag that looks like a secret, said (0.9.0, T1).
+                  note={(() => {
+                    const secret = tags.split(',').find((t) => looksSecret(t));
+                    return (
+                      <>
+                        <p>{TAGS_SEEN_NOTE}</p>
+                        {secret && <p className="status-warn">{secretTagWarning(secret)}</p>}
+                      </>
+                    );
+                  })()}
+                  describedBy={describedBy}
+                />
+              )}
+            </TagPicks>
             {(() => {
               // Tags the folder's name proposes and the card does not tick (S2):
               // offered, made only if accepted with them.

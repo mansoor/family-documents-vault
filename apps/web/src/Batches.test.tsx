@@ -11,6 +11,7 @@ import {
   fresh,
   installFakeApi,
   ME,
+  PASSPORT,
   signedIn,
   type FakeBatch,
   type FakeCollection,
@@ -319,6 +320,57 @@ describe('Add many documents (I1)', () => {
       '#house',
       'Essential',
     ]);
+  });
+
+  it('offers the tags used most recently once Tags has the focus, and those that fit as one is typed (0.9.0-dev.103)', async () => {
+    at('/add/many', {
+      documents: [
+        { ...PASSPORT, id: 'doc-1', tags: ['old', 'travel'] },
+        { ...PASSPORT, id: 'doc-2', tags: ['house'] },
+      ],
+      tagUses: { 'doc-1': { old: 1, travel: 2 }, 'doc-2': { house: 3 } },
+      tagUseTick: 3,
+    });
+    await screen.findByRole('heading', { name: 'Add many documents' });
+    const field = screen.getByLabelText('Tags');
+    fireEvent.focus(field);
+    const names = (group: HTMLElement) =>
+      within(group)
+        .getAllByRole('button')
+        .map((b) => b.getAttribute('aria-label'));
+    const recent = await screen.findByRole('group', { name: 'Recently used' });
+    expect(names(recent)).toEqual(['Add the tag house', 'Add the tag travel', 'Add the tag old']);
+    // Picked: in the field, a comma after it, and no longer offered.
+    fireEvent.click(within(recent).getByRole('button', { name: 'Add the tag travel' }));
+    expect(field).toHaveValue('travel, ');
+    expect(field).toHaveFocus();
+    await waitFor(() =>
+      expect(names(screen.getByRole('group', { name: 'Recently used' }))).toEqual([
+        'Add the tag house',
+        'Add the tag old',
+      ]),
+    );
+    // Typing after it: those that fit, in its place.
+    fireEvent.change(field, { target: { value: 'travel, ho' } });
+    const fits = await screen.findByRole('group', { name: 'Tags already used' });
+    await waitFor(() => expect(names(fits)).toEqual(['Add the tag house']));
+    fireEvent.click(within(fits).getByRole('button', { name: 'Add the tag house' }));
+    expect(field).toHaveValue('travel, house, ');
+    // Heard with the field while they show.
+    const recentAgain = await screen.findByRole('group', { name: 'Recently used' });
+    expect(field.getAttribute('aria-describedby')?.split(' ')).toContain(
+      recentAgain.getAttribute('aria-labelledby'),
+    );
+    // A tag typed between two others: the one the caret is in is what is offered
+    // for, and picked in its place; the others are left as they were typed.
+    fireEvent.change(field, { target: { value: 'travel,  ol,old-papers' } });
+    (field as HTMLInputElement).setSelectionRange(10, 10);
+    fireEvent.keyUp(field);
+    const between = await screen.findByRole('group', { name: 'Tags already used' });
+    await waitFor(() => expect(names(between)).toEqual(['Add the tag old']));
+    fireEvent.click(within(between).getByRole('button', { name: 'Add the tag old' }));
+    expect(field).toHaveValue('travel, old,old-papers');
+    expect((field as HTMLInputElement).selectionStart).toBe(11);
   });
 
   it('one file after another, each one’s progress and all of it, said as each arrives; a file refused is said, and the rest carry on', async () => {

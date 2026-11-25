@@ -147,6 +147,8 @@ export function MultiFilter(props: {
   /** The field the address gives it under, and what is left of the address (`ADDRESS_ROOM`). */
   field?: string | undefined;
   room?: number | undefined;
+  /** As it is opened: its choices read again (a tag added in another tab, 0.9.0-dev.103). */
+  onOpen?: (() => void) | undefined;
 }) {
   const unknown = props.unknown ?? ((v: string) => v);
   const [open, setOpen] = useState(false);
@@ -309,7 +311,10 @@ export function MultiFilter(props: {
         aria-label={`${props.label}: ${summary}`}
         aria-expanded={open}
         aria-controls={open ? boxId : undefined}
-        onClick={() => setOpen((o) => !o)}
+        onClick={() => {
+          if (!open) props.onOpen?.();
+          setOpen(!open);
+        }}
       >
         {summary}
         <Caret />

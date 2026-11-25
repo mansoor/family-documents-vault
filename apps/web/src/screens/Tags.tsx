@@ -18,6 +18,7 @@ import { api, ApiRequestError } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
 import { storedRole } from '../session.js';
 import { useShellMode } from '../shell.js';
+import { tagsChanged } from '../tag-store.js';
 import { tagHref, TagText } from '../tags.js';
 import { Button, ConfirmDialog, ErrorNote, Field, Sheet, TopBar } from '../ui.js';
 
@@ -84,6 +85,8 @@ export function TagsScreen() {
   const done = async (r: TagChangeResult | null, words: string) => {
     if (!r) return;
     setSaid(outcomeWords(r, words));
+    // Read again here, and by the Documents filter.
+    tagsChanged();
     await reload();
     window.setTimeout(() => status.current?.focus(), 0);
   };

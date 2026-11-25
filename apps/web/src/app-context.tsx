@@ -633,20 +633,27 @@ export function useLoad<T>(
   const [loading, setLoading] = useState(inHand === null);
   const [declined, setDeclined] = useState(false);
 
+  // Each ask numbered: an answer to an older one that comes after a newer
+  // one's is let go, so what is shown is never older than what was asked
+  // last (a list read again twice in quick succession, 0.9.0-dev.103).
+  const asked = useRef(0);
   const run = useCallback(async () => {
+    const mine = ++asked.current;
     setLoading(true);
     setDeclined(false);
     try {
       const r = asks ? await guarded(load) : await withToken(load);
+      if (mine !== asked.current) return;
       if (r !== null) setData(r);
       else if (asks) setDeclined(true);
       setError(null);
       setErrorCode(null);
     } catch (err) {
+      if (mine !== asked.current) return;
       setError(describeError(err));
       setErrorCode(err instanceof ApiRequestError ? err.code : null);
     } finally {
-      setLoading(false);
+      if (mine === asked.current) setLoading(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [withToken, guarded, asks, depsKey]);

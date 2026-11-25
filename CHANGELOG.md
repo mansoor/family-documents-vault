@@ -6,6 +6,15 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.9.0-dev.103] - 2026-11-25 — recently used tags
+
+### Added
+
+- **A tag field offers the tags used most recently as soon as you click into it.** Before you type anything, the five tags put on a document most recently show as pills under "Recently used", so the ones you are using this week are a click away. Start typing and the pills change to the tags that fit what you typed, as before. Tags the document already has are never offered. A tag you have just added is first the next time. They are offered wherever you add tags: on a document's or a note's page, when adding a tag to several documents at once, on a card in the Inbox, and in Add many documents' "Tags". There, picking one puts it in the field with a comma after it, ready for the next.
+- **The Documents filter by a tag lists the most recently used first**, and a tag you have just added is there straight away, without going to another page. Opening the filter also picks up tags added in another tab or by somebody else.
+- Only tags on documents you can see are offered or listed, and a tag's place in the list only counts the documents you can see: a tag somebody keeps on an Only me document is never shown to anybody else, and does not move a tag up their list either. A tag you delete in Settings → Tags, or that is no longer on anything you can see, drops out.
+- **For apps:** `GET /api/v1/tags?sort=recent` lists the tags put on a document most recently first. The vault says it has it with `features.recent_tags`, so the phone app can offer recently used tags later.
+
 ## [0.9.0-dev.102] - 2026-11-24 — Recent on Home, with what you opened; and Print from Home and the cabinet
 
 ### Added
