@@ -4,6 +4,7 @@ import {
   looksSecret,
   normaliseTag,
   normaliseTags,
+  recentTagOffers,
   secretTagWarning,
   TAG_MAX,
   tagDetail,
@@ -149,6 +150,21 @@ describe('tags (0.9.0, T1)', () => {
     expect(tagSuggestions('t', known, [])).toEqual(['travel', 'tax']);
     expect(tagSuggestions('lo', known, ['locker: 12'])).toEqual(['locker: 7']);
     expect(tagSuggestions('', known, [])).toEqual([]);
+  });
+
+  it('offers a tag once whatever its case, the first spelling kept', () => {
+    const known = [
+      { tag: 'agent: sam lee', count: 1 },
+      { tag: 'agent: Sam Lee', count: 3 },
+      { tag: 'renew', count: 2 },
+      { tag: 'Renew', count: 1 },
+    ];
+    expect(tagSuggestions('agent: s', known, [])).toEqual(['agent: Sam Lee']);
+    expect(tagSuggestions('re', known, [])).toEqual(['renew']);
+    expect(tagSuggestions('re', known, ['RENEW'])).toEqual([]);
+    expect(recentTagOffers(known, [])).toEqual(['agent: sam lee', 'renew']);
+    expect(recentTagOffers(known, ['Agent: SAM LEE'])).toEqual(['renew']);
+    expect(recentTagOffers(known, [], 1)).toEqual(['agent: sam lee']);
   });
 
   it('groups detail tags by label for Settings', () => {
