@@ -2047,6 +2047,10 @@ const ACTOR_GUARDED = [
   // The documents somebody opened most recently (0132, 0.9.0-dev.102):
   // theirs alone, and the vault's.
   'document_recent_open',
+  // When each tag was put on each document (0133, 0.9.0-dev.103): the
+  // family's who are signed in, beside a document they can see, and the
+  // vault's.
+  'document_tag_use',
 ];
 
 /**
@@ -2243,6 +2247,8 @@ const RESTRICTED = [
   'doc_collection_item',
   'incoming_file',
   'document_tombstone',
+  // When each tag was put on each document (0133, 0.9.0-dev.103).
+  'document_tag_use',
   'audit_event',
   'member',
   'member_photo',

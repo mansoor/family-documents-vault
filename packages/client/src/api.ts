@@ -35,6 +35,7 @@ import type {
   UploadStatus,
   IssuerCount,
   TagChangeResult,
+  TagSort,
   TagView,
   DetailSuggestions,
   RenewalInput,
@@ -1119,11 +1120,15 @@ export function createApi(http: Http) {
      * Since 0.9.0 (`features.tag_details`) whatever their case, up to
      * `limit` (1,000 at most), each with a detail tag's `label` and `value`
      * and how many of its documents this person may change (`changeable`).
+     * Since 0.9.0-dev.103 (`features.recent_tags`), `sort: 'recent'` lists the
+     * one put on a document most recently first: a tag field's "Recently
+     * used" (`RECENT_TAGS_OFFERED`) before anything is typed.
      */
-    tags: (token: string, q?: string, opts: { limit?: number } = {}) =>
-      request<{ items: TagView[] }>(`/api/v1/tags${qs({ q, limit: opts.limit })}`, {
-        token,
-      }),
+    tags: (token: string, q?: string, opts: { limit?: number; sort?: TagSort } = {}) =>
+      request<{ items: TagView[] }>(
+        `/api/v1/tags${qs({ q, limit: opts.limit, sort: opts.sort })}`,
+        { token },
+      ),
     /**
      * A tag renamed on every document this person may change (0.9.0,
      * `features.tag_management`). Into a tag their documents carry already

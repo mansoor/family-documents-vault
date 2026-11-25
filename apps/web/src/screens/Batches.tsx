@@ -48,6 +48,7 @@ import { LearnedFromYou } from '../batch-learning.js';
 import { BATCH_ACCEPT, folderRecordsLeftOutWords } from '../batch-upload.js';
 import { CollectionSelect, mayChangeCollection } from '../collections.js';
 import { storedRole } from '../session.js';
+import { TagPicks } from '../tags.js';
 import { useShellMode } from '../shell.js';
 import { useShortcutsOn } from '../shortcuts.js';
 import { useGrid } from '../table-grid.js';
@@ -766,16 +767,22 @@ function AddMany({ visit }: { visit: string }) {
                   role={role}
                 />
               )}
-              <Field
-                id="b-tags"
-                label="Tags"
-                value={tags}
-                onChange={setTags}
-                required={false}
-                placeholder="house, old papers"
-                hint="A comma between tags."
-                note={TAGS_SEEN_NOTE}
-              />
+              {/* The tags used most recently, and those that fit, as pills (0.9.0-dev.103). */}
+              <TagPicks id="b-tags" value={tags} onChange={setTags} busy={locked}>
+                {(describedBy) => (
+                  <Field
+                    id="b-tags"
+                    label="Tags"
+                    value={tags}
+                    onChange={setTags}
+                    required={false}
+                    placeholder="house, old papers"
+                    hint="A comma between tags."
+                    note={TAGS_SEEN_NOTE}
+                    describedBy={describedBy}
+                  />
+                )}
+              </TagPicks>
               <Switch
                 id="b-essential"
                 label="Essential"

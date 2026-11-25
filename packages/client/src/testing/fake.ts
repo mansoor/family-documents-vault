@@ -158,6 +158,7 @@ import {
   can,
   normaliseTag,
   normaliseTags,
+  TAG_SORTS,
   tagDetail,
   tagKey,
   tagLabelKey,
@@ -518,6 +519,16 @@ export interface FakeVaultState {
    * the paper, out of the Trash, never a note.
    */
   recentlyOpened?: Record<string, Array<{ document_id: string; opened_at: string }>>;
+  /**
+   * When each tag was put on each document (0.9.0-dev.103), by document id
+   * and then the tag as it is compared: a count that only goes up, as the
+   * vault's time does. Kept as the vault's database keeps it — every tag a
+   * request put on is stamped, every one taken off forgotten — however the
+   * request changed them; and a document a test put here itself, its tags
+   * as the first request finds them.
+   */
+  tagUses?: Record<string, Record<string, number>>;
+  tagUseTick?: number;
   /**
    * The household's "Same as" list of issuers (0.9.0-dev.91): an issuer
    * key, from, said to be the same as another, to — one level only.
@@ -3813,7 +3824,40 @@ export function createFakeVault(): {
     return null;
   };
 
+  /**
+   * Each tag put on a document since the last look stamped, each taken off
+   * forgotten (0.9.0-dev.103), as the vault's database does whenever a
+   * document's tags change: before and after every request.
+   */
+  const stampTags = () => {
+    const uses = (state.tagUses ??= {});
+    const tick = (state.tagUseTick ?? 0) + 1;
+    let used = false;
+    const here = new Set<string>();
+    for (const d of state.documents) {
+      here.add(d.id);
+      const keys = new Set((d.tags ?? []).map(tagKey).filter((k) => k !== ''));
+      const had = (uses[d.id] ??= {});
+      for (const k of Object.keys(had)) if (!keys.has(k)) delete had[k];
+      for (const k of keys) {
+        if (had[k] === undefined) {
+          had[k] = tick;
+          used = true;
+        }
+      }
+    }
+    for (const id of Object.keys(uses)) if (!here.has(id)) delete uses[id];
+    if (used) state.tagUseTick = tick;
+  };
   const fetch: FetchLike = async (url, sent) => {
+    stampTags();
+    try {
+      return await answerRequest(url, sent);
+    } finally {
+      stampTags();
+    }
+  };
+  const answerRequest: FetchLike = async (url, sent) => {
     const path = url.replace(/^[a-z]+:\/\/[^/]+/i, '').split('?')[0] as string;
     state.calls.push({ method: sent.method, path });
     if (state.offline) throw new TypeError('Network request failed');
@@ -4155,6 +4199,8 @@ export function createFakeVault(): {
           password_rules: true,
           // The documents somebody opened most recently (0.9.0-dev.102).
           recently_opened: true,
+          // The tags used most recently (0.9.0-dev.103).
+          recent_tags: true,
           // Connected apps (0.9.0, APP1).
           connected_apps: true,
           connected_app_reads: true,
@@ -4766,7 +4812,15 @@ export function createFakeVault(): {
     ) {
       const s = session();
       if (!('id' in s)) return s;
-      return answerTags(state.documents, whoOf(s), path, url, init.method, body);
+      return answerTags(
+        state.documents,
+        (state.tagUses ??= {}),
+        whoOf(s),
+        path,
+        url,
+        init.method,
+        body,
+      );
     }
     // The documents somebody opened most recently (0.9.0-dev.102), as the
     // real vault keeps them: their own alone, newest open first, each once;
@@ -11304,6 +11358,7 @@ function note(value: string | null | undefined): string | null {
  */
 function answerTags(
   documents: FakeDocument[],
+  uses: Record<string, Record<string, number>>,
   who: { memberId: string; role: Role },
   path: string,
   url: string,
@@ -11333,17 +11388,29 @@ function answerTags(
     if (method !== 'GET') return fail(404, 'not_found', 'Not found.');
     const q = (param(url, 'q') ?? '').replace(/\s+/g, ' ').replace(/^ /, '').toLowerCase();
     const limit = Number(param(url, 'limit') ?? 50);
+    // The one put on a document most recently first (0.9.0-dev.103).
+    const sort = param(url, 'sort') ?? 'count';
+    if (!(TAG_SORTS as readonly string[]).includes(sort)) {
+      return fail(422, 'validation_failed', 'Ask for the tags by count or by recent.', 'sort');
+    }
     const byKey = new Map<
       string,
-      { spellings: Map<string, number>; ids: Set<string>; mine: Set<string> }
+      { spellings: Map<string, number>; ids: Set<string>; mine: Set<string>; used: number }
     >();
     for (const d of seen) {
       for (const t of d.tags ?? []) {
         const key = tagKey(t);
         if (!key.startsWith(q)) continue;
-        const g = byKey.get(key) ?? { spellings: new Map(), ids: new Set(), mine: new Set() };
+        const g = byKey.get(key) ?? {
+          spellings: new Map(),
+          ids: new Set(),
+          mine: new Set(),
+          used: 0,
+        };
         g.spellings.set(t, (g.spellings.get(t) ?? 0) + 1);
         g.ids.add(d.id);
+        // When, of the documents the caller can see alone.
+        g.used = Math.max(g.used, uses[d.id]?.[key] ?? 0);
         if (mayChange(d)) g.mine.add(d.id);
         byKey.set(key, g);
       }
@@ -11358,10 +11425,19 @@ function answerTags(
         label: detail ? detail.label.toLowerCase() : null,
         value: detail ? detail.value : null,
         changeable: g.mine.size,
+        used: g.used,
       };
     });
     return ok({
-      items: items.sort((a, b) => b.count - a.count || a.tag.localeCompare(b.tag)).slice(0, limit),
+      items: items
+        .sort(
+          (a, b) =>
+            (sort === 'recent' ? b.used - a.used : 0) ||
+            b.count - a.count ||
+            a.tag.localeCompare(b.tag),
+        )
+        .slice(0, limit)
+        .map(({ used: _used, ...view }) => view),
     });
   }
   if (method !== 'POST') return fail(404, 'not_found', 'Not found.');

@@ -5,6 +5,7 @@ import {
   tagDetail,
   tagsProblem,
   type TagChangeResult,
+  type TagSort,
   type TagView,
 } from '@fdv/shared';
 import { sql, type RawBuilder } from 'kysely';
@@ -79,14 +80,22 @@ const live = (p: Principal) => sql<boolean>`(d.deleted_at is null and ${seenDocu
  * ("locker: " offers every value of the label). One spelling of each — the
  * one used most — and each document counted once. Every key is read from
  * the stored column: nothing is worked out per row (the review's H1).
+ *
+ * With `sort: 'recent'` (0.9.0-dev.103), the one put on a document most
+ * recently first: the tag field's "Recently used". When is read from
+ * `document_tag_use` (0133) for those same documents alone, while they
+ * carry the tag — so a tag's time on a document the caller cannot see, or
+ * in the Trash, never moves it up their list, and a tag deleted is gone
+ * from it. Ties, and a tag with no time, as the list is otherwise.
  */
 export async function listTags(
   db: Db,
   p: Principal,
-  opts: { q?: string | undefined; limit?: number | undefined },
+  opts: { q?: string | undefined; limit?: number | undefined; sort?: TagSort | undefined },
 ): Promise<TagView[]> {
   const limit = Math.min(Math.max(opts.limit ?? 50, 1), TAG_LIST_MAX);
   const q = opts.q?.trim() ? opts.q : null;
+  const recent = opts.sort === 'recent';
   return withPrincipal(db, p, async (trx) => {
     const r = await sql<{ tag: string; count: number; changeable: number }>`
       with seen as (
@@ -110,10 +119,20 @@ export async function listTags(
         select k, count(distinct id)::int as count,
                (count(distinct id) filter (where mine))::int as changeable
           from seen group by k
-      )
+      )${
+        recent
+          ? sql`,
+      used as (
+        select s.k, max(u.used_at) as at
+          from seen s join document_tag_use u on u.document_id = s.id and u.tag_key = s.k
+         group by s.k
+      )`
+          : sql``
+      }
       select b.t as tag, c.count, c.changeable
         from counted c join best b on b.k = c.k
-       order by c.count desc, b.t
+        ${recent ? sql`left join used on used.k = c.k` : sql``}
+       order by ${recent ? sql`used.at desc nulls last,` : sql``} c.count desc, b.t
        limit ${limit}`.execute(trx);
     return r.rows.map((row) => {
       const d = tagDetail(row.tag);

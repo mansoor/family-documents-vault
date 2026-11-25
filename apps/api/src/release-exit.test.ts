@@ -693,6 +693,10 @@ const RULES: Record<string, Rule> = {
       'limit=1000',
       `q=${encodeURIComponent(`${AHMED_LABEL}: `)}`,
       `q=${encodeURIComponent(AHMED_LABEL.toUpperCase())}`,
+      // The most recently used first (0.9.0-dev.103): his never among them.
+      'sort=recent',
+      'sort=recent&limit=5',
+      'sort=recent&q=ahmed',
     ],
   },
   // A tag renamed, merged or deleted (0.9.0, T1): on what the caller may

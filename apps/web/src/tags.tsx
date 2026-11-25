@@ -1,6 +1,8 @@
 import {
   looksSecret,
   normaliseTag,
+  recentTagOffers,
+  RECENT_TAGS_OFFERED,
   secretTagWarning,
   tagKey,
   tagsProblem,
@@ -11,11 +13,20 @@ import {
   type DocumentView,
   type TagView,
 } from '@fdv/shared';
-import { useEffect, useId, useRef, useState, type FormEvent } from 'react';
+import {
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type FormEvent,
+  type ReactNode,
+} from 'react';
 import { Link } from 'react-router';
 import { api, ApiRequestError } from './api.js';
 import { describeError, useApp } from './app-context.js';
 import { heldNow } from './notes.js';
+import { tagsChanged } from './tag-store.js';
 import { ErrorNote } from './ui.js';
 
 /**
@@ -37,23 +48,41 @@ export function tagHref(tag: string): string {
 /** How long typing has to stop before the vault is asked what fits. */
 const TYPED_SETTLES_MS = 150;
 
+/** What the vault offered, and for what: `q` as typed, and whether it is "Recently used". */
+interface Found {
+  q: string;
+  items: TagView[];
+  recent: boolean;
+}
+
 /**
  * The tags offered as somebody types (the T1 review, H1): nothing is asked
  * until the field is first given the focus; then the vault is asked for
  * those that start with what is typed (`q`), a few at a time, once the
  * typing stops — never the household's every tag.
+ *
+ * Nothing typed yet (0.9.0-dev.103), the tags used most recently instead,
+ * as many more than five as the document has already, so that five are
+ * left to offer: asked again each time the field is given the focus, so a
+ * tag just added anywhere is first. `focused` counts the times it was.
  */
-function useTypeAhead(typed: string, active: boolean): TagView[] {
-  const { withToken } = useApp();
-  const [found, setFound] = useState<{ q: string; items: TagView[] }>({ q: '', items: [] });
+function useTypeAhead(typed: string, focused: number, have: number): Found {
+  const { withToken, caps } = useApp();
+  const [found, setFound] = useState<Found>({ q: '', items: [], recent: false });
   const q = typed.replace(/^\s+/, '');
+  const recent = caps?.features.recent_tags === true && q === '';
+  // Asked again on each focus only while nothing is typed.
+  const round = q === '' ? focused : -1;
+  const want = recent ? RECENT_TAGS_OFFERED + have : 50;
   useEffect(() => {
-    if (!active) return;
+    if (focused === 0) return;
     let stopped = false;
     const timer = window.setTimeout(() => {
-      void withToken((t) => api.tags(t, q || undefined, { limit: 50 }))
+      void withToken((t) =>
+        api.tags(t, q || undefined, recent ? { sort: 'recent', limit: want } : { limit: 50 }),
+      )
         .then((r) => {
-          if (!stopped && r) setFound({ q, items: r.items });
+          if (!stopped && r) setFound({ q, items: r.items, recent });
         })
         .catch(() => undefined);
     }, TYPED_SETTLES_MS);
@@ -61,8 +90,58 @@ function useTypeAhead(typed: string, active: boolean): TagView[] {
       stopped = true;
       window.clearTimeout(timer);
     };
-  }, [q, active, withToken]);
-  return found.items;
+    // `focused` is asked by `round`, so typing does not ask for every focus.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [q, round, recent, want, withToken]);
+  return found;
+}
+
+/** The id of "Recently used" under a field: what the field is described by while it shows. */
+const recentHeadId = (fieldId: string) => `${fieldId}-recent`;
+
+/**
+ * The tags offered under a tag field, as pills (0.9.0-dev.103): with
+ * nothing typed, those used most recently, "Recently used"; as somebody
+ * types, those that fit, "Tags already used". `label` names each pill for
+ * a screen reader: "Add: travel".
+ */
+function TagOffers(props: {
+  id: string;
+  recent: readonly string[];
+  offered: readonly string[];
+  busy: boolean;
+  label: (tag: string) => string;
+  onPick: (tag: string) => void;
+}) {
+  const shown = props.recent.length > 0 ? props.recent : props.offered;
+  if (shown.length === 0) return null;
+  const headId = recentHeadId(props.id);
+  const isRecent = props.recent.length > 0;
+  return (
+    <div
+      className="pills tag-offers"
+      role="group"
+      {...(isRecent ? { 'aria-labelledby': headId } : { 'aria-label': 'Tags already used' })}
+    >
+      {isRecent && (
+        <span id={headId} className="tag-offers-h muted">
+          Recently used
+        </span>
+      )}
+      {shown.map((t) => (
+        <button
+          key={t}
+          type="button"
+          className="pill pill-sugg"
+          disabled={props.busy}
+          aria-label={props.label(t)}
+          onClick={() => props.onPick(t)}
+        >
+          <TagText tag={t} />
+        </button>
+      ))}
+    </div>
+  );
 }
 
 /** A tag as a chip: "Locker · 12", heard as "Locker: 12". */
@@ -97,14 +176,16 @@ export function TagField(props: {
   const [problem, setProblem] = useState<string | null>(null);
   // A tag that looks like a secret, said once: added on the second ask.
   const [warned, setWarned] = useState<string | null>(null);
-  // Asked for only once the field has had the focus.
-  const [active, setActive] = useState(false);
-  const known = useTypeAhead(typed, active);
+  // Asked for only once the field has had the focus; the recently used again on each.
+  const [focused, setFocused] = useState(0);
+  const found = useTypeAhead(typed, focused, props.have.length);
   const input = useRef<HTMLInputElement>(null);
   const noteId = `${props.id}-note`;
   const warnId = `${props.id}-warn`;
   const errorId = `${props.id}-error`;
-  const offered = tagSuggestions(typed, known, props.have);
+  const blank = typed.trim() === '';
+  const offered = tagSuggestions(typed, found.items, props.have);
+  const recent = blank && found.recent ? recentTagOffers(found.items, props.have) : [];
 
   const add = async (raw: string) => {
     const tag = normaliseTag(raw);
@@ -134,8 +215,14 @@ export function TagField(props: {
     if (!props.busy) void add(typed);
   };
   const warning = warned !== null && warned === tagKey(typed) ? secretTagWarning(typed) : null;
-  // What the field is described by: a refusal, the warning, and the note (the review's L7).
-  const describedBy = [problem ? errorId : null, warning ? warnId : null, noteId]
+  // What the field is described by: a refusal, the warning, and the note (the review's L7);
+  // and "Recently used" while its pills show, so it is heard that they are there.
+  const describedBy = [
+    problem ? errorId : null,
+    warning ? warnId : null,
+    noteId,
+    recent.length > 0 ? recentHeadId(props.id) : null,
+  ]
     .filter(Boolean)
     .join(' ');
 
@@ -155,7 +242,7 @@ export function TagField(props: {
             maxLength={TAG_MAX * 4}
             aria-describedby={describedBy}
             aria-invalid={problem ? true : undefined}
-            onFocus={() => setActive(true)}
+            onFocus={() => setFocused((n) => n + 1)}
             onChange={(e) => {
               setTyped(e.target.value);
               setProblem(null);
@@ -179,23 +266,96 @@ export function TagField(props: {
           {problem}
         </p>
       )}
-      {offered.length > 0 && (
-        <div className="pills tag-offers" role="group" aria-label="Tags already used">
-          {offered.map((t) => (
-            <button
-              key={t}
-              type="button"
-              className="pill pill-sugg"
-              disabled={props.busy}
-              aria-label={`${props.action}: ${tagWords(t).spoken}`}
-              onClick={() => void add(t)}
-            >
-              <TagText tag={t} />
-            </button>
-          ))}
-        </div>
-      )}
+      <TagOffers
+        id={props.id}
+        recent={recent}
+        offered={offered}
+        busy={props.busy}
+        label={(t) => `${props.action}: ${tagWords(t).spoken}`}
+        onPick={(t) => void add(t)}
+      />
     </form>
+  );
+}
+
+/**
+ * A field of tags with a comma between them — Add's and the Inbox's card,
+ * a batch's defaults — offered the same pills as a tag field
+ * (0.9.0-dev.103): once it has the focus and nothing is typed where the
+ * caret is, the tags used most recently; as a tag is typed there, those
+ * that fit. One picked takes the place of the tag the caret is in, and the
+ * others are left exactly as typed; picked at the end, a comma follows it,
+ * ready for the next. `children` draws the field, whose input is `id`,
+ * given what else it is described by: "Recently used", while it shows.
+ */
+export function TagPicks(props: {
+  id: string;
+  value: string;
+  onChange: (value: string) => void;
+  busy?: boolean;
+  children: (describedBy: string | undefined) => ReactNode;
+}) {
+  const [focused, setFocused] = useState(0);
+  // Where the caret was last, in the value it was in; elsewhere, the end.
+  const [caret, setCaret] = useState<{ value: string; at: number } | null>(null);
+  const putCaret = useRef<number | null>(null);
+  const at = caret !== null && caret.value === props.value ? caret.at : props.value.length;
+  const parts = props.value.split(',');
+  const which = props.value.slice(0, at).split(',').length - 1;
+  const typing = parts[which] ?? '';
+  const done = parts
+    .filter((_, i) => i !== which)
+    .map((t) => t.trim())
+    .filter(Boolean);
+  const found = useTypeAhead(typing, focused, done.length);
+  const recent = typing.trim() === '' && found.recent ? recentTagOffers(found.items, done) : [];
+  const offered = tagSuggestions(typing, found.items, done);
+  const input = () => document.getElementById(props.id) as HTMLInputElement | null;
+  const read = (e: { target: EventTarget }) => {
+    const el = e.target as HTMLInputElement;
+    if (el.id === props.id && el.selectionStart !== null) {
+      setCaret({ value: el.value, at: el.selectionStart });
+    }
+  };
+  // The caret put after the tag picked, once the field shows it.
+  useLayoutEffect(() => {
+    const to = putCaret.current;
+    if (to === null) return;
+    putCaret.current = null;
+    input()?.setSelectionRange(to, to);
+    setCaret({ value: props.value, at: to });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [props.value]);
+  const pick = (tag: string) => {
+    const last = which === parts.length - 1;
+    const before = parts.slice(0, which).join(',');
+    const put = `${which > 0 ? `${before}, ` : ''}${tag}`;
+    const after = last ? ', ' : `,${parts.slice(which + 1).join(',')}`;
+    putCaret.current = put.length + (last ? 2 : 0);
+    props.onChange(put + after);
+    // Back to the field, for the next: the recently used asked again.
+    input()?.focus();
+  };
+  return (
+    <div
+      className="tag-picks"
+      onFocus={(e) => {
+        if (e.target.id === props.id) setFocused((n) => n + 1);
+      }}
+      onSelect={read}
+      onKeyUp={read}
+      onClick={read}
+    >
+      {props.children(recent.length > 0 ? recentHeadId(props.id) : undefined)}
+      <TagOffers
+        id={props.id}
+        recent={recent}
+        offered={offered}
+        busy={props.busy ?? false}
+        label={(t) => `Add the tag ${tagWords(t).spoken}`}
+        onPick={pick}
+      />
+    </div>
   );
 }
 
@@ -276,6 +436,8 @@ export function TagSection(props: {
           );
           if (!saved) return false;
           props.onSaved(saved);
+          // The Documents filter lists it (or no longer does) without leaving the page.
+          tagsChanged();
           const spoken = tagWords('add' in what ? what.add : what.remove).spoken;
           const done =
             'remove' in what

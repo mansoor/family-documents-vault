@@ -31,6 +31,7 @@ import {
   type KnownIssuer,
   type CaptureMetadata,
   type TagChangeResult,
+  type TagSort,
   type TagView,
   type ProposalContext,
   type UploadStatus,
@@ -2719,10 +2720,13 @@ export class DocumentService {
     );
   }
 
-  /** GET /tags (tags.ts): the tags on what the caller can see, each counted, most used first. */
+  /**
+   * GET /tags (tags.ts): the tags on what the caller can see, each counted,
+   * most used first — or, `sort: 'recent'`, most recently put on one first.
+   */
   async tags(
     p: Principal,
-    q: { q?: string | undefined; limit?: number | undefined },
+    q: { q?: string | undefined; limit?: number | undefined; sort?: TagSort | undefined },
   ): Promise<TagView[]> {
     return listTags(this.db, p, q);
   }

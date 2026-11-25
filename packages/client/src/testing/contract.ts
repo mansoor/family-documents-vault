@@ -4017,6 +4017,79 @@ export const contractScenarios: Scenario[] = [
     },
   },
   {
+    name: 'the tags used most recently: the one put on a document last first, of the documents the reader can see, out of the Trash, a tag deleted gone (0.9.0-dev.103)',
+    run: async (api, ctx) => {
+      expect((await api.capabilities()).features.recent_tags).toBe(true);
+      const { access_token: token } = await signIn(api, ctx);
+      const me = await api.me(token);
+      // Of this scenario's own tags: other scenarios' share the household.
+      const recent = async (t: string, limit = 1000) =>
+        (await api.tags(t, undefined, { sort: 'recent', limit })).items
+          .map((x) => x.tag)
+          .filter((x) => x.startsWith('contract-recent-'));
+      const a = await api.createDocument(token, {
+        title: 'Contract recent tags one',
+        owner_member_id: me.member_id,
+        tags: ['contract-recent-first'],
+      });
+      const b = await api.createDocument(token, {
+        title: 'Contract recent tags two',
+        owner_member_id: me.member_id,
+        tags: ['contract-recent-second'],
+      });
+      expect(await recent(token)).toEqual(['contract-recent-second', 'contract-recent-first']);
+      // Put on another document later: first again, and a new one first of all.
+      const now = await api.document(token, b.id);
+      await api.updateDocument(
+        token,
+        b.id,
+        { tags: [...now.tags, 'contract-recent-first', 'contract-recent-third'] },
+        now.etag,
+      );
+      // Two put on at once: the one on more documents first.
+      expect(await recent(token)).toEqual([
+        'contract-recent-first',
+        'contract-recent-third',
+        'contract-recent-second',
+      ]);
+      // As the list is otherwise: each with its count.
+      const [top] = (await api.tags(token, 'contract-recent-first', { sort: 'recent' })).items;
+      expect(top).toMatchObject({ tag: 'contract-recent-first', count: 2 });
+      expect((await api.tags(token, undefined, { sort: 'recent', limit: 1 })).items).toHaveLength(
+        1,
+      );
+      // A document in the Trash gives none; restored, they are back.
+      await api.deleteDocument(token, a.id);
+      await api.deleteDocument(token, b.id);
+      expect(await recent(token)).toEqual([]);
+      await api.restoreDocument(token, a.id);
+      expect(await recent(token)).toEqual(['contract-recent-first']);
+      await api.restoreDocument(token, b.id);
+      // A tag deleted is gone.
+      await api.deleteTag(token, 'contract-recent-third');
+      expect(await recent(token)).not.toContain('contract-recent-third');
+      expect(await recent(token)).toHaveLength(2);
+      // An Only me document's tags are its owner's alone.
+      await api.createDocument(token, {
+        title: 'Contract recent tags mine',
+        owner_member_id: me.member_id,
+        visibility: 'private',
+        tags: ['contract-recent-only-me'],
+      });
+      expect((await recent(token))[0]).toBe('contract-recent-only-me');
+      const other = { email: 'recent-tags-teen@example.test', password: 'the teen’s own password' };
+      await ctx.addSignIn(token, { name: 'Recent Tags Teen', role: 'teen', ...other });
+      const theirs = await signInAs(api, other.email, other.password);
+      expect(await recent(theirs.access_token)).not.toContain('contract-recent-only-me');
+      expect(await recent(theirs.access_token)).toHaveLength(2);
+      // Anything else as an order is refused.
+      const odd = await refusal(api.tags(token, undefined, { sort: 'newest' as never, limit: 5 }));
+      expect([odd.status, odd.code]).toEqual([422, 'validation_failed']);
+      await api.logout(theirs.access_token);
+      await api.logout(token);
+    },
+  },
+  {
     name: 'password rules an owner sets: 10 characters and common passwords refused unless one chose otherwise, every sign-in password set held to them, and a refusal that says everything missing',
     run: async (api, ctx) => {
       expect((await api.capabilities()).features.password_rules).toBe(true);

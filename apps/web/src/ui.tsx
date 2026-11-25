@@ -85,9 +85,12 @@ export function Field(props: {
    * "suggested · 92%", "from the batch". Gone once the value is changed.
    */
   mark?: ReactNode;
+  /** Something else the field is described by, by its id: "Recently used" under Tags (0.9.0-dev.103). */
+  describedBy?: string | undefined;
   onChange: (v: string) => void;
 }) {
   const noteId = props.note ? `${props.id}-note` : undefined;
+  const describedBy = [noteId, props.describedBy].filter(Boolean).join(' ') || undefined;
   return (
     <div className="field">
       <label htmlFor={props.id}>
@@ -109,7 +112,7 @@ export function Field(props: {
         required={props.required ?? true}
         aria-required={props.requiredMark || undefined}
         aria-invalid={props.invalid || undefined}
-        aria-describedby={noteId}
+        aria-describedby={describedBy}
       />
       {props.hint && <span className="muted">{props.hint}</span>}
       {props.note && (

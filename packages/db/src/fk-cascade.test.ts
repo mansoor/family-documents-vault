@@ -82,6 +82,9 @@ describe.skipIf(!testAdminUrl())('foreign keys to a document', () => {
         // Somebody's open of it, for Home's Recent (0132, 0.9.0-dev.102):
         // goes with it.
         'document_recent_open',
+        // When each of its tags was put on it (0133, 0.9.0-dev.103): goes
+        // with it.
+        'document_tag_use',
       ]),
     );
     // 'c': on delete cascade, every one — but a document no longer needed,

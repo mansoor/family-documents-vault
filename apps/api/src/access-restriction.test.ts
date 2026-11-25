@@ -202,6 +202,7 @@ describe.skipIf(!testAdminUrl())('the restriction, enforced by the database (5.3
     versions: await asVal('select id from document_version'),
     texts: await asVal('select version_id as id from document_text'),
     reminders: await asVal('select id from reminder'),
+    tagUses: await asVal('select distinct document_id as id from document_tag_use'),
     members: await asVal('select id from member'),
   });
 
@@ -306,6 +307,8 @@ describe.skipIf(!testAdminUrl())('the restriction, enforced by the database (5.3
     expect(got.versions).toEqual(ids(granted, 'version'));
     expect(got.texts).toEqual(ids(granted, 'version'));
     expect(got.reminders).toEqual(ids(granted, 'reminder'));
+    // When each tag was put on each document (0133): the grant's rows alone.
+    expect(got.tagUses).toEqual(ids(granted));
     // Themselves, the person granted, and the owner of a document they can
     // see (the collection's): not Uma, of whom they see nothing.
     expect(got.members).toEqual([val.member_id, ahmed.member_id, owner.member_id].sort());

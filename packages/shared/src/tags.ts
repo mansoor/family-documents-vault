@@ -34,6 +34,19 @@ export const TAG_MAX = 40;
 /** The most tags one document may carry, as since Phase 1. */
 export const TAGS_MAX = 50;
 
+/**
+ * The order GET /tags lists them in (`sort`): `count`, most used first (as
+ * it always has, and unless asked); or since 0.9.0-dev.103
+ * (`features.recent_tags`) `recent`, the one put on a document most
+ * recently first — of the documents the reader can see, out of the Trash,
+ * and while they carry it.
+ */
+export const TAG_SORTS = ['count', 'recent'] as const;
+export type TagSort = (typeof TAG_SORTS)[number];
+
+/** How many recently used tags a tag field offers before anything is typed (0.9.0-dev.103). */
+export const RECENT_TAGS_OFFERED = 5;
+
 /** Said by every field that takes tags. */
 export const TAGS_SEEN_NOTE =
   'Everyone who can see this document can see and search its tags; keep passwords and PINs in an Only me note.';
@@ -208,6 +221,23 @@ export function looksSecret(tag: string): boolean {
 export function secretTagWarning(tag: string): string {
   const said = tagWords(tag).label ?? tagWords(tag).text;
   return `“${said}” looks like a secret. Everyone who can see this document can see and search its tags: keep passwords and PINs in an Only me note instead.`;
+}
+
+/**
+ * What a tag field offers before anything is typed (0.9.0-dev.103): the
+ * tags used most recently, as GET /tags?sort=recent lists them, but those
+ * the document has already — five at most.
+ */
+export function recentTagOffers(
+  recent: readonly { tag: string }[],
+  have: readonly string[],
+  limit = RECENT_TAGS_OFFERED,
+): string[] {
+  const had = new Set(have.map(tagKey));
+  return recent
+    .filter((t) => !had.has(tagKey(t.tag)))
+    .slice(0, limit)
+    .map((t) => t.tag);
 }
 
 /** A tag in the list of tags (GET /tags), as far as this matters here. */

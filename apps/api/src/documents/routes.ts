@@ -8,6 +8,7 @@ import {
   ORIGINAL_PLACE_MOST,
   RECENTLY_OPENED_DEFAULT,
   RECENTLY_OPENED_MAX,
+  TAG_SORTS,
   type CaptureMetadata,
 } from '@fdv/shared';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
@@ -232,11 +233,14 @@ export function registerDocuments(
    * The tags on what the caller can see, most used first (50 unless
    * `limit` says, up to 1,000), or those that start with `q`: since 0.9.0
    * (T1) whatever their case, with a detail tag's label and value, and how
-   * many of its documents the caller may change.
+   * many of its documents the caller may change. Since 0.9.0-dev.103,
+   * `sort=recent` lists the one put on one of those documents most
+   * recently first: "Recently used".
    */
   const tagsQuery = z.object({
     q: z.string().max(200).optional(),
     limit: z.coerce.number().int().min(1).max(TAG_LIST_MAX).optional(),
+    sort: z.enum(TAG_SORTS).optional(),
   });
   app.get('/api/v1/tags', auth, async (req) => ({
     items: await docs.tags(principal(req), parse(tagsQuery, req.query)),
