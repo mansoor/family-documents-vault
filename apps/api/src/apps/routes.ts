@@ -1,6 +1,5 @@
 import type { MultipartFile } from '@fastify/multipart';
 import {
-  APP_BASIC_DEPRECATION,
   APP_LINK_COOKIE,
   APP_LINK_PAGE,
   APP_LINK_SESSION_PATH,
@@ -14,7 +13,7 @@ import {
   type ConnectedAppInput,
   type ConnectedAppKeyInput,
 } from '@fdv/shared';
-import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
+import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { metaOf, parse } from '../auth/routes.js';
 import { clientAddressOf } from '../client-address.js';
@@ -33,9 +32,10 @@ export const APP_LINK_TOKEN_ROUTE = '/api/v1/app-links/:token';
 
 /**
  * Connected apps (0.9.0, APP1): the family's routes, signed in, and the
- * app's, with an API key an owner generated (APP6) — since 0.9.0-dev.72
- * traded at `POST /apps/token` for a short-lived access token, sent as
- * `Authorization: Bearer` (the key as Basic still taken, deprecated).
+ * app's, with an API key an owner generated (APP6), traded at
+ * `POST /apps/token` for a short-lived access token (0.9.0-dev.72), sent as
+ * `Authorization: Bearer` on every other app route — the key itself is
+ * taken nowhere else (0.9.0-dev.101).
  *
  * The routes an app's key and its tokens are taken by — and nothing else
  * takes them: the hook in app.ts answers either `401 app_key_not_accepted`
@@ -163,16 +163,11 @@ export function registerApps(
       // written down and open the file for nothing. Its key is refused as
       // on any route that is not an app's.
       exposeHeadRoute: false,
-      onRequest: async (req: FastifyRequest, reply: FastifyReply) => {
+      onRequest: async (req: FastifyRequest) => {
         // The token route's address limit, before its key is looked at (0.9.0-dev.72).
         if (route.token === true) apps.mintAddressCheck(req);
-        const { caller, via } = await apps.authenticate(req, route);
+        const { caller } = await apps.authenticate(req, route);
         req.connectedApp = { caller };
-        // The key as Basic off the token route (0.9.0-dev.72): taken, and
-        // said to be deprecated (RFC 9745) — an access token replaces it.
-        if (via === 'basic' && route.token !== true) {
-          void reply.header('deprecation', APP_BASIC_DEPRECATION);
-        }
         if (bodiless) return;
         // A body: its length said, and no more than a file and its parts.
         const length = req.headers['content-length'];

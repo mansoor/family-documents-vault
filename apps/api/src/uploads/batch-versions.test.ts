@@ -9,7 +9,7 @@ import {
   sealBytes,
   unwrapKey,
 } from '@fdv/crypto';
-import { createPool, withSystem } from '@fdv/db';
+import { appendAudit, createPool, withSystem } from '@fdv/db';
 import { testAdminUrl } from '@fdv/db/testing';
 import type {
   ActivityLine,
@@ -792,6 +792,50 @@ describe.skipIf(!testAdminUrl())('duplicates as versions (S1)', () => {
       expect(why?.message).toMatch(/newest version/);
       expect((await versionsOf(adult, x.docId)).map((v) => v.id)).toContain(x.version);
     }
+  });
+
+  it('a connected app given the document in a list since does not keep the version from being taken back; one that read its details does (0.9.0-dev.101)', async () => {
+    const make = async (title: string) => {
+      const docId = await filed(adult, {
+        title,
+        type_key: 'passport',
+        owner_member_id: adult.member_id,
+        issued_by: 'United Kingdom',
+      });
+      const x = await readItem(
+        adult,
+        passport({ who: adult.member_id, issuer: 'United Kingdom', number: randomUUID() }),
+      );
+      const res = await accept(adult, x.batchId, x.item.id, { into_document_id: docId });
+      expect(res.statusCode, res.body).toBe(201);
+      return { docId, ...x, version: res.json<BatchAccepted>().version_id };
+    };
+    const listedOnly = await make('Listed by an app since');
+    const readToo = await make('Read by an app since');
+    // The lines an app acting as itself writes on a document: nobody's account.
+    const app = { app_id: randomUUID(), app: 'Acme Money', as_itself: true };
+    const line = (action: string, documentId: string, detail: Record<string, unknown> = {}) =>
+      withSystem(h.db, hh, (trx) =>
+        appendAudit(trx, {
+          householdId: hh,
+          action,
+          objectType: 'document',
+          objectId: documentId,
+          detail: { ...app, ...detail },
+        }),
+      );
+    await line('app.listed', listedOnly.docId, { day: '2026-11-24' });
+    await line('app.listed', readToo.docId, { day: '2026-11-24' });
+    await line('app.read', readToo.docId);
+    const back = await undone(adult, listedOnly.batchId, [listedOnly.item.id]);
+    expect(back.kept).toEqual([]);
+    expect(back.restored).toEqual([listedOnly.item.id]);
+    expect((await versionsOf(adult, listedOnly.docId)).map((v) => v.id)).not.toContain(
+      listedOnly.version,
+    );
+    const kept = await undone(adult, readToo.batchId, [readToo.item.id]);
+    expect(kept.kept.map((k) => k.reason)).toEqual(['changed']);
+    expect((await versionsOf(adult, readToo.docId)).map((v) => v.id)).toContain(readToo.version);
   });
 
   it('its derived reminders come back as they were — one acknowledged, one snoozed — after an Undo that puts the expiry back (M1)', async () => {

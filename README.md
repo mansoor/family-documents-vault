@@ -510,8 +510,9 @@ The database keeps the same rule as the vault's own code: a request from an app 
 those documents and their current files, and nothing at all of any other table. Granting
 more to an app that acts as somebody else waits for them to turn it on again, as any
 widening does. Its reading is in the activity log: "Ahmed via Acme Money downloaded …", "…
-read the details of …" (on the document's own Activity too), and "… looked up documents"
-once an hour.
+read the details of …" (on the document's own Activity too), "… listed …" on each
+document a list or its changes feed gave it, once a day, and "… looked up documents" once
+an hour.
 
 **Filing automatically.** An owner may switch on _File when everything is sure and
 complete_ for an app. Then a file it sends is filed with nobody looking — as the person it
@@ -647,9 +648,9 @@ try 60 times (an IPv6 address counted with the rest of its /64); the token route
 only a form (`application/x-www-form-urlencoded`). An app keeps its token until it
 nearly ends, and asks for another then, or when the vault answers `401
 app_token_expired`. A token the vault never gave is `401 app_token_invalid`, and counts
-as a guess, as a wrong secret does. **Basic on the other app routes still works for now,
-and is deprecated**: each such answer carries a `Deprecation` header, and it will be
-removed in a later 0.9.0 development build. Ask for a token and send it instead.
+as a guess, as a wrong secret does. **The key itself is taken by the token route alone**:
+sent as `Authorization: Basic` on any other app route it is `401 app_key_required` (since
+0.9.0-dev.101). Ask for a token and send that.
 
 The vault shows the client ID and the secret **once**, with Copy buttons, and a
 **connection string** to paste into the app (`fdvapp2.…`: the vault's address and the
@@ -803,9 +804,13 @@ string gives (`$VAULT`).
 `GET /api/v1/apps/me` is the connection test: what the app and this key may do, the key's
 expiry, and the vault's version.
 
-Sending the key itself as `Authorization: Basic` on these routes (as before
-0.9.0-dev.72) still works for now and is **deprecated**: the answer carries a
-`Deprecation` header, and it will be removed in a later 0.9.0 development build.
+Every route but the token route takes the access token alone: the key itself, sent as
+`Authorization: Basic` there, is `401 app_key_required` (since 0.9.0-dev.101).
+
+What an app lists or is fed shows in the vault too: each document a list page or the
+changes feed hands it has a line on that document's own Activity ("Acme Money listed
+“October bill”"), once an app a document a day; reading one document's details is its own
+line ("read the details of"), once an hour.
 
 **API versioning.** Every route is under `/api/v1/`. `GET /api/v1/apps/me` gives the
 vault's version (`vault.server_version`), and `GET /api/v1/capabilities` its capability

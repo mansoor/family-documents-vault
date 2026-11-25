@@ -242,6 +242,17 @@ needs a vault of 0.4.10 or later.
 
 ## Unreleased
 
+- **A connected app's key as Basic is taken by the token route alone** (0.9.0-dev.101). **Breaking** for an app still sending its API key as `Authorization: Basic` on any `/api/v1/apps/*` route but `POST /api/v1/apps/token` — deprecated since 0.9.0-dev.72, and removed now, as a breaking change may be during the 0.9.0 development builds. `min_client_version` is unchanged.
+  - **Every app route but `POST /api/v1/apps/token`** takes `Authorization: Bearer <access token>` alone. The key there, as Basic, is **`401 app_key_required`** ("Send the app’s access token (Authorization: Bearer), from POST /api/v1/apps/token with its API key as Basic."), refused before anything is looked up: a wrong secret there is not counted as a guess. Ask for a token at `POST /api/v1/apps/token` (unchanged, wrong secrets still counted there) and send it.
+  - **Gone:** the `Deprecation: @1795046400` header, and the capability document's `deprecations` entry `{ "field": "Authorization: Basic on /api/v1/apps/* but POST /api/v1/apps/token", "removed_in": "0.9.0" }`. `features.connected_app_tokens` stays `true`.
+  - **`@fdv/client` before 0.9.0-dev.72 can no longer call an app's routes**: its `createAppClient` sends the key as Basic on every request, which is now refused. An app on such a client must move to 0.9.0-dev.72 or later (which trades the key for a token itself).
+  - `@fdv/client`: `createAppClient` always trades the key for a token; its fallback to Basic for a vault from before tokens, and `APP_TOKEN_REPROBE_MS`, are gone. `@fdv/shared`: `APP_BASIC_DEPRECATION` is gone. The fake vault (`@fdv/client/testing`) refuses the key as Basic off the token route as the vault does; the contract scenario says so.
+
+- **What a connected app lists or is fed, on each document's own Activity: `app.listed`** (0.9.0-dev.101). **Additive**; `min_client_version` is unchanged.
+  - A new activity line, **`app.listed`**, on a document (`object_type: "document"`), for each document a page of `GET /api/v1/apps/documents` (its `items`) or `GET /api/v1/apps/changes` (its `changed` lines; never an `unavailable` one, which says nothing of its document) hands an app: at most once an app a document a household day. Its `detail` is the app's, as `app.read`'s (`app_id`, `app`, and `as_itself` for an app acting as itself), and `day`, the household's day it was written for (YYYY-MM-DD); its actor is the app's account, as `app.read`'s; it is shown to the same people as that document's `app.read` lines. In words: "Ahmed via Acme Money listed “October bill”" ("Acme Money listed …" for an app acting as itself; a sensitive document is never named); one answer's lines are one line in the household's log, "… listed 12 documents", whose `document_id` is `null` (it opens no document) and whose Activity export row names no document. Its kind is `opened`, as a read's. The hourly `app.looked_up` line is unchanged.
+  - **A listing never stops an Undo of filing.** Taking back a document or a version filed from a batch is still refused once somebody else has reached it — its details read by an app (`app.read`) among them, as before — but an `app.listed` line is not that (migration 0131). Nor is it a change to the document when a renewal's details are undone (`renewal_kept`).
+  - A client that shows an unknown action's words as the server gives them needs no change. `@fdv/shared`: `describeEvent` and `describeEvents` say it, and fold one answer's lines.
+
 - **Password rules: `features.password_rules`** (0.9.0-dev.98; `true`, absent from older vaults). **Additive, with one changed refusal**; `min_client_version` is unchanged.
   - **`GET /api/v1/household/password-rules`** (anybody signed in): `{ min_length, refuse_common, needs_upper, needs_lower, needs_number, needs_symbol, can_change }`. `min_length` is 10 to 64 (10 unless an owner chose more); `refuse_common` is `true` unless an owner turned it off; the four `needs_*` are `false` unless an owner turned them on. `can_change` is `true` for an owner.
   - **`PUT /api/v1/household/password-rules`** (owners only, `403 forbidden` otherwise) takes the six rules and answers as `GET` does. Rules looser than the saved ones in any way — a shorter length, `refuse_common` off, a `needs_*` off — ask the owner to confirm it's them first (`403 step_up_required`, action `weaken_password_rules`, any credential); stricter ones ask nothing. Each save is a line in the household's activity, `household.password_rules_changed`, for everybody who reads it. A rule already set is not applied to passwords already chosen.
@@ -8974,8 +8985,3 @@ validation_failed` with that `detail`; a reviewer who is not an owner
   0.9.0). Use `POST /api/v1/password-resets/lookup` and `/complete`, and
   `POST /api/v1/invitations/lookup` and `/accept`, with the token in the
   body.
-- `Authorization: Basic` with a connected app's API key on every
-  `/api/v1/apps/*` route but `POST /api/v1/apps/token` (since 0.9.0-dev.72;
-  removed in a later 0.9.0 development build). Ask for an access token at
-  `POST /api/v1/apps/token` and send `Authorization: Bearer` instead. Each
-  answer to Basic there carries `Deprecation: @1795046400`.

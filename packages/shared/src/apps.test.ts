@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { describeEvent, describeEvents, type ActivityEvent } from './activity.js';
+import {
+  describeEvent,
+  describeEventSpans,
+  describeEvents,
+  type ActivityEvent,
+} from './activity.js';
 import {
   amountText,
   appAllowName,
@@ -736,6 +741,43 @@ describe('an app’s lines in the activity log (0.9.0, APP2)', () => {
       describeEvents([ev('document.downloaded', 0, { ...doc, detail: {} })]).map((l) => l.text),
     ).toEqual(['Ahmed downloaded “Northgate, October”']);
   });
+
+  it('a document handed it in a list or its feed: that document’s line; one answer’s lines fold (0.9.0-dev.101)', () => {
+    const doc = { object_type: 'document', object_id: 'd-1', object_title: 'Northgate, October' };
+    expect(describeEvents([ev('app.listed', 0, doc)]).map((l) => [l.text, l.kind])).toEqual([
+      ['Ahmed via Acme Money listed “Northgate, October”', 'opened'],
+    ]);
+    // A sensitive one is never named.
+    expect(
+      describeEvents([ev('app.listed', 0, { ...doc, object_sensitive: true })]).map((l) => l.text),
+    ).toEqual(['Ahmed via Acme Money listed a sensitive document']);
+    // One answer's lines, written at one instant: one line in the household's log.
+    const page = ['d-1', 'd-2', 'd-3'].map((d) =>
+      ev('app.listed', 5, { ...doc, object_id: d, object_title: `Bill ${d}` }),
+    );
+    const folded = describeEventSpans(page);
+    expect(folded.map((s) => s.line.text)).toEqual(['Ahmed via Acme Money listed 3 documents']);
+    expect(folded[0]?.oldest).toBe(page[2]?.id);
+    // About no one document: it opens none. A line of one opens its own.
+    expect(folded[0]?.line.document_id).toBeNull();
+    expect(describeEventSpans(page.slice(0, 1))[0]?.line.document_id).toBe('d-1');
+    // Another answer, a minute on, or another app: lines of their own.
+    expect(
+      describeEvents([
+        ev('app.listed', 5, doc),
+        ev('app.listed', 6, { ...doc, object_id: 'd-2' }),
+        ev('app.listed', 6, {
+          ...doc,
+          object_id: 'd-3',
+          detail: { app_id: 'app-2', app: 'Ledger' },
+        }),
+      ]).map((l) => l.text),
+    ).toEqual([
+      'Ahmed via Acme Money listed “Northgate, October”',
+      'Ahmed via Acme Money listed “Northgate, October”',
+      'Ahmed via Ledger listed “Northgate, October”',
+    ]);
+  });
 });
 
 describe('filing automatically: only when everything is sure and complete (0.9.0, APP4)', () => {
@@ -998,6 +1040,7 @@ describe('an app acting as itself in the activity log (0.9.0, APP8)', () => {
       ev('document.viewed', 2, doc),
       ev('document.downloaded', 30, doc),
       ev('app.read', 40, doc),
+      ev('app.listed', 40.5, doc),
       ev('app.looked_up', 41, { object_id: null, object_title: null }),
       ev('app.checked', 42, { object_id: null, object_title: null }),
       ev('app.unlinked', 43, doc),
@@ -1009,6 +1052,7 @@ describe('an app acting as itself in the activity log (0.9.0, APP8)', () => {
       'Acme Money opened “Northgate, October”',
       'Acme Money downloaded “Northgate, October”',
       'Acme Money read the details of “Northgate, October”',
+      'Acme Money listed “Northgate, October”',
       'Acme Money looked up documents',
       'Acme Money checked on files it sent',
       'Acme Money let go of “Northgate, October”; it is still in the vault',

@@ -140,7 +140,7 @@ describe.skipIf(!testAdminUrl())('connected apps (0.9.0, APP1)', () => {
       method,
       url: target,
       headers: {
-        ...basicFor(o.key ?? a),
+        ...(await h.bearerFor(o.key ?? a)),
         ...(o.contentType ? { 'content-type': o.contentType } : {}),
         // From this machine — a vault on localhost takes plain http only so —
         // through a proxy here that says who is asking.
@@ -180,6 +180,22 @@ describe.skipIf(!testAdminUrl())('connected apps (0.9.0, APP1)', () => {
   }
 
   const me = (a: TestApp, o: CallOptions = {}) => call(a, 'GET', '/api/v1/apps/me', o);
+  /**
+   * The token route, the one route that takes the key itself, as Basic
+   * (0.9.0-dev.101): the app's own, or another key, or another secret.
+   */
+  const grant = (a: TestApp, o: CallOptions = {}) =>
+    h.app.inject({
+      method: 'POST',
+      url: '/api/v1/apps/token',
+      headers: {
+        ...basicFor(o.key ?? a),
+        'content-type': 'application/x-www-form-urlencoded',
+        'x-forwarded-for': o.remoteAddress ?? peer(),
+      },
+      payload: 'grant_type=client_credentials',
+      remoteAddress: '127.0.0.1',
+    });
   const status = (a: TestApp, id: string) => call(a, 'GET', `/api/v1/apps/intake/${id}`);
   const lines = async (t: Tokens) =>
     (await send(t, 'GET', '/api/v1/audit?limit=100'))
@@ -501,12 +517,28 @@ describe.skipIf(!testAdminUrl())('connected apps (0.9.0, APP1)', () => {
         headers: { 'x-forwarded-for': peer(), ...headers },
         remoteAddress: '127.0.0.1',
       });
+    // The token route, where the key itself is taken.
+    const grantWith = (headers: Record<string, string>) =>
+      h.app.inject({
+        method: 'POST',
+        url: '/api/v1/apps/token',
+        headers: {
+          'x-forwarded-for': peer(),
+          'content-type': 'application/x-www-form-urlencoded',
+          ...headers,
+        },
+        payload: 'grant_type=client_credentials',
+        remoteAddress: '127.0.0.1',
+      });
     const refusal = async (r: LightMyRequestResponse | Promise<LightMyRequestResponse>) => {
       const res = await r;
       return [res.statusCode, codeOf(res)];
     };
 
-    // 1. Basic, and nothing else that names a caller.
+    // 1. An access token, and nothing else that names a caller: the key
+    // itself, as Basic, is taken on the token route alone (0.9.0-dev.101).
+    expect(await refusal(raw(valid))).toEqual([401, 'app_key_required']);
+    expect((await grantWith(valid)).statusCode).toBe(200);
     expect(await refusal(raw({}))).toEqual([401, 'app_key_required']);
     expect(await refusal(raw(h.as(owner)))).toEqual([401, 'app_key_required']);
     expect(await refusal(raw({ ...valid, cookie: 'fdv_share=abc' }))).toEqual([
@@ -520,17 +552,13 @@ describe.skipIf(!testAdminUrl())('connected apps (0.9.0, APP1)', () => {
     // A sign-in alone on an app route: told to send the app's key.
     expect(await refusal(send(owner, 'GET', '/api/v1/apps/me'))).toEqual([401, 'app_key_required']);
 
-    // 2. A client ID the vault made, and its secret: an unknown ID, a wrong
-    // secret and a key not written as the vault writes them are one answer,
-    // word for word.
-    const unknown = await call(a, 'GET', '/api/v1/apps/me', {
-      key: { clientId: newClientId(), secret: a.secret },
-    });
-    const wrong = await call(a, 'GET', '/api/v1/apps/me', {
-      key: { clientId: a.clientId, secret: newSecret() },
-    });
+    // 2. On the token route, a client ID the vault made, and its secret: an
+    // unknown ID, a wrong secret and a key not written as the vault writes
+    // them are one answer, word for word.
+    const unknown = await grant(a, { key: { clientId: newClientId(), secret: a.secret } });
+    const wrong = await grant(a, { key: { clientId: a.clientId, secret: newSecret() } });
     // A client ID's user part, but nothing the vault made: a key not right.
-    const garbled = await raw({
+    const garbled = await grantWith({
       authorization: `Basic ${Buffer.from('fdvc_not:a key').toString('base64')}`,
     });
     for (const r of [unknown, wrong, garbled]) {
@@ -798,7 +826,7 @@ describe.skipIf(!testAdminUrl())('connected apps (0.9.0, APP1)', () => {
     clockHeld = Math.floor(Date.now() / 60_000) * 60_000 + 1_000;
     try {
       for (let i = 0; i < 10; i++) {
-        const r = await me(a, {
+        const r = await grant(a, {
           remoteAddress: from,
           key: { clientId: a.clientId, secret: newSecret() },
         });
@@ -833,18 +861,18 @@ describe.skipIf(!testAdminUrl())('connected apps (0.9.0, APP1)', () => {
       // Twelve requests with a revoked key's right secret: refused each time
       // for being revoked, never for guessing.
       for (let i = 0; i < 12; i++) {
-        expect(codeOf(await me(a, { remoteAddress: '198.51.100.60' }))).toBe('app_key_revoked');
+        expect(codeOf(await grant(a, { remoteAddress: '198.51.100.60' }))).toBe('app_key_revoked');
       }
       expect((await me(b, { remoteAddress: '198.51.100.60' })).statusCode).toBe(200);
       // And past its expiry: the same.
       const c = { ...a, ...(await appKeyFor(h, owner, a.view)) };
       await expire(c.clientId);
       for (let i = 0; i < 12; i++) {
-        expect(codeOf(await me(c, { remoteAddress: '198.51.100.61' }))).toBe('app_key_expired');
+        expect(codeOf(await grant(c, { remoteAddress: '198.51.100.61' }))).toBe('app_key_expired');
       }
       // Guesses from across one IPv6 /64 are counted together; the next /64 is not held back.
       for (let i = 0; i < 10; i++) {
-        const r = await me(b, {
+        const r = await grant(b, {
           remoteAddress: `2001:db8:5:6::${(i + 1).toString(16)}`,
           key: { clientId: b.clientId, secret: newSecret() },
         });
@@ -859,7 +887,7 @@ describe.skipIf(!testAdminUrl())('connected apps (0.9.0, APP1)', () => {
     // A removed app's right secret, many times: never a guess either.
     await send(owner, 'DELETE', `/api/v1/connected-apps/${a.appId}`);
     for (let i = 0; i < 12; i++) {
-      expect(codeOf(await me(b, { remoteAddress: '198.51.100.62' }))).toBe('app_revoked');
+      expect(codeOf(await grant(b, { remoteAddress: '198.51.100.62' }))).toBe('app_revoked');
     }
   });
 
@@ -1202,9 +1230,7 @@ describe.skipIf(!testAdminUrl())('connected apps (0.9.0, APP1)', () => {
     // A stranger who knows the app's client ID, but not its secret: told
     // the key is not right — not even that the app is paused — and nothing
     // is written.
-    const stranger = await call(a, 'GET', '/api/v1/apps/intake/q-1', {
-      key: { clientId: a.clientId, secret: newSecret() },
-    });
+    const stranger = await grant(a, { key: { clientId: a.clientId, secret: newSecret() } });
     expect(codeOf(stranger)).toBe('app_key_invalid');
     expect(await refused()).toBe(0);
     expect((await lines(owner)).some((l) => l.startsWith('Requests from Quiet'))).toBe(false);
@@ -1298,7 +1324,7 @@ describe.skipIf(!testAdminUrl())('connected apps (0.9.0, APP1)', () => {
         ]).bytes,
       );
       const boundary = /^--([^\r]+)/.exec(body.toString('latin1'))?.[1] as string;
-      const signed = basicFor(a);
+      const signed = await h.bearerFor(a);
       const stream = new PassThrough();
       const cut = body.indexOf('%PDF') + 20;
       const answer = h.app.inject({

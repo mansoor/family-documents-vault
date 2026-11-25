@@ -194,8 +194,9 @@ type Who =
    */
   | 'device'
   /**
-   * A connected app, by its API key (0.9.0, APP1; Basic since APP6), and
-   * nobody else: no attacker holds its key, so every one is told to send
+   * A connected app, by its API key (0.9.0, APP1; Basic since APP6) on the
+   * token route and an access token for it on the rest (0.9.0-dev.101), and
+   * nobody else: no attacker holds either, so every one is told to send
    * one (401 app_key_required), a sign-in, a computer's key and a cookie
    * alike.
    */

@@ -126,10 +126,13 @@ import { AppReads } from './reads.js';
  * app and change what it may do; its person sees theirs and may remove it.
  * Nobody else is given any.
  *
- * **The app's side** (`/api/v1/apps/*`, with a key): `authenticate` checks
- * a request in the contract's order, each with its own code — the key
- * (`Authorization: Basic`), the app's and the key's state, its address,
- * https, its person, the route's scope, and its rate. What it
+ * **The app's side** (`/api/v1/apps/*`): the key itself (`Authorization:
+ * Basic`) traded at `POST /apps/token` for an access token, and that token
+ * (`Authorization: Bearer`) on every other app route — the key alone is
+ * taken nowhere else. `authenticate` checks a request in the contract's
+ * order, each with its own code — the credential, the app's and the key's
+ * state, its address, https, its person, the route's scope, and its rate.
+ * What it
  * sends goes through the batch path a paired computer's does (BatchService:
  * a batch an app a household day, sealed under its person's key), its
  * state kept by external id in connected_app_intake, followed from the
@@ -175,9 +178,6 @@ export interface AppRoute {
    */
   token?: boolean;
 }
-
-/** How a request proved it is the app: its key as Basic (deprecated off the token route), or a token. */
-export type AppVia = 'basic' | 'token';
 
 export interface AppOptions {
   /** FDV_BASE_URL. */
@@ -1015,8 +1015,8 @@ export class AppService {
 
   /**
    * A request's API key (APP6), checked in the order the contract gives,
-   * each refusal with its own code: `Authorization: Basic` and no other
-   * credential; an address that has failed too often this minute waits; the
+   * each refusal with its own code: `Authorization: Basic` (on the token
+   * route; an access token on the others) and no other credential; an address that has failed too often this minute waits; the
    * client ID and its secret, compared in constant time, an unknown ID and
    * a wrong secret alike (`app_key_invalid`); the app removed, the key
    * revoked, the key expired; then as before — the app on and turned on,
@@ -1024,27 +1024,27 @@ export class AppService {
    * key's both) and its rate. Nothing is cached: a key revoked is refused
    * on the very next request. Answers the app and its person as they are now.
    *
-   * Since 0.9.0-dev.72 an access token (`Authorization: Bearer fdvt_…`)
-   * stands in for the key on every route but `POST /apps/token`: found by
-   * its hash (an unknown one a guess, `app_token_invalid`; one past its end
-   * `app_token_expired`), then checked against its key and app exactly as
-   * the key is, so it ends with either at once. Answers too whether the key
-   * came as Basic, which the routes say is deprecated.
+   * The key itself is taken by `POST /apps/token` alone; every other app
+   * route takes only an access token (`Authorization: Bearer fdvt_…`) for
+   * it — the key as Basic there is `401 app_key_required`, since
+   * 0.9.0-dev.101. A token is found by its hash (an unknown one a guess,
+   * `app_token_invalid`; one past its end `app_token_expired`), then checked
+   * against its key and app exactly as the key is, so it ends with either
+   * at once.
    */
-  async authenticate(
-    req: FastifyRequest,
-    route: AppRoute,
-  ): Promise<{ caller: AppCaller; via: AppVia }> {
+  async authenticate(req: FastifyRequest, route: AppRoute): Promise<{ caller: AppCaller }> {
     const h = req.headers;
     const now = this.now();
     const minute = Math.floor(now / 60_000);
-    // 1. An access token (0.9.0-dev.72) or the key as Basic, and nothing
-    // else that names a caller: no cookie, no sign-in's bearer token. The
-    // token route takes the key alone.
+    // 1. The token route takes the key alone, as Basic; every other app
+    // route an access token alone (0.9.0-dev.101: the key as Basic there is
+    // no longer taken). Nothing else that names a caller: no cookie, no
+    // sign-in's bearer token.
     const creds = readAppCredentials(h);
+    const bearer = creds.kind === 'token' || presentsAppToken(h);
     if (
       creds.kind === 'none' ||
-      (route.token === true && (creds.kind === 'token' || presentsAppToken(h))) ||
+      (route.token === true ? bearer : !bearer) ||
       (h.cookie !== undefined && /\S/.test(h.cookie))
     ) {
       throw err(401, 'app_key_required');
@@ -1102,10 +1102,10 @@ export class AppService {
         throw err(401, 'app_token_invalid');
       }
       if (byToken.token_expires_at.getTime() <= now) throw err(401, 'app_token_expired');
-      return this.admitted(req, route, byToken, 'token', now, minute);
+      return this.admitted(req, route, byToken, now, minute);
     }
-    // 3b. A key the vault made, and its secret: the same work, and the same
-    // answer, for an unknown client ID as for a wrong secret.
+    // 3b. On the token route, a key the vault made, and its secret: the same
+    // work, and the same answer, for an unknown client ID as for a wrong secret.
     const found =
       creds.kind === 'basic'
         ? (
@@ -1132,7 +1132,7 @@ export class AppService {
       failed();
       throw err(401, 'app_key_invalid');
     }
-    return this.admitted(req, route, found, 'basic', now, minute);
+    return this.admitted(req, route, found, now, minute);
   }
 
   /**
@@ -1155,10 +1155,9 @@ export class AppService {
       ip_allow: string[];
       ip_allow_names: string[];
     },
-    via: AppVia,
     now: number,
     minute: number,
-  ): Promise<{ caller: AppCaller; via: AppVia }> {
+  ): Promise<{ caller: AppCaller }> {
     // From here the request is truly the app's: a refusal is counted on it.
     const refuse = async (e: ApiError): Promise<never> => {
       await this.noteRefusal(at.household_id, at.app_id, e.code).catch(() => undefined);
@@ -1329,7 +1328,6 @@ export class AppService {
       await refuse(err(403, 'scope_not_granted'));
     }
     return {
-      via,
       caller: {
         appId: at.app_id,
         keyId: at.key_id,

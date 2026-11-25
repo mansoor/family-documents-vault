@@ -26,7 +26,6 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   alertsSent,
   appKeyFor,
-  basicFor,
   createHarness,
   TEST_MASTER,
   type Harness,
@@ -90,7 +89,7 @@ describe.skipIf(!testAdminUrl())('connected apps: acting as itself (0.9.0, APP8)
     return { appId: view.id, ...key, view };
   }
 
-  const call = (
+  const call = async (
     a: TestApp,
     method: 'GET' | 'POST' | 'DELETE',
     target: string,
@@ -102,7 +101,10 @@ describe.skipIf(!testAdminUrl())('connected apps: acting as itself (0.9.0, APP8)
     h.app.inject({
       method,
       url: target,
-      headers: { ...basicFor(a), ...(body ? { 'content-type': body.contentType } : {}) },
+      headers: {
+        ...(await h.bearerFor(a)),
+        ...(body ? { 'content-type': body.contentType } : {}),
+      },
       ...(body ? { payload: Buffer.from(body.bytes) } : {}),
       remoteAddress: '127.0.0.1',
     });

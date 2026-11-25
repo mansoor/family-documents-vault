@@ -67,13 +67,6 @@ export const DEPRECATIONS: Capabilities['deprecations'] = [
   { field: 'POST /api/v1/password-resets/{token}', removed_in: '0.9.0' },
   { field: 'GET /api/v1/invitations/{token}', removed_in: '0.9.0' },
   { field: 'POST /api/v1/invitations/{token}/accept', removed_in: '0.9.0' },
-  // A connected app's key as Basic on its routes but the token route
-  // (0.9.0-dev.72): an access token replaces it, and Basic there goes in a
-  // later 0.9.0 development build.
-  {
-    field: 'Authorization: Basic on /api/v1/apps/* but POST /api/v1/apps/token',
-    removed_in: '0.9.0',
-  },
   // A cabinet's three ways to arrange it (0.9.0-dev.90): levels replace
   // them. Older apps still read `arranged_by` (always null now) and the
   // preview still takes `arrange_by` for its levels.

@@ -282,8 +282,6 @@ describe.skipIf(!testAdminUrl())('a phone app too old for the vault (0.9.0-dev.7
         remoteAddress: '127.0.0.1',
       });
     const basic = basicFor(key).authorization;
-    const me = await asApp(basic, 'GET', '/api/v1/apps/me');
-    expect(me.statusCode, me.body).toBe(200);
     const token = await asApp(basic, 'POST', '/api/v1/apps/token', 'grant_type=client_credentials');
     expect(token.statusCode, token.body).toBe(200);
     const bearer = `Bearer ${token.json<{ access_token: string }>().access_token}`;

@@ -5,7 +5,7 @@ import { CODE_USED_REASON, SESSION_LOCKED_CODE, type DocumentView } from '@fdv/s
 import FormData from 'form-data';
 import type { LightMyRequestResponse } from 'fastify';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { appKeyFor, basicFor, createHarness, type Harness } from '../test-harness.js';
+import { appKeyFor, createHarness, type Harness } from '../test-harness.js';
 import { DEVICE_KEY_ROUTES } from '../devices/routes.js';
 import { SESSION_LOCK_ROUTES } from './routes.js';
 import type { Tokens } from './service.js';
@@ -273,7 +273,7 @@ describe.skipIf(!testAdminUrl())('locking a session', () => {
   it('a connected app and a link outside the family are not asked', async () => {
     const asApp = await h.app.inject({
       url: '/api/v1/apps/me',
-      headers: { ...basicFor(app), 'x-forwarded-for': peer() },
+      headers: { ...(await h.bearerFor(app)), 'x-forwarded-for': peer() },
       remoteAddress: '127.0.0.1',
     });
     expect(asApp.statusCode, asApp.body).toBe(200);

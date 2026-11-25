@@ -324,9 +324,9 @@ export type AppKeyState = 'live' | 'expired' | 'revoked';
  * is opaque and random, the vault keeps only its SHA-256, and it is bound
  * to its key: what it may do is the key's permissions among the app's, as
  * they are at each request, and it ends at once with the key (revoked or
- * expired) or the app (paused or removed). Basic on the other app routes is
- * still taken, deprecated (a `Deprecation` header says so), until a later
- * 0.9.0 development build.
+ * expired) or the app (paused or removed). The key as Basic is taken on
+ * the token route alone (since 0.9.0-dev.101; until then it was taken,
+ * deprecated, on the others too).
  */
 
 /** An access token: `fdvt_` and 32 random bytes, base64url. The prefix lets a scanner spot one. */
@@ -337,12 +337,6 @@ export const APP_TOKEN_SECONDS = 900;
 /** Tokens a key may be given a minute, and an address (an IPv6 address by its /64). */
 export const APP_TOKENS_PER_KEY_PER_MINUTE = 10;
 export const APP_TOKENS_PER_ADDRESS_PER_MINUTE = 60;
-/**
- * The `Deprecation` header (RFC 9745) on an app route answered to Basic:
- * deprecated since 19 November 2026 (0.9.0-dev.72), as a structured date.
- */
-export const APP_BASIC_DEPRECATION = '@1795046400';
-
 /** `POST /api/v1/apps/token`'s answer, as RFC 6749 §5.1 has it. */
 export interface AppAccessToken {
   access_token: string;

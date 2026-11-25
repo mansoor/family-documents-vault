@@ -145,7 +145,7 @@ describe.skipIf(!testAdminUrl())('connected apps: links and deletes (0.9.0, APP3
     body?: unknown,
   ): Promise<LightMyRequestResponse> {
     const bytes = body === undefined ? undefined : Buffer.from(JSON.stringify(body));
-    const signed = basicFor(a);
+    const signed = await h.bearerFor(a);
     return h.app.inject({
       method,
       url: target,
@@ -625,14 +625,16 @@ describe.skipIf(!testAdminUrl())('connected apps: links and deletes (0.9.0, APP3
       .items.map((l) => l.text);
     expect(activity).toEqual(
       expect.arrayContaining([
+        'Owner via Acme Money listed “Tamsin’s phone bill”',
         'Owner via Acme Money read the details of “Tamsin’s phone bill”',
         'Owner via Acme Money made a link to view “Tamsin’s phone bill”',
         'Owner via Acme Money opened “Tamsin’s phone bill”',
         'Owner via Acme Money made a link to download “Tamsin’s phone bill”',
       ]),
     );
-    // The list: one line an hour for the owners and the app's person, never
-    // a line on every document it listed.
+    // The list: on the document, the day's line that it was listed
+    // (0.9.0-dev.101); its looking up documents, one line an hour for the
+    // owners and the app's person alone.
     expect(activity.join('\n')).not.toContain('looked up documents');
     expect(await lines()).toContain('Owner via Acme Money looked up documents');
     const made = await admin.query<{ n: string }>(

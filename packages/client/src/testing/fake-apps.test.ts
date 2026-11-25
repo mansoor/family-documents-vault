@@ -832,7 +832,7 @@ describe('the fake vault: API keys an owner generates (APP6)', () => {
     expect(await code(app.me())).toEqual([401, 'app_key_revoked']);
   });
 
-  it('a request’s key: Basic alone, failed tries limited a minute, revoked or removed, and only on app routes', async () => {
+  it('a request’s key: Basic alone, on the token route alone, failed tries limited a minute, revoked or removed', async () => {
     vi.useFakeTimers({ toFake: ['Date'] });
     vi.setSystemTime(new Date('2026-11-01T12:00:10Z'));
     const { vault, api, t, made, client } = await setUp();
@@ -840,8 +840,15 @@ describe('the fake vault: API keys an owner generates (APP6)', () => {
       permissions: ['documents.send'],
       expires_in_days: 30,
     });
-    const raw = (headers: Record<string, string>, path = '/api/v1/apps/me') =>
-      vault.fetch(`https://fake.example${path}`, { method: 'GET', headers });
+    // The token route by default, where the key itself is taken; a GET elsewhere.
+    const raw = (headers: Record<string, string>, path = '/api/v1/apps/token') =>
+      path === '/api/v1/apps/token'
+        ? vault.fetch(`https://fake.example${path}`, {
+            method: 'POST',
+            headers: { ...headers, 'content-type': 'application/x-www-form-urlencoded' },
+            body: 'grant_type=client_credentials',
+          })
+        : vault.fetch(`https://fake.example${path}`, { method: 'GET', headers });
     const basic = `Basic ${toBase64(new TextEncoder().encode(`${key.client_id}:${key.secret}`))}`;
     const codeOf = async (r: Awaited<ReturnType<typeof raw>>) =>
       [r.status, ((await r.json()) as { error: { code: string } }).error.code] as const;
@@ -856,6 +863,13 @@ describe('the fake vault: API keys an owner generates (APP6)', () => {
       'app_key_required',
     ]);
     expect((await raw({ authorization: basic })).status).toBe(200);
+    // On every other app route the key is refused (0.9.0-dev.101): an
+    // access token alone, and no word of deprecation.
+    for (const path of ['/api/v1/apps/me', '/api/v1/apps/documents']) {
+      const viaBasic = await raw({ authorization: basic }, path);
+      expect(viaBasic.headers.get('deprecation')).toBeNull();
+      expect(await codeOf(viaBasic)).toEqual([401, 'app_key_required']);
+    }
     // Its key is no sign-in: refused on the family's routes.
     expect(await codeOf(await raw({ authorization: basic }, '/api/v1/documents'))).toEqual([
       401,

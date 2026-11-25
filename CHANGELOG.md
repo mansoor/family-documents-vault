@@ -6,6 +6,16 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.9.0-dev.101] - 2026-11-24 — connected apps use access tokens only, and what they list shows on each document
+
+### Added
+
+- **A document's Activity now says when a connected app was given it in a list**: "Acme Money listed “October bill”" (or "Ahmed via Acme Money …" for an app acting as a person). An app syncing every few minutes adds one such line a day to each document it is given, so the family can see which papers each app has received. In the household's Activity log, the documents an app was given at once are one line: "Acme Money listed 12 documents". The line is shown to whoever may see the document, as "read the details of" is. Being listed by an app never stops you from undoing what you just did — filing a document or a new version from your uploads, or a renewal's new details; an app reading its details still stops an Undo of filing, as before.
+
+### Removed
+
+- **A connected app can no longer send its API key on every request.** It sends its key to `POST /api/v1/apps/token` alone, for a 15-minute access token, and sends that token (`Authorization: Bearer`) on every other request, as the README shows. The key sent anywhere else is refused (`401 app_key_required`). This was announced in 0.9.0-dev.72; apps built with `@fdv/client` already work this way.
+
 ## [0.9.0-dev.100] - 2026-11-24 — smaller filter badges, and tabs that don't scroll up and down
 
 ### Changed

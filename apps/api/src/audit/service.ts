@@ -570,6 +570,9 @@ const RULES: ReadonlyMap<string, Audience | typeof BY_TYPE> = new Map<
   // for whoever may see it, as a download's is.
   ['app.looked_up', ownersThePersonAndTheActor],
   ['app.read', BY_TYPE],
+  // 0.9.0-dev.101: a document handed it in a list or its feed, once a day —
+  // that document's line, for whoever may see it, as a read's is.
+  ['app.listed', BY_TYPE],
   // 0.9.0-dev.77: a link it made to one document, to view or download —
   // that document's line, for whoever may see it, as a read's is.
   ['app.link_made', BY_TYPE],
@@ -1017,10 +1020,13 @@ export class AuditService {
       for (const { line } of ready) {
         if (!inDays(line.at) || !activityLineKept(line, filters, isFamily, () => '')) continue;
         const e = all.find((x) => x.id === line.id);
+        // The documents one answer handed an app, folded into one line
+        // (0.9.0-dev.101): about none of them alone, so it names none.
+        const several = e?.action === 'app.listed' && line.document_id === null;
         yield {
           line,
           who: line.actor_member_id ? (start.family.get(line.actor_member_id) ?? null) : null,
-          document: e ? documentNamed(e) : null,
+          document: e && !several ? documentNamed(e) : null,
         };
       }
       const last = rows[rows.length - 1];
