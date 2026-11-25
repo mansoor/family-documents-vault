@@ -226,7 +226,7 @@ export function secretTagWarning(tag: string): string {
 /**
  * What a tag field offers before anything is typed (0.9.0-dev.103): the
  * tags used most recently, as GET /tags?sort=recent lists them, but those
- * the document has already — five at most.
+ * the document has already, each once whatever its case — five at most.
  */
 export function recentTagOffers(
   recent: readonly { tag: string }[],
@@ -234,10 +234,24 @@ export function recentTagOffers(
   limit = RECENT_TAGS_OFFERED,
 ): string[] {
   const had = new Set(have.map(tagKey));
-  return recent
-    .filter((t) => !had.has(tagKey(t.tag)))
+  return onceEach(recent.filter((t) => !had.has(tagKey(t.tag))))
     .slice(0, limit)
     .map((t) => t.tag);
+}
+
+/**
+ * Each tag once, whatever its case — "agent: Sam Lee" and "agent: sam lee"
+ * are one — the first of them kept. The vault lists one spelling of each,
+ * but a field offers what it is given, and never the same tag twice.
+ */
+function onceEach<T extends { tag: string }>(tags: readonly T[]): T[] {
+  const seen = new Set<string>();
+  return tags.filter((t) => {
+    const key = tagKey(t.tag);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 /** A tag in the list of tags (GET /tags), as far as this matters here. */
@@ -250,7 +264,7 @@ export interface KnownTag {
  * What the tag field offers as somebody types (0.9.0, T1): after
  * "locker: ", the values already used for that label; otherwise the tags
  * that start with what is typed, or whose label does — most used first,
- * never one the document has already.
+ * each once whatever its case, never one the document has already.
  */
 export function tagSuggestions(
   typed: string,
@@ -277,9 +291,9 @@ export function tagSuggestions(
     }
     return tagKey(t.tag).startsWith(start.trim());
   };
-  return [...known]
-    .filter(fits)
-    .sort((a, b) => b.count - a.count || a.tag.localeCompare(b.tag))
+  return onceEach(
+    [...known].filter(fits).sort((a, b) => b.count - a.count || a.tag.localeCompare(b.tag)),
+  )
     .slice(0, limit)
     .map((t) => t.tag);
 }
