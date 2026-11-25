@@ -4210,8 +4210,11 @@ a.menu-item {
 .tabs {
   display: flex;
   gap: 4px;
-  border-bottom: 1px solid var(--border);
+  /* The line under them drawn inside, under the chosen tab's: a tab pushed
+     out over a border made the row scroll up and down as well as across. */
+  box-shadow: inset 0 -1px 0 var(--border);
   overflow-x: auto;
+  overflow-y: hidden;
 }
 
 .tab {
@@ -4219,7 +4222,6 @@ a.menu-item {
   align-items: center;
   min-height: var(--tap);
   padding: 0 12px;
-  margin-bottom: -1px;
   border-bottom: 3px solid transparent;
   color: var(--ink-muted);
   font-weight: 600;
@@ -9630,4 +9632,79 @@ button.arrange-scope {
   padding: 0;
   margin-bottom: 4px;
   font-weight: 600;
+}
+
+/* A filter chosen (Documents, a collection's, Activity; the owner's ask of
+   24 Nov 2026): a small badge, not a button — its words and a × to take it
+   off — and Clear all a link after them. Each × and Clear all still answer
+   a finger's press around them (NFR-09), though they are drawn small. */
+.folder-chip.filter-badge {
+  min-height: 0;
+  height: 28px;
+  gap: 2px;
+  padding: 0 3px 0 11px;
+  border: 1px solid var(--border);
+  background: var(--accent-soft);
+  color: var(--ink-soft);
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1;
+}
+
+.filter-badge .chip-x {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--ink-muted);
+  font: inherit;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.filter-badge .chip-x:hover {
+  background: var(--border);
+  color: var(--ink);
+}
+
+.chips-clear {
+  position: relative;
+  padding: 0 2px;
+  border: 0;
+  background: none;
+  color: var(--ink-muted);
+  font: inherit;
+  font-size: 13px;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+
+.chips-clear:hover {
+  color: var(--ink);
+}
+
+/* The press around them: a touch target's height, a little wider. */
+.filter-badge .chip-x::after,
+.chips-clear::after {
+  content: '';
+  position: absolute;
+  inset: calc((22px - var(--tap)) / 2) -4px;
+}
+
+.filter-chips {
+  gap: 6px 8px;
+}
+
+.filter-badge .chip-x:focus-visible,
+.chips-clear:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
 }

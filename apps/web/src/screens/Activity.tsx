@@ -414,11 +414,11 @@ export function ActivityScreen() {
       >
         {/* One document's lines (0.9.0, DA): said, and taken off. */}
         {about && (
-          <span className="folder-chip">
+          <span className="folder-chip filter-badge">
             {chip}
             <button
               type="button"
-              className="btn btn-quiet btn-small"
+              className="chip-x"
               aria-label={`Take off the filter ${chip}`}
               onClick={showEverything}
             >
