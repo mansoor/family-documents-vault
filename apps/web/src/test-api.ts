@@ -386,8 +386,30 @@ export interface FakeState {
   autoLockMine?: number | null;
   lockBodies?: unknown[];
   stillHere?: number;
-  /** Why (0.9.0): `confirm` when a passkey or a code is set up and this sign-in has not given it. */
-  twoStepReason?: 'enrol' | 'confirm';
+  /**
+   * Why (0.9.0): `confirm` when a passkey or a code is set up and this
+   * sign-in has not given it; `recovered` (0.9.0-dev.104) after a recovery
+   * code or the security questions stood in.
+   */
+  twoStepReason?: 'enrol' | 'confirm' | 'recovered';
+  /**
+   * Getting back in (0.9.0-dev.104), said when a test gives it:
+   * `features.recovery_codes` and `security_questions`; what a sign-in's
+   * challenge offers in place of the second step (`ways`); a sign-in whose
+   * code by text can't be sent (`textDown`: `409 text_code_unavailable`);
+   * and the person's codes. The recovery code that works is "abcde-fghjk",
+   * and the answers "Biscuit", "Paper round" and "Red Racer".
+   */
+  recovery?: {
+    ways: Array<'recovery_code' | 'security_questions'>;
+    textDown?: boolean;
+    remaining?: number;
+    madeAt?: string | null;
+    secondStep?: boolean;
+    madeCalls?: number;
+    /** Making codes fails this many times first. */
+    failMake?: number;
+  };
   /** A password sign-in answers that the second step is the owner's passkey (0.9.0). */
   passkeySecondStep?: boolean;
   /**
@@ -1827,6 +1849,8 @@ export function installFakeApi(state: FakeState) {
           recently_opened: true,
           // The tags used most recently (0.9.0-dev.103).
           recent_tags: true,
+          // Recovery codes and security questions (0.9.0-dev.104): said when a test gives them.
+          ...(state.recovery ? { recovery_codes: true, security_questions: true } : {}),
           // Who opened a link; health records kept as they are (0.9.0, H5).
           ...(state.linkOpenings ? { share_opens: true, record_formats: true } : {}),
           // Caregivers and turning 18 (0.9.0, H1b): said when a test asks.
@@ -1887,9 +1911,120 @@ export function installFakeApi(state: FakeState) {
         201,
       );
     }
+    // A sign-in whose code by text can't be sent (0.9.0-dev.104): refused,
+    // with the interim token for a stand-in.
+    if (path === '/api/v1/auth/password' && state.recovery?.textDown) {
+      return json(
+        {
+          error: {
+            code: 'text_code_unavailable',
+            message:
+              'We couldn’t send your code by text. Use a recovery code or your security questions, or ask an owner to send you a password reset.',
+            mfa_token: 'mfa',
+            recovery: state.recovery.ways,
+            retriable: false,
+            request_id: 'test',
+          },
+        },
+        409,
+      );
+    }
     // A sign-in whose second step is a texted code (SMS3).
     if (path === '/api/v1/auth/password' && state.signInByText) {
-      return json(state.signInByText);
+      return json({
+        ...state.signInByText,
+        ...(state.recovery ? { recovery: state.recovery.ways } : {}),
+      });
+    }
+    // What stands in for the second step (0.9.0-dev.104).
+    if (path === '/api/v1/auth/mfa/recovery-code' && method === 'POST') {
+      const typed = String((body as { code?: string }).code ?? '')
+        .toLowerCase()
+        .replace(/[^a-z0-9]/g, '');
+      if (typed !== 'abcdefghjk') {
+        return refuse(
+          401,
+          'recovery_code_wrong',
+          'That recovery code isn’t right, or it was used already.',
+        );
+      }
+      state.refreshToken = TOKENS.refresh_token;
+      state.twoStepSetupPending = true;
+      state.twoStepReason = 'recovered';
+      return json({ ...TOKENS, two_step_setup_required: true });
+    }
+    if (path === '/api/v1/auth/mfa/questions' && method === 'POST') {
+      return json({
+        questions: [
+          'What was the name of your first pet?',
+          'What was your first job?',
+          'What was my first bike called?',
+        ],
+      });
+    }
+    if (path === '/api/v1/auth/mfa/answers' && method === 'POST') {
+      const given = (body as { answers?: string[] }).answers ?? [];
+      if (given.join('|') !== 'Biscuit|Paper round|Red Racer') {
+        return refuse(
+          401,
+          'security_answers_wrong',
+          'Those answers aren’t all right. 4 tries left before your security questions are refused for a day.',
+        );
+      }
+      state.refreshToken = TOKENS.refresh_token;
+      state.twoStepSetupPending = true;
+      state.twoStepReason = 'recovered';
+      return json({ ...TOKENS, two_step_setup_required: true });
+    }
+    if (path === '/api/v1/auth/security-questions' && state.recovery) {
+      const r = state.recovery as NonNullable<FakeState['recovery']> & {
+        questions?: Array<{ key: string; text: string }>;
+      };
+      if (method === 'PUT') {
+        const given = (body as { questions: Array<{ key: string; text?: string }> }).questions;
+        r.questions = given.map((q) => ({ key: q.key, text: q.text ?? `The ${q.key} question` }));
+      }
+      if (method === 'DELETE') delete r.questions;
+      return json({
+        set: r.questions !== undefined,
+        questions: r.questions ?? [],
+        set_at: r.questions ? new Date().toISOString() : null,
+        offered: true,
+        refused_until: null,
+      });
+    }
+    if (path === '/api/v1/household/security-questions' && state.recovery) {
+      return json({ on: true, can_change: true });
+    }
+    if (path === '/api/v1/auth/recovery-codes' && state.recovery) {
+      const r = state.recovery;
+      if (method === 'POST') {
+        if ((r.failMake ?? 0) > 0) {
+          r.failMake = (r.failMake ?? 0) - 1;
+          return refuse(503, 'busy', 'The vault was busy just then. Try again.');
+        }
+        r.madeCalls = (r.madeCalls ?? 0) + 1;
+        r.remaining = 10;
+        r.madeAt = new Date().toISOString();
+        state.twoStepSetupPending = false;
+        return json(
+          {
+            remaining: 10,
+            made_at: r.madeAt,
+            low: false,
+            second_step: true,
+            codes: Array.from({ length: 10 }, (_, i) => `code${i}-abcde`),
+          },
+          201,
+        );
+      }
+      const remaining = r.remaining ?? 0;
+      return json({
+        remaining,
+        made_at: r.madeAt ?? null,
+        low: (r.madeAt ?? null) !== null && remaining <= 2,
+        second_step: r.secondStep ?? state.twoStep === true,
+      });
     }
     if (path === '/api/v1/auth/mfa/text' && method === 'POST') {
       return json({
@@ -1975,6 +2110,8 @@ export function installFakeApi(state: FakeState) {
       path !== '/api/v1/auth/logout' &&
       !path.startsWith('/api/v1/auth/step-up') &&
       !path.startsWith('/api/v1/auth/passkeys') &&
+      path !== '/api/v1/auth/text-codes' &&
+      path !== '/api/v1/auth/recovery-codes' &&
       path !== '/api/v1/auth/refresh' &&
       path !== '/api/v1/capabilities'
     ) {

@@ -1,5 +1,12 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
-import { BACKGROUND_HEADER, REFRESH_COOKIE_HEADER, REFRESH_COOKIE_MODE } from '@fdv/shared';
+import {
+  BACKGROUND_HEADER,
+  REFRESH_COOKIE_HEADER,
+  REFRESH_COOKIE_MODE,
+  SECURITY_ANSWER_MAX,
+  SECURITY_QUESTION_COUNT,
+  SECURITY_QUESTION_MAX,
+} from '@fdv/shared';
 import { z } from 'zod';
 import { ApiError } from '../errors.js';
 import { clientAddressOf } from '../client-address.js';
@@ -10,6 +17,7 @@ import type { PasskeyService } from './passkeys.js';
 import type { CredentialInput, StepUpService } from './step-up.js';
 import type { RestrictionService } from '../household/restrictions.js';
 import type { TextCodeService } from '../sms/codes.js';
+import type { RecoveryService } from './recovery.js';
 import {
   changeBody,
   completeBody,
@@ -195,6 +203,12 @@ export const TWO_STEP_SETUP_ROUTES: ReadonlySet<string> = new Set([
   'GET /api/v1/auth/passkeys',
   'POST /api/v1/auth/passkeys/challenge',
   'POST /api/v1/auth/passkeys',
+  // Since 0.9.0-dev.104: codes by text set up again, and recovery codes
+  // made — what lifts a session a recovery left (`recovered`).
+  'GET /api/v1/auth/text-codes',
+  'PUT /api/v1/auth/text-codes',
+  'GET /api/v1/auth/recovery-codes',
+  'POST /api/v1/auth/recovery-codes',
 ]);
 
 /**
@@ -214,6 +228,9 @@ export const SESSION_LOCK_ROUTES: ReadonlySet<string> = new Set([
   'GET /api/v1/auth/step-up',
   'POST /api/v1/auth/step-up/text',
 ]);
+
+/** The answers to the security questions, in their order (0.9.0-dev.104). */
+const answersField = z.array(z.string().max(SECURITY_ANSWER_MAX)).length(SECURITY_QUESTION_COUNT);
 
 /** A credential given again, to confirm it's you or to unlock. */
 const credentialBody = z.object({
@@ -273,6 +290,7 @@ export function registerAuth(
   passwords?: PasswordService,
   restrictions?: RestrictionService,
   textCodes?: TextCodeService,
+  recovery?: RecoveryService,
 ): void {
   app.decorateRequest('principal', null);
 
@@ -366,6 +384,141 @@ export function registerAuth(
     void reply.headers({ 'cache-control': 'no-store' });
     return auth.sendSignInCode(body.mfa_token);
   });
+
+  if (recovery) {
+    // A recovery code, or the security questions, in place of a lost second
+    // step (0.9.0-dev.104): only after the password was right (the interim
+    // token says so), each try reserved on the account's own count first,
+    // and with a new password chosen in the same request.
+    app.post('/api/v1/auth/mfa/recovery-code', tight, async (req, reply) => {
+      const body = parse(
+        z
+          .object({
+            mfa_token: z.string().min(1),
+            code: z.string().trim().min(1).max(40),
+            new_password: newPasswordField,
+          })
+          .strict(),
+        req.body,
+      );
+      void reply.headers({ 'cache-control': 'no-store' });
+      return auth.signInWithRecovery(
+        body.mfa_token,
+        { code: body.code },
+        body.new_password,
+        metaOf(req),
+      );
+    });
+    app.post('/api/v1/auth/mfa/questions', tight, async (req, reply) => {
+      const body = parse(z.object({ mfa_token: z.string().min(1) }).strict(), req.body);
+      void reply.headers({ 'cache-control': 'no-store' });
+      return auth.recoveryQuestions(body.mfa_token);
+    });
+    app.post('/api/v1/auth/mfa/answers', tight, async (req, reply) => {
+      const body = parse(
+        z
+          .object({
+            mfa_token: z.string().min(1),
+            answers: answersField,
+            new_password: newPasswordField,
+          })
+          .strict(),
+        req.body,
+      );
+      void reply.headers({ 'cache-control': 'no-store' });
+      return auth.signInWithRecovery(
+        body.mfa_token,
+        { answers: body.answers },
+        body.new_password,
+        metaOf(req),
+      );
+    });
+
+    // The person's own recovery codes: how many are left, and a new set,
+    // shown once. Making one is changing how they sign in, so confirmed
+    // it's them first.
+    app.get('/api/v1/auth/recovery-codes', { preHandler: app.requireAuth }, async (req, reply) => {
+      void reply.headers({ 'cache-control': 'no-store' });
+      return recovery.codesState(req.principal as Principal);
+    });
+    app.post('/api/v1/auth/recovery-codes', { preHandler: app.requireAuth }, async (req, reply) => {
+      const p = req.principal as Principal;
+      await stepUp?.require(p, 'change_sign_in');
+      void reply.headers({ 'cache-control': 'no-store' });
+      return reply.status(201).send(await recovery.makeCodes(p, metaOf(req)));
+    });
+
+    // The person's own security questions: never their answers.
+    const questionsBody = z
+      .object({
+        questions: z
+          .array(
+            z
+              .object({
+                key: z.string().min(1).max(40),
+                text: z.string().max(SECURITY_QUESTION_MAX).optional(),
+                answer: z.string().max(SECURITY_ANSWER_MAX),
+              })
+              .strict(),
+          )
+          .length(SECURITY_QUESTION_COUNT),
+      })
+      .strict();
+    app.get(
+      '/api/v1/auth/security-questions',
+      { preHandler: app.requireAuth },
+      async (req, reply) => {
+        void reply.headers({ 'cache-control': 'no-store' });
+        return recovery.questionsState(req.principal as Principal);
+      },
+    );
+    app.put(
+      '/api/v1/auth/security-questions',
+      { preHandler: app.requireAuth },
+      async (req, reply) => {
+        const p = req.principal as Principal;
+        const body = parse(questionsBody, req.body ?? {});
+        await stepUp?.require(p, 'change_sign_in');
+        void reply.headers({ 'cache-control': 'no-store' });
+        return recovery.setQuestions(p, body, metaOf(req));
+      },
+    );
+    app.delete(
+      '/api/v1/auth/security-questions',
+      { preHandler: app.requireAuth },
+      async (req, reply) => {
+        const p = req.principal as Principal;
+        await stepUp?.require(p, 'change_sign_in');
+        void reply.headers({ 'cache-control': 'no-store' });
+        return recovery.removeQuestions(p, metaOf(req));
+      },
+    );
+
+    // Whether the household offers security questions: read by everybody
+    // signed in; an owner's to change (`403 forbidden` to anybody else),
+    // with a passkey or a code — an owner power over other people's
+    // sign-ins.
+    app.get('/api/v1/household/security-questions', { preHandler: app.requireAuth }, async (req) =>
+      recovery.rule(req.principal as Principal),
+    );
+    app.put(
+      '/api/v1/household/security-questions',
+      { preHandler: app.requireAuth },
+      async (req) => {
+        const p = req.principal as Principal;
+        const body = parse(z.object({ on: z.boolean() }).strict(), req.body ?? {});
+        if (p.role !== 'owner') {
+          throw new ApiError(
+            403,
+            'forbidden',
+            'Only an owner can choose whether security questions are offered.',
+          );
+        }
+        await stepUp?.requireOwnerPower(p, 'manage_sign_ins');
+        return recovery.setRule(p, body.on, metaOf(req));
+      },
+    );
+  }
 
   app.post('/api/v1/auth/refresh', tight, async (req) => {
     if (!wantsRefreshCookie(req)) {
@@ -691,7 +844,19 @@ export function registerAuth(
 
   app.post('/api/v1/password-resets/complete', tight, async (req, reply) => {
     const body = parse(completeBody, req.body ?? {});
-    const { email } = await passwords.reset(body.token, body.password, metaOf(req), body.code);
+    // A recovery code, or the answers, in place of the code by text (0.9.0-dev.104).
+    const standIn = body.recovery_code
+      ? { code: body.recovery_code }
+      : body.answers
+        ? { answers: body.answers }
+        : undefined;
+    const { email } = await passwords.reset(
+      body.token,
+      body.password,
+      metaOf(req),
+      body.code,
+      standIn,
+    );
     await auth.failuresCleared(email);
     // No session, as below.
     return reply.status(200).send({ email });
