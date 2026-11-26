@@ -27,6 +27,16 @@ export interface ErrorBody {
      * 0.9.0-dev.79), as the capability document says it.
      */
     min_client_version?: string;
+    /**
+     * A sign-in whose code by text could not be sent (`text_code_unavailable`,
+     * 0.9.0-dev.104): the interim token the password earned, for a recovery
+     * code or the security questions to stand in for the text (`recovery`
+     * says which the person has). Nobody is signed in.
+     */
+    mfa_token?: string;
+    recovery?: string[];
+    /** And `passkey` when a passkey of theirs signs them in on its own. */
+    methods?: string[];
   };
 }
 
@@ -47,6 +57,10 @@ export class ApiError extends Error {
       factor?: boolean;
       /** The oldest phone app this vault works with (app_update_required). */
       minClientVersion?: string;
+      /** A refused sign-in's interim token, and what may stand in (0.9.0-dev.104). */
+      mfaToken?: string;
+      recovery?: string[];
+      methods?: string[];
     } = {},
   ) {
     super(message);
@@ -68,6 +82,9 @@ export class ApiError extends Error {
     if (this.options.minClientVersion !== undefined) {
       error.min_client_version = this.options.minClientVersion;
     }
+    if (this.options.mfaToken !== undefined) error.mfa_token = this.options.mfaToken;
+    if (this.options.recovery !== undefined) error.recovery = this.options.recovery;
+    if (this.options.methods !== undefined) error.methods = this.options.methods;
     return { error };
   }
 }

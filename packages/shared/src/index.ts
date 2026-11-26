@@ -67,3 +67,4 @@ export * from './record-formats.js';
 export * from './apps.js';
 export * from './auto-lock.js';
 export * from './password-rules.js';
+export * from './recovery.js';

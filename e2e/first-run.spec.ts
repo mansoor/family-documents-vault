@@ -69,6 +69,11 @@ test('first run to first document', async ({ page }) => {
     await page.getByLabel('Code from the app').fill(await freshTotpCode(key));
     await page.getByRole('button', { name: 'Turn on' }).click();
 
+    // Its recovery codes, made beside it and shown once (0.9.0-dev.104).
+    await expect(page.getByRole('heading', { name: 'Your recovery codes' })).toBeVisible();
+    await expect(page.getByTestId('recovery-codes').locator('li')).toHaveCount(10);
+    await page.getByRole('button', { name: 'I’ve kept them' }).click();
+
     await expect(page.getByRole('heading', { name: 'A few quick questions' })).toBeVisible();
     await page.getByRole('button', { name: 'We own it' }).click();
     await page.getByRole('button', { name: '1', exact: true }).click();

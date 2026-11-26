@@ -32,8 +32,9 @@ import { alertsSent, createHarness, holdsDigits, type Harness } from '../test-ha
  * confirm it's them — each sent, wrong, ended, tried too often, held to its
  * limits, refused past the month's cap, and said plainly when the
  * household's texts don't work. A text is only ever in addition: never an
- * owner's only second step, never what an owner's powers ask, and a reset
- * that cannot ask for its code goes on, and its owners are told. SMS Gate
+ * owner's only second step, never what an owner's powers ask; and since
+ * 0.9.0-dev.104 a sign-in or a reset that cannot ask for its code is
+ * refused, a recovery code standing in, and its owners are told. SMS Gate
  * is a fake here, told what to do.
  */
 
@@ -162,6 +163,7 @@ describe.skipIf(!testAdminUrl())('codes by text (SMS3)', () => {
     await admin.query('delete from sms_message');
     await admin.query("update sms_settings set status = 'ok', monthly_cap = 1000");
     await admin.query('update account set sign_in_text = false, reset_text = false');
+    await admin.query('update account set recovered_at = null');
     await confirmed(owner, OWNER_PHONE);
     await confirmed(adult, ADULT_PHONE);
     await confirmed(teen, TEEN_PHONE);
@@ -440,11 +442,16 @@ describe.skipIf(!testAdminUrl())('codes by text (SMS3)', () => {
         .find((u) => u) as string;
       return url.slice(url.lastIndexOf('#') + 1);
     };
-    const complete = async (token: string, code?: string) => {
+    const complete = async (
+      token: string,
+      code?: string,
+      standIn: Record<string, unknown> = {},
+    ) => {
       const r = await call(null, 'POST', '/api/v1/password-resets/complete', {
         token,
         password: NEW_PASSWORD,
         ...(code ? { code } : {}),
+        ...standIn,
       });
       if (r.statusCode === 200 && r.json<{ email: string }>().email === RAFI) {
         rafiPassword = NEW_PASSWORD;
@@ -561,37 +568,119 @@ describe.skipIf(!testAdminUrl())('codes by text (SMS3)', () => {
       expect(errorOf(r).code).toBe('sms_cap_reached');
     });
 
-    it('goes on without the code when texts are not working, and tells the owners', async () => {
+    it('is refused when texts are not working, and tells the owners; a recovery code stands in (0.9.0-dev.104)', async () => {
       expect((await textCodes(rafi, { reset: true })).statusCode).toBe(200);
+      await fresh(rafi);
+      const made = await call(rafi, 'POST', '/api/v1/auth/recovery-codes');
+      expect(made.statusCode, made.body).toBe(201);
+      const codes = made.json<{ codes: string[] }>().codes;
       const token = await forgot();
       await smsStatus('untested');
       const preview = (
         await call(null, 'POST', '/api/v1/password-resets/lookup', { token })
       ).json<ResetPreview>();
-      expect(preview.text_code_to).toBeNull();
+      expect(preview).toMatchObject({
+        text_code_to: null,
+        text_code_unavailable: true,
+        recovery: ['recovery_code'],
+        security_questions: null,
+      });
       const before = h.jobs.length;
-      const done = await complete(token);
-      expect(done.statusCode, done.body).toBe(200);
+      const refused = await complete(token);
+      expect(refused.statusCode, refused.body).toBe(409);
+      expect(errorOf(refused)).toMatchObject({
+        code: 'text_code_unavailable',
+        message:
+          'We couldn’t send your code by text. Use a recovery code or your security questions, or ask an owner to send you a password reset.',
+      });
       const told = alertsSent({ jobs: h.jobs.slice(before) }).filter(
-        (a) => a.subject === 'A password was reset without its code by text',
+        (a) => a.subject === 'A password reset was stopped: its code by text couldn’t be sent',
       );
       expect(told).toHaveLength(1);
       expect(told[0]?.account_ids).toEqual([await accountOf(owner)]);
       // By email and push, never by text, which is what failed; and with no
-      // number or code in it (the owner's decision of 12 Nov 2026).
+      // number or code in it.
       expect(told[0]).toMatchObject({ no_text: true });
       expect(told[0]).not.toHaveProperty('email_only');
       expect(told[0]?.body).toMatch(
-        /Rafi Khan’s password was reset on .+ because the household’s text messages aren’t set up and working now\./,
+        /Rafi Khan tried to reset their password on .+, and couldn’t: the code by text they asked for couldn’t be sent, because the household’s text messages aren’t set up and working now\./,
       );
       expect(JSON.stringify(told[0])).not.toContain('606');
-      const skipped = await admin.query<{ detail: Record<string, string>; object_id: string }>(
-        "select detail, object_id from audit_event where action = 'auth.text_code_skipped' order by id desc limit 1",
+      const line = await admin.query<{ detail: Record<string, string>; object_id: string }>(
+        "select detail, object_id from audit_event where action = 'auth.text_code_refused' order by id desc limit 1",
       );
-      expect(skipped.rows[0]).toEqual({
+      expect(line.rows[0]).toEqual({
         detail: { at: 'reset', why: 'not_ready' },
         object_id: rafi.member_id,
       });
+      // A wrong recovery code finishes nothing; a right one does, and takes
+      // away codes by text, as a recovery does.
+      expect(errorOf(await complete(token, undefined, { recovery_code: 'aaaaa-aaaaa' })).code).toBe(
+        'recovery_code_wrong',
+      );
+      const done = await complete(token, undefined, { recovery_code: codes[3] });
+      expect(done.statusCode, done.body).toBe(200);
+      const after = await admin.query<{ reset_text: boolean; recovered: boolean }>(
+        'select reset_text, recovered_at is not null as recovered from account where id = $1',
+        [await accountOf(rafi)],
+      );
+      expect(after.rows[0]).toEqual({ reset_text: false, recovered: true });
+      const used = await admin.query<{ detail: Record<string, unknown> }>(
+        "select detail from audit_event where action = 'auth.password_reset' order by id desc limit 1",
+      );
+      expect(used.rows[0]?.detail).toMatchObject({ text_code: 'recovery_code' });
+    });
+
+    it('a link an owner made asks for the code by text as the person’s own would, unless they said the phone is lost', async () => {
+      expect((await textCodes(rafi, { reset: true, sign_in: true })).statusCode).toBe(200);
+      await smsStatus('untested');
+      await h.decider(owner);
+      const ownerLink = async (body: Record<string, unknown>) => {
+        await h.decider(owner);
+        const before = h.jobs.length;
+        const started = await call(
+          owner,
+          'POST',
+          `/api/v1/members/${rafi.member_id}/password-reset`,
+          body,
+        );
+        expect(started.statusCode, started.body).toBeLessThan(300);
+        const url = alertsSent({ jobs: h.jobs.slice(before) })
+          .map((a) => (a as { url?: string }).url)
+          .find((u) => u) as string;
+        return url.slice(url.lastIndexOf('#') + 1);
+      };
+      // As their own link: the code by text asked for, and it can't go.
+      const plain = await ownerLink({});
+      const asked = (
+        await call(null, 'POST', '/api/v1/password-resets/lookup', { token: plain })
+      ).json<ResetPreview>();
+      expect(asked).toMatchObject({ text_code_to: null, text_code_unavailable: true });
+      expect(errorOf(await complete(plain)).code).toBe('text_code_unavailable');
+      // "They’ve lost their phone": no code by text, in the activity log, and
+      // codes by text turned off — at sign-in too, as they have no
+      // authenticator app.
+      const lost = await ownerLink({ lost_phone: true });
+      const line = await admin.query<{ detail: Record<string, unknown> }>(
+        "select detail from audit_event where action = 'member.reset_started' order by id desc limit 1",
+      );
+      expect(line.rows[0]?.detail).toMatchObject({ lost_phone: true });
+      const preview = (
+        await call(null, 'POST', '/api/v1/password-resets/lookup', { token: lost })
+      ).json<ResetPreview>();
+      expect(preview).toMatchObject({ text_code_to: null, text_code_unavailable: false });
+      const done = await complete(lost);
+      expect(done.statusCode, done.body).toBe(200);
+      const after = await admin.query<{ sign_in_text: boolean; reset_text: boolean }>(
+        'select sign_in_text, reset_text from account where id = $1',
+        [await accountOf(rafi)],
+      );
+      expect(after.rows[0]).toEqual({ sign_in_text: false, reset_text: false });
+      // The owner as the tests after this one want them: no second step.
+      await admin.query(
+        'update account set totp_secret = null, totp_confirmed_at = null where id = $1',
+        [await accountOf(owner)],
+      );
     });
 
     it('a person who did not ask is reset as before', async () => {
@@ -701,31 +790,49 @@ describe.skipIf(!testAdminUrl())('codes by text (SMS3)', () => {
       expect((await textCodes(t, { sign_in: true })).statusCode).toBe(200);
       return { t, go: () => signIn(email, password) };
     };
-    /** What the owners were told of a sign-in that skipped its text, and its line in the log. */
+    /** What the owners were told of a sign-in refused for its text, and its line in the log. */
     const toldOf = async (since: number, t: Tokens) => {
       const told = alertsSent({ jobs: h.jobs.slice(since) }).filter(
-        (a) => a.subject === 'A sign-in went ahead without its code by text',
+        (a) => a.subject === 'A sign-in was stopped: its code by text couldn’t be sent',
       );
       const line = await admin.query<{ detail: Record<string, string> }>(
         `select detail from audit_event
-          where action = 'auth.text_code_skipped' and object_id = $1 order by id desc limit 1`,
+          where action = 'auth.text_code_refused' and object_id = $1 order by id desc limit 1`,
         [t.member_id],
       );
       return { told, why: line.rows[0]?.detail };
     };
+    /** A refusal for a text that can't go: no session, and the interim token to stand in. */
+    const refusedForText = (r: LightMyRequestResponse) => {
+      expect(r.statusCode, r.body).toBe(409);
+      const e = r.json<{ error: { code: string; mfa_token?: string; recovery?: string[] } }>()
+        .error;
+      expect(e.code).toBe('text_code_unavailable');
+      expect(typeof e.mfa_token).toBe('string');
+      expect(r.json<{ access_token?: string }>().access_token).toBeUndefined();
+      return e;
+    };
 
-    it('lets them in with the password when the household’s texts are off, and tells the owners', async () => {
+    it('refuses the sign-in when the household’s texts are off, and tells the owners (0.9.0-dev.104)', async () => {
       const { t, go } = await textOnly('Omar', '+447700900505');
       await smsStatus('untested');
+      const sessions = async () =>
+        (
+          await admin.query<{ n: number }>(
+            'select count(*)::int as n from session where account_id = $1',
+            [await accountOf(t)],
+          )
+        ).rows[0]?.n;
+      const had = await sessions();
       const before = h.jobs.length;
-      const r = await go();
-      expect(r.json<{ access_token?: string }>().access_token).toBeTruthy();
+      const e = refusedForText(await go());
+      expect(e.recovery).toEqual([]);
       const { told, why } = await toldOf(before, t);
       expect(why).toEqual({ at: 'sign_in', why: 'not_ready' });
       expect(told).toHaveLength(1);
       expect(told[0]).toMatchObject({ account_ids: [await accountOf(owner)], no_text: true });
       expect(told[0]?.body).toMatch(
-        /^Omar signed in on .+ with their password alone, without the code by text they asked for, because the household’s text messages aren’t set up and working now\. If it wasn’t them/,
+        /^Omar tried to sign in on .+, and couldn’t: the code by text they asked for couldn’t be sent, because the household’s text messages aren’t set up and working now\. They can use a recovery code/,
       );
       // Ids stripped first: a random UUID may hold "505" (the dev.36 flake).
       expect(
@@ -735,14 +842,15 @@ describe.skipIf(!testAdminUrl())('codes by text (SMS3)', () => {
         ),
       ).not.toMatch(/505|\+44/);
       expect(sent).toHaveLength(0);
+      // Nobody was let in.
+      expect(await sessions()).toBe(had);
     });
 
     it('and when SMS Gate does not take the code', async () => {
       const { t, go } = await textOnly('Priya', '+447700900515');
       gate = 'refuse';
       const before = h.jobs.length;
-      const r = await go();
-      expect(r.json<{ access_token?: string }>().access_token).toBeTruthy();
+      refusedForText(await go());
       const { told, why } = await toldOf(before, t);
       expect(why).toEqual({ at: 'sign_in', why: 'not_sent' });
       expect(told[0]?.body).toMatch(/the phone that sends the household’s texts didn’t take it/);
@@ -757,8 +865,7 @@ describe.skipIf(!testAdminUrl())('codes by text (SMS3)', () => {
         [owner.household_id],
       );
       const before = h.jobs.length;
-      const r = await go();
-      expect(r.json<{ access_token?: string }>().access_token).toBeTruthy();
+      refusedForText(await go());
       expect((await toldOf(before, t)).why).toEqual({ at: 'sign_in', why: 'cap_reached' });
     });
 

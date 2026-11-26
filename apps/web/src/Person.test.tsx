@@ -1824,6 +1824,18 @@ describe('a password reset an owner starts (5.29)', () => {
     expect(within(region).getByText('No device at the moment.')).toBeInTheDocument();
   });
 
+  it('“They’ve lost their phone” is sent when ticked, so the link asks for no code by text', async () => {
+    const { state, region } = await showCard({ accounts: { 'm-1': card({ reset_path: 'mail' }) } });
+    const { dialog } = await openReset(region);
+    const lost = within(dialog).getByLabelText(
+      'They’ve lost their phone — don’t ask for the code by text',
+    );
+    expect(lost).not.toBeChecked();
+    fireEvent.click(lost);
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Send the link' }));
+    await waitFor(() => expect(sentTo(state)).toEqual([{ lost_phone: true }]));
+  });
+
   it('a way never heard of is taken as no owner’s: the command, never a link', async () => {
     const { region } = await showCard({
       accounts: { 'm-1': card({ reset_path: 'courier' as never }) },

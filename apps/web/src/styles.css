@@ -9746,3 +9746,14 @@ button.arrange-scope {
   outline: 2px solid var(--ink);
   outline-offset: 2px;
 }
+
+/* Recovery codes, shown once (0.9.0-dev.104): two columns, each easy to copy by hand. */
+.recovery-codes {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px 24px;
+  margin: 0;
+  padding-left: 1.6em;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 16px;
+}

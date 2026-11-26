@@ -44,7 +44,9 @@ import { repairMasterKeyCommand, rotateMasterKeyCommand } from './rotate-master-
  */
 async function main() {
   const command = process.argv[2];
-  if (command === 'reset-password') return resetPassword(process.argv[3]);
+  if (command === 'reset-password') {
+    return resetPassword(process.argv[3], process.argv.slice(4).includes('--lost-phone'));
+  }
   if (command === 'migrate') {
     process.exitCode = await migrateCommand(loadConfig());
     return;
@@ -54,7 +56,7 @@ async function main() {
       'usage: cli.mjs migrate\n' +
         '       cli.mjs rotate-master-key [--even-if-connected]   (with FDV_MASTER_KEY_NEW set)\n' +
         '       cli.mjs repair-master-key [--even-if-connected]   (with FDV_MASTER_KEY_PREVIOUS set)\n' +
-        '       cli.mjs reset-password <email>',
+        '       cli.mjs reset-password <email> [--lost-phone]',
     );
     process.exitCode = 2;
     return;
@@ -74,9 +76,13 @@ async function main() {
       : await repairMasterKeyCommand({ ...common, previous: process.env.FDV_MASTER_KEY_PREVIOUS });
 }
 
-async function resetPassword(email: string | undefined) {
+/**
+ * `--lost-phone` (0.9.0-dev.104): the person has lost their phone, so the
+ * link asks for no code by text, as an owner's may say.
+ */
+async function resetPassword(email: string | undefined, lostPhone = false) {
   if (!email) {
-    console.error('usage: cli.mjs reset-password <email>');
+    console.error('usage: cli.mjs reset-password <email> [--lost-phone]');
     process.exitCode = 2;
     return;
   }
@@ -103,11 +109,12 @@ async function resetPassword(email: string | undefined) {
       null,
       config.FDV_BASE_URL,
     );
-    const reset = await passwords.issue(account.id, 'operator');
+    const reset = await passwords.issue(account.id, 'operator', {}, { skipText: lostPhone });
     console.log(
       `A one-time link for ${account.email}, good for ${RESET_TTL_MINUTES} minutes:\n\n` +
         `  ${passwords.linkFor(reset.token)}\n\n` +
-        'Hand it to them directly. It signs every one of their devices out when it is used.',
+        'Hand it to them directly. It signs every one of their devices out when it is used.' +
+        (lostPhone ? ' It asks for no code by text.' : ''),
     );
   } finally {
     await db.destroy();

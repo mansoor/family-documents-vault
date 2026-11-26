@@ -11,6 +11,7 @@ import {
   SESSION_LOCKED_MESSAGE,
   shareEndWords,
   suspensionInEffect,
+  TEXT_CODE_UNAVAILABLE_MESSAGE,
   type AlertTextKind,
   type MfaChallenge,
   type TextCodeSent,
@@ -30,7 +31,7 @@ import {
 import argon2 from 'argon2';
 import { sql } from 'kysely';
 import { ApiError } from '../errors.js';
-import { mustMeetRules } from './password-rules.js';
+import { householdPasswordRules, mustMeetRules } from './password-rules.js';
 import type { SetupToken } from './setup-token.js';
 import { KnownDevices, type SignInGuard } from './sign-in-guard.js';
 import { CODE_USED_MESSAGE, CODE_USED_REASON, type CodeCheck } from './totp.js';
@@ -53,6 +54,7 @@ import {
   type TextCodeService,
   type TextSkipped,
 } from '../sms/codes.js';
+import { recoveryUnfinished, type RecoveryProof, type RecoveryService } from './recovery.js';
 
 /**
  * Accounts, sessions and the first-run setup. Everything here runs inside
@@ -61,7 +63,8 @@ import {
  */
 
 // Argon2id parameters: OWASP's recommended minimum, comfortably fast on a Pi 5.
-const ARGON2: argon2.HashOptions & { raw?: false } = {
+// Recovery codes and security answers are hashed with them too (0.9.0-dev.104).
+export const ARGON2: argon2.HashOptions & { raw?: false } = {
   type: argon2.argon2id,
   memoryCost: 19 * 1024,
   timeCost: 2,
@@ -180,8 +183,13 @@ export interface Principal {
   autoLockMinutes?: AutoLockMinutes;
 }
 
-/** Why a session must deal with two-step sign-in before anything else (0.9.0). */
-export type TwoStepPending = 'enrol' | 'confirm';
+/**
+ * Why a session must deal with two-step sign-in before anything else
+ * (0.9.0); `recovered` since 0.9.0-dev.104: a recovery code or the security
+ * questions took every second step away, and a new one, with new recovery
+ * codes beside it, is to be set up first.
+ */
+export type TwoStepPending = 'enrol' | 'confirm' | 'recovered';
 
 export interface SetupInput {
   /** The setup code (0.9.0): FDV_SETUP_TOKEN, or the one the API logged as it started. */
@@ -194,6 +202,24 @@ export interface SetupInput {
 
 const invalidCredentials = () =>
   new ApiError(401, 'invalid_credentials', "That email and password don't match.");
+
+/**
+ * A sign-in refused because its code by text could not be sent (0.9.0-dev.104):
+ * nobody is let in. The interim token the password earned goes with it, for a
+ * recovery code or the security questions (`recovery`) to stand in.
+ */
+export function textCodeUnavailable(
+  mfaToken?: string,
+  recovery: string[] = [],
+  methods: string[] = [],
+): ApiError {
+  return new ApiError(409, 'text_code_unavailable', TEXT_CODE_UNAVAILABLE_MESSAGE, {
+    ...(mfaToken ? { mfaToken } : {}),
+    recovery,
+    // A passkey of theirs, which signs them in on its own (0.9.0-dev.104).
+    ...(methods.length > 0 ? { methods } : {}),
+  });
+}
 
 /** A locked session's answer (0.9.0-dev.86): not over, only locked. */
 export const sessionLocked = () => new ApiError(423, SESSION_LOCKED_CODE, SESSION_LOCKED_MESSAGE);
@@ -217,9 +243,9 @@ export const endedMeanwhile = (revokedReason: string | null) =>
   sessionEnded('the session ended while this waited', endReasonOf(revokedReason));
 
 /**
- * Why a sign-in's code by text could not be sent (SMS3), in a word, or null
- * when it is not a reason to let them in without it — a limit reached above
- * all, which whoever has the password could reach on purpose.
+ * Why a sign-in's code by text could not be sent (SMS3), in a word: a
+ * reason that refuses the sign-in (0.9.0-dev.104). Null for anything else —
+ * a limit reached above all — which waits, as any limit does.
  */
 function skippedBy(err: unknown): TextSkipped | null {
   if (!(err instanceof ApiError)) return null;
@@ -304,9 +330,11 @@ export function twoStepSetupRequired(role: Role, why: TwoStepPending = 'enrol'):
     'two_step_setup_required',
     why === 'confirm'
       ? 'Confirm it’s you with your passkey or a code from your authenticator app before going on: a password alone is not enough.'
-      : role === 'owner'
-        ? 'Owners must set up two-step sign-in before going on: a code from an authenticator app, or a passkey.'
-        : 'This household asks every adult to set up two-step sign-in before going on: a code from an authenticator app, or a passkey.',
+      : why === 'recovered'
+        ? 'You got back in without your second step, so it was taken away. Set up two-step sign-in again and make new recovery codes before going on.'
+        : role === 'owner'
+          ? 'Owners must set up two-step sign-in before going on: a code from an authenticator app, or a passkey.'
+          : 'This household asks every adult to set up two-step sign-in before going on: a code from an authenticator app, or a passkey.',
     { reason: why },
   );
 }
@@ -376,11 +404,17 @@ export class AuthService {
        * wait after five in a row, a line in the person's Activity, an alert.
        */
       guard?: SignInGuard;
+      /**
+       * Recovery codes and security questions (0.9.0-dev.104): what stands
+       * in for a lost second step, with the password.
+       */
+      recovery?: RecoveryService;
     } = {},
   ) {
     this.familyKey = refreshFamilyKey(signingKey);
     this.twoStepHeld = opts.twoStep ?? true;
     this.guard = opts.guard ?? null;
+    this.recovery = opts.recovery ?? null;
     this.devices = new KnownDevices(signingKey);
   }
 
@@ -389,6 +423,9 @@ export class AuthService {
 
   /** Failed sign-ins, counted per account (0.9.0); none where nothing asked for it. */
   readonly guard: SignInGuard | null;
+
+  /** Recovery codes and security questions (0.9.0-dev.104); none where nothing asked for them. */
+  private readonly recovery: RecoveryService | null;
 
   /** Whether two-step sign-in is held to (the constructor's `twoStep`). */
   private readonly twoStepHeld: boolean;
@@ -404,25 +441,40 @@ export class AuthService {
    * that has not presented one (`presented`: a passkey sign-in, a password
    * and a code, or a passkey or a code given since) is `confirm` — a
    * password alone never opens their vault. A code by text is never a
-   * factor: it is not an owner's second step, and fails open when texts
-   * cannot go. Asked in the caller's transaction, scoped to the household.
+   * factor: it is not an owner's second step. Asked in the caller's
+   * transaction, scoped to the household.
+   *
+   * And whoever they are (0.9.0-dev.104): somebody who got back in with a
+   * recovery code or their security questions, which took every second
+   * step away, is `recovered` until they set one up again and make new
+   * recovery codes beside it (`account.recovered_at`, cleared then).
    */
   private async twoStepPendingIn(
     trx: Db,
     p: { accountId: string; householdId: string; role: Role },
     presented: boolean,
   ): Promise<TwoStepPending | null> {
-    if (!this.twoStepHeld || (p.role !== 'owner' && p.role !== 'adult')) return null;
-    // One round trip, on every request an owner or an adult makes.
-    const r = await sql<{ factor: boolean; adults: boolean | null }>`
-      select (exists (select 1 from account
-                       where id = ${p.accountId} and totp_confirmed_at is not null)
-              or exists (select 1 from credential
-                          where account_id = ${p.accountId} and kind = 'passkey')) as factor,
-             (select require_two_step_adults from household where id = ${p.householdId}) as adults
-    `.execute(trx);
+    const held = this.twoStepHeld && (p.role === 'owner' || p.role === 'adult');
+    // One round trip, on every request: for anybody not held to two-step
+    // sign-in, whether they are recovering alone.
+    const r = held
+      ? await sql<{ recovered: boolean; factor: boolean; adults: boolean | null }>`
+          select exists (select 1 from account
+                          where id = ${p.accountId} and recovered_at is not null) as recovered,
+                 (exists (select 1 from account
+                           where id = ${p.accountId} and totp_confirmed_at is not null)
+                  or exists (select 1 from credential
+                              where account_id = ${p.accountId} and kind = 'passkey')) as factor,
+                 (select require_two_step_adults from household where id = ${p.householdId}) as adults
+        `.execute(trx)
+      : await sql<{ recovered: boolean; factor: boolean; adults: boolean | null }>`
+          select exists (select 1 from account
+                          where id = ${p.accountId} and recovered_at is not null) as recovered,
+                 false as factor, null::boolean as adults
+        `.execute(trx);
     const row = r.rows[0];
-    if (!row || (p.role !== 'owner' && row.adults !== true)) return null;
+    if (row?.recovered) return 'recovered';
+    if (!held || !row || (p.role !== 'owner' && row.adults !== true)) return null;
     if (!row.factor) return 'enrol';
     return presented ? null : 'confirm';
   }
@@ -628,10 +680,6 @@ export class AuthService {
     const account = { id: accountId };
     // What the password proved goes on to where the session opens (5.29).
     const proof = passwordProof(passwordHash);
-    // A code by text that was the only second step and could not be asked
-    // for, or sent (SMS3): the password alone lets them in, and the owners
-    // are told (the owner's decision of 12 Nov 2026).
-    let skipped: TextSkipped | null = null;
     if (this.mfa) {
       const totp = await this.mfa.isEnabled(account.id);
       // Somebody held to two-step sign-in (0.9.0) whose factor is a passkey:
@@ -646,17 +694,23 @@ export class AuthService {
         this.textCodes && !(held.held && (totp || passkey))
           ? await this.textCodes.forSignInState(account.id)
           : { asks: false };
-      if (!totp && 'cannot' in text) skipped = text.cannot;
-      if (totp || passkey || text.asks) {
+      // A code by text that is the only second step and can't be asked for,
+      // or sent, refuses the sign-in (0.9.0-dev.104; until then it let the
+      // password alone in): a phone that is off lets nobody in.
+      let refused: TextSkipped | null = !totp && 'cannot' in text ? text.cannot : null;
+      if (!refused && (totp || passkey || text.asks)) {
         const mfaToken = await this.mfa.mfaToken(account.id, proof, device);
+        // What may stand in for the second step if it is lost (0.9.0-dev.104).
+        const recovery = this.recovery ? { recovery: await this.recovery.waysFor(account.id) } : {};
         if (!text.asks) {
           return passkey
             ? {
                 mfa_required: true,
                 mfa_token: mfaToken,
                 methods: totp ? ['totp', 'passkey'] : ['passkey'],
+                ...recovery,
               }
-            : { mfa_required: true, mfa_token: mfaToken };
+            : { mfa_required: true, mfa_token: mfaToken, ...recovery };
         }
         // A text the only second step: one goes now, so that a client that
         // knows only the code box — an older phone's — still signs in, with
@@ -668,31 +722,241 @@ export class AuthService {
             (err: unknown) => err,
           );
           sent = failed === null;
-          // The household's texts not set up, the month's all sent, or SMS
-          // Gate not taking it: in with the password alone, as above. Too
-          // many codes asked for is not that — somebody with the password
-          // could ask for them to get past — and waits, as any limit does.
-          skipped = failed === null ? null : skippedBy(failed);
+          // The household's texts not set up, the month's all sent, or the
+          // phone that sends them not taking it: refused, as above. Too many
+          // codes asked for is not that, and waits, as any limit does.
+          refused = failed === null ? null : skippedBy(failed);
         }
-        if (!skipped) {
+        if (!refused) {
           return {
             mfa_required: true,
             mfa_token: mfaToken,
             methods: totp ? ['totp', 'text'] : ['text'],
             text_to: text.to,
             text_sent: sent,
+            ...recovery,
           };
         }
       }
+      if (refused && this.textCodes) {
+        // The owners are told, as something to fix, and the person's
+        // Activity has the line. What the password earned goes back with the
+        // refusal, for a recovery code or the security questions to stand in.
+        await this.textCodes.refused(account.id, 'sign_in', refused).catch(() => undefined);
+        // A passkey of theirs still signs them in on its own: said, so the
+        // page can offer it.
+        const hasPasskey = await this.db
+          .selectFrom('credential')
+          .select(['id'])
+          .where('account_id', '=', account.id)
+          .where('kind', '=', 'passkey')
+          .executeTakeFirst();
+        throw textCodeUnavailable(
+          await this.mfa.mfaToken(account.id, proof, device),
+          this.recovery ? await this.recovery.waysFor(account.id) : [],
+          hasPasskey ? ['passkey'] : [],
+        );
+      }
     }
-    if (skipped && this.textCodes) {
-      const tokens = await this.openSessionForAccount(account.id, meta, 'password', {
-        password: proof,
-      });
-      await this.textCodes.skipped(account.id, 'sign_in', skipped).catch(() => undefined);
-      return tokens;
-    }
+    // Got back in at sign-in, and not finished setting up (0.9.0-dev.104):
+    // only the session that recovery opened may; the password alone opens
+    // no other.
+    const recovering = await this.db
+      .selectFrom('account')
+      .select(['recovered_at', 'recovered_session'])
+      .where('id', '=', account.id)
+      .executeTakeFirst();
+    if (recovering?.recovered_at && recovering.recovered_session) throw recoveryUnfinished();
     return this.openSessionForAccount(account.id, meta, 'password', { password: proof });
+  }
+
+  /**
+   * POST /auth/mfa/recovery-code and POST /auth/mfa/answers (0.9.0-dev.104):
+   * a recovery code, or the answers to the security questions, in place of
+   * the second step of a sign-in whose password was right (the interim token
+   * says so) — and a new password, chosen in the same request and held to
+   * the household's rules, so that a password somebody else knows is never
+   * enough to get in afterwards. Somebody locked, paused or past their end
+   * is refused first, as a sign-in is, and nothing changes. Right, in one
+   * transaction: the new password set (the member key given a fresh wrap,
+   * as a reset gives it), every second step of theirs taken away, every
+   * session, computer and export of theirs ended (RecoveryService.apply);
+   * then a session opens that may only set one up again
+   * (`two_step_setup_required`, reason `recovered`), and only it may finish
+   * — any other sign-in by password alone is refused meanwhile.
+   */
+  async signInWithRecovery(
+    mfaToken: string,
+    proof: RecoveryProof,
+    newPassword: string,
+    meta: RequestMeta,
+  ): Promise<Tokens> {
+    if (!this.mfa || !this.recovery) throw invalidCredentials();
+    const recovery = this.recovery;
+    const { accountId, proof: password } = await this.mfa.mfaClaims(mfaToken);
+    // A token from before 5.29 carries no proof, and asks for the password again.
+    if (password === null) throw invalidCredentials();
+    const m = await this.openable(accountId, password);
+    const scope = { householdId: m.household_id, accountId, actor: ANONYMOUS };
+    // The household's password rules first: what to choose instead is said
+    // before a code or an answer is tried.
+    const { rules, name, email } = await withScope(this.db, scope, async (trx) => ({
+      rules: await householdPasswordRules(trx, m.household_id),
+      name: (
+        await trx
+          .selectFrom('member')
+          .select('display_name')
+          .where('id', '=', m.member_id)
+          .executeTakeFirst()
+      )?.display_name,
+      email: (
+        await trx
+          .selectFrom('account')
+          .select('email')
+          .where('id', '=', accountId)
+          .executeTakeFirstOrThrow()
+      ).email,
+    }));
+    await mustMeetRules(newPassword, rules, { email, name });
+    const current = await this.db
+      .selectFrom('account')
+      .select(['password_hash'])
+      .where('id', '=', accountId)
+      .executeTakeFirst();
+    if (current?.password_hash && (await argon2.verify(current.password_hash, newPassword))) {
+      throw new ApiError(
+        422,
+        'validation_failed',
+        'That is the password you already have. Choose a different one.',
+      );
+    }
+    const standing = await recovery.begin(accountId, proof, meta);
+    try {
+      const hash = await argon2.hash(newPassword, ARGON2);
+      // Its id chosen now, as the recovery binds the setting up to it.
+      const sessionId = randomUUID();
+      const done = await withScope(this.db, scope, async (trx) => {
+        // The person's membership first, FOR NO KEY UPDATE, as a reset, a
+        // lock and a password change take it (5.29).
+        const held = await trx
+          .selectFrom('account_household')
+          .select(['member_id', 'access_expires_at'])
+          .where('account_id', '=', accountId)
+          .where('household_id', '=', m.household_id)
+          .forNoKeyUpdate()
+          .executeTakeFirst();
+        if (!held) throw invalidCredentials();
+        // The password still the one proved: a reset or a change that
+        // committed meanwhile is not undone by this.
+        const now = await trx
+          .selectFrom('account')
+          .select(['password_hash'])
+          .where('id', '=', accountId)
+          .forUpdate()
+          .executeTakeFirst();
+        if (!now?.password_hash || passwordProof(now.password_hash) !== password) {
+          throw invalidCredentials();
+        }
+        await trx
+          .updateTable('account')
+          .set({ password_hash: hash, password_changed_at: sql<Date>`now()` })
+          .where('id', '=', accountId)
+          .execute();
+        // No old password to unwrap with: the member key comes back through
+        // the master key and is given a fresh wrap, as a reset gives it. A
+        // guest has none (5.34).
+        if (held.access_expires_at === null) {
+          await this.keys.attachCredential(
+            trx,
+            { householdId: m.household_id, kind: 'member', memberId: held.member_id },
+            newPassword,
+          );
+        }
+        return recovery.apply(trx, standing, 'sign_in', meta, {
+          session: sessionId,
+          endEverything: true,
+        });
+      });
+      const tokens = await this.openSessionForAccount(
+        accountId,
+        meta,
+        'code' in proof ? 'password+recovery_code' : 'password+questions',
+        { password: passwordProof(hash) },
+        sessionId,
+      );
+      await recovery.finish(standing, done.phones, 'sign_in', { computers: done.computers });
+      return tokens;
+    } finally {
+      await recovery.release(standing);
+    }
+  }
+
+  /**
+   * POST /auth/mfa/questions (0.9.0-dev.104): the person's three security
+   * questions, for the answers to stand in for the second step — only once
+   * the password was right and is still theirs, the account is on and not
+   * locked or paused, and while the questions are set and the household
+   * offers them (`409 security_questions_not_offered`).
+   */
+  async recoveryQuestions(mfaToken: string): Promise<{ questions: string[] }> {
+    if (!this.mfa || !this.recovery) throw invalidCredentials();
+    const { accountId, proof } = await this.mfa.mfaClaims(mfaToken);
+    if (proof === null) throw invalidCredentials();
+    await this.openable(accountId, proof);
+    return { questions: await this.recovery.questionsFor(accountId) };
+  }
+
+  /**
+   * Whether a session could open for this account now, asked before a
+   * recovery takes anything away (0.9.0-dev.104): switched off, or a
+   * password changed since, is refused as a sign-in is; locked, paused or
+   * past a guest's end, as opening the session would say. Answers the
+   * membership a session would open in.
+   */
+  private async openable(
+    accountId: string,
+    password: string,
+  ): Promise<{ household_id: string; member_id: string }> {
+    const account = await this.db
+      .selectFrom('account')
+      .select(['disabled_at', 'password_hash'])
+      .where('id', '=', accountId)
+      .executeTakeFirst();
+    if (
+      !account ||
+      account.disabled_at ||
+      !account.password_hash ||
+      passwordProof(account.password_hash) !== password
+    ) {
+      throw invalidCredentials();
+    }
+    const m = await withScope(this.db, { accountId, actor: ANONYMOUS }, (trx) =>
+      trx
+        .selectFrom('account_household')
+        .select([
+          'household_id',
+          'member_id',
+          'suspended_at',
+          'suspended_until',
+          'suspend_reason',
+          'access_expires_at',
+        ])
+        .orderBy('joined_at', 'desc')
+        .executeTakeFirst(),
+    );
+    if (!m) {
+      throw new ApiError(403, 'no_household', 'Your sign-in is not part of any family vault yet.');
+    }
+    const suspended = suspensionInEffect(m);
+    const ended = m.access_expires_at !== null && guestAccessEnded(m.access_expires_at);
+    if (!suspended && !ended) return m;
+    const hh = await withScope(this.db, { householdId: m.household_id, actor: ANONYMOUS }, (trx) =>
+      trx.selectFrom('household').select(['timezone']).executeTakeFirst(),
+    );
+    const zone = householdZone(hh?.timezone);
+    if (suspended) throw membershipSuspended(m.suspend_reason, m.suspended_until, zone);
+    if (m.access_expires_at) throw guestAccessEndedRefusal(m.access_expires_at, zone);
+    return m;
   }
 
   /**
@@ -711,8 +975,8 @@ export class AuthService {
   /**
    * Whether a code by text is refused as the second step (0.9.0): to
    * somebody held to two-step sign-in who has an authenticator app or a
-   * passkey. Their second step is that; a text, which lets them in with
-   * the password alone when texts cannot go, never stands in for it.
+   * passkey. Their second step is that; a text, the weakest proof there
+   * is, never stands in for it.
    */
   private async textBarred(accountId: string): Promise<boolean> {
     if (!this.mfa) return false;
@@ -818,6 +1082,8 @@ export class AuthService {
     meta: RequestMeta,
     method: string,
     proof?: SignInProof,
+    /** Its id, chosen by a recovery that binds the setting up to it (0.9.0-dev.104). */
+    sessionId?: string,
   ): Promise<Tokens> {
     // A switched-off account opens nothing, however it was proven: a
     // passkey too (5.28), which until then went straight on.
@@ -931,7 +1197,7 @@ export class AuthService {
         ip: meta.ip,
         detail: { method },
       });
-      return this.openSession(trx, p, meta, method);
+      return this.openSession(trx, p, meta, method, sessionId);
     });
     // In with a passkey (0.9.0): the account's own count starts again. (A
     // password or a code settles the count its try was reserved on.)
@@ -951,9 +1217,11 @@ export class AuthService {
     p: Omit<Principal, 'sessionId' | 'seesAdults'>,
     meta: RequestMeta,
     method = 'password',
+    chosen?: string,
   ): Promise<Tokens> {
-    // Its id is chosen here, as its first token names it (5.30).
-    const sessionId = randomUUID();
+    // Its id is chosen here, as its first token names it (5.30); or by a
+    // recovery, which binds the setting up to it (0.9.0-dev.104).
+    const sessionId = chosen ?? randomUUID();
     const refresh = newRefreshToken(this.familyKey, p.householdId, sessionId);
     const now = Date.now();
     // A passkey (which asks for a PIN or a fingerprint since 0.9.0), or a

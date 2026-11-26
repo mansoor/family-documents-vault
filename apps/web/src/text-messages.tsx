@@ -925,7 +925,7 @@ export function MobileNumberCard(props: { member: Member; name: string; owner: b
  * the weakest second step, and the card says why in plain words; an owner
  * keeps a passkey or an authenticator app beside it.
  */
-export function CodesByTextCard() {
+export function CodesByTextCard(props: { onTurnedOn?: () => void } = {}) {
   const { authVersion, guarded, caps, session } = useApp();
   const offered = caps?.features.sms_codes === true;
   const me = session.info?.member_id ?? null;
@@ -947,6 +947,8 @@ export function CodesByTextCard() {
     try {
       const next = await guarded((t) => api.setTextCodeSettings(t, input));
       if (next) setData(next);
+      // A second step turned on (0.9.0-dev.104): recovery codes are made beside it.
+      if (next && (input.sign_in === true || input.reset === true)) props.onTurnedOn?.();
     } catch (err) {
       setProblem(describeError(err));
     } finally {
@@ -980,7 +982,7 @@ export function CodesByTextCard() {
         disabled={off(data.reset)}
         onChange={(on) => void change({ reset: on })}
         label="Ask for a code by text when my password is reset"
-        note="Whoever resets it — you, from an emailed link, or an owner’s link — also types the code we text you. If your number isn’t confirmed or texts aren’t working then, the reset goes ahead without it, and your owners are told."
+        note="Whoever resets it from an emailed link also types the code we text you. If your number isn’t confirmed or texts aren’t working then, the reset waits for a recovery code or your security questions instead, and your owners are told. A link an owner makes for you doesn’t ask for it."
       />
       <Check
         id="text-codes-sign-in"
@@ -990,8 +992,8 @@ export function CodesByTextCard() {
         label="Text me a code when I sign in"
         note={
           data.step_up
-            ? 'As well as your password. You can also use a texted code when the vault asks you to confirm it’s you.'
-            : 'As well as your password.'
+            ? 'As well as your password. If it can’t be sent, a recovery code or your security questions stand in. You can also use a texted code when the vault asks you to confirm it’s you.'
+            : 'As well as your password. If it can’t be sent, a recovery code or your security questions stand in.'
         }
       />
       <p className="status status-warn" role="note">

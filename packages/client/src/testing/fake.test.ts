@@ -11,6 +11,7 @@ import {
 } from '@fdv/shared';
 import { describe, expect, it, vi } from 'vitest';
 import { createApi } from '../api.js';
+import type { ApiRequestError } from '../errors.js';
 import { createHttp } from '../http.js';
 import { multipartBody } from '../multipart.js';
 import { contractScenarios, type ContractContext } from './contract.js';
@@ -114,9 +115,13 @@ describe('the fake vault keeps the contract', () => {
     readAppSend: async (app, externalId, _file, proposal) => {
       await vault.readAppFile(app.id, externalId, proposal);
     },
-    // The fake's owners have two-step sign-in, and have just used it.
-    ownerTwoStep: async () => {
+    // The fake's owners have two-step sign-in, and have just used it: the
+    // token's own person among them (0.9.0-dev.104, for recovery codes).
+    ownerTwoStep: async (token) => {
       vault.state.ownerTwoStep = true;
+      const sid = vault.state.access.get(token);
+      const s = vault.state.sessions.find((x) => x.id === sid);
+      (vault.state.twoStepMembers ??= new Set()).add(s?.memberId ?? 'fake-member');
     },
     // A guest's sign-in ended a minute ago (5.34).
     endGuestAccess: async (memberId) => {
@@ -2167,6 +2172,122 @@ describe('the fake vault, codes by text (0.9.0, SMS3)', () => {
       status: 404,
       code: 'reset_not_valid',
     });
+  });
+});
+
+describe('the fake vault, getting back in (0.9.0-dev.104)', () => {
+  it('refuses a sign-in whose code by text can’t go, and a recovery code or the questions stand in, once', async () => {
+    const vault = createFakeVault();
+    const api = createApi(createHttp({ baseUrl: 'https://fake.example', fetch: vault.fetch }));
+    const { access_token: token, member_id: me } = await api.setup({
+      household_name: 'The Fake family',
+      display_name: 'Fake Owner',
+      email: 'owner@example.test',
+      password: 'a long enough password',
+    });
+    const features = (await api.capabilities()).features;
+    expect(features.recovery_codes).toBe(true);
+    expect(features.security_questions).toBe(true);
+    // Codes by text at sign-in, beside the owner's own two-step sign-in.
+    await api.setMemberPhone(token, me, '07700 900101');
+    await api.confirmMemberPhone(token, me, vault.state.phones?.get(me)?.code as string);
+    vault.state.ownerTwoStep = true;
+    await api.setTextCodeSettings(token, { sign_in: true });
+    const made = await api.makeRecoveryCodes(token);
+    expect(made.codes).toHaveLength(10);
+    await api.setSecurityQuestions(token, {
+      questions: [
+        { key: 'first_pet', answer: 'Biscuit' },
+        { key: 'first_job', answer: 'Paper round' },
+        { key: 'own', text: 'What was my first bike called?', answer: 'Red Racer' },
+      ],
+    });
+
+    // Texts not going out: refused, with the interim token to stand in.
+    vault.state.smsReady = false;
+    const refused = await api.signIn('owner@example.test', 'a long enough password').then(
+      () => null,
+      (err: ApiRequestError) => err,
+    );
+    expect(refused).toMatchObject({
+      status: 409,
+      code: 'text_code_unavailable',
+      recovery: ['recovery_code', 'security_questions'],
+    });
+    const mfaToken = refused?.mfaToken as string;
+    const NEW = 'a brand new long password';
+    await expect(api.signInRecoveryCode(mfaToken, 'aaaaa-aaaaa', NEW)).rejects.toMatchObject({
+      status: 401,
+      code: 'recovery_code_wrong',
+    });
+    // A new password, held to the rules, in the same request.
+    await expect(
+      api.signInRecoveryCode(mfaToken, made.codes[0] as string, 'short'),
+    ).rejects.toMatchObject({ status: 400, code: 'password_rules' });
+    const got = await api.signInRecoveryCode(
+      mfaToken,
+      (made.codes[0] as string).toUpperCase(),
+      NEW,
+    );
+    expect(got.two_step_setup_required).toBe(true);
+    // The old password opens nothing now; the new one is refused until the
+    // recovering session finishes.
+    await expect(api.signIn('owner@example.test', 'a long enough password')).rejects.toMatchObject({
+      status: 401,
+    });
+    await expect(api.signIn('owner@example.test', NEW)).rejects.toMatchObject({
+      status: 409,
+      code: 'recovery_unfinished',
+    });
+    // Everything else waits for a second step and new codes; the old token is over.
+    expect(await api.me(got.access_token)).toMatchObject({
+      two_step_setup_required: true,
+      two_step_reason: 'recovered',
+    });
+    await expect(api.documents(got.access_token)).rejects.toMatchObject({
+      status: 403,
+      code: 'two_step_setup_required',
+    });
+    await expect(api.me(token)).rejects.toMatchObject({ status: 401 });
+    expect(await api.recoveryCodes(got.access_token)).toMatchObject({
+      remaining: 0,
+      second_step: false,
+    });
+    await expect(api.makeRecoveryCodes(got.access_token)).rejects.toMatchObject({
+      code: 'recovery_codes_need_second_step',
+    });
+    vault.state.smsReady = true;
+    // An authenticator set up again (the fake's word for it), and codes by text.
+    vault.state.ownerTwoStep = true;
+    await api.setTextCodeSettings(got.access_token, { sign_in: true });
+    const fresh = await api.makeRecoveryCodes(got.access_token);
+    expect(fresh.remaining).toBe(10);
+    expect((await api.me(got.access_token)).two_step_setup_required).toBe(false);
+    expect((await api.documents(got.access_token)).items).toEqual([]);
+
+    // The questions: wrong, then right.
+    vault.state.smsReady = false;
+    const again = await api.signIn('owner@example.test', NEW).then(
+      () => null,
+      (err: ApiRequestError) => err,
+    );
+    const second = again?.mfaToken as string;
+    expect(await api.signInQuestions(second)).toEqual({
+      questions: [
+        'What was the name of your first pet?',
+        'What was your first job?',
+        'What was my first bike called?',
+      ],
+    });
+    await expect(
+      api.signInAnswers(second, ['Biscuit', 'Milk round', 'Red Racer'], 'yet another long one'),
+    ).rejects.toMatchObject({ status: 401, code: 'security_answers_wrong' });
+    const answered = await api.signInAnswers(
+      second,
+      ['biscuit!', 'PAPER ROUND', 'red-racer'],
+      'yet another long one',
+    );
+    expect(answered.two_step_setup_required).toBe(true);
   });
 });
 
