@@ -152,15 +152,49 @@ const ALLOWED = [
   // the person's number in their newest household, and whether its texts go
   // — read before anybody is signed in (a reset, a sign-in's second step);
   // a code made, counted and ended, and tried, by the vault alone (sms_code
-  // is nobody's to read, 0088); and a reset that went on without its code
-  // told to the person's owners, who are found as the vault — and a sign-in
-  // that did (the owner's decision of 12 Nov 2026), written in the log as
-  // the person, before anybody is signed in.
+  // is nobody's to read, 0088); and a sign-in or a reset refused because
+  // its code couldn't be sent (0.9.0-dev.104), told to the person's owners,
+  // who are found as the vault, and written in the log as the person,
+  // before anybody is signed in.
   'sms/codes.ts TextCodeService.target',
-  'sms/codes.ts TextCodeService.skipped',
+  'sms/codes.ts TextCodeService.refused',
   'sms/codes.ts TextCodeService.send',
   'sms/codes.ts TextCodeService.send',
   'sms/codes.ts TextCodeService.verify',
+  // Recovery codes and security answers (0.9.0-dev.104): both tables are the
+  // vault's alone (0134), nobody signed in is given a row, so every read and
+  // write of them is the vault's, for the person they belong to.
+  // Before anybody is signed in: what may stand in for a sign-in's second
+  // step, and the questions to answer, once the password is proven.
+  'auth/recovery.ts RecoveryService.waysFor',
+  'auth/recovery.ts RecoveryService.questionsFor',
+  // A code typed checked against the person's codes' HMACs.
+  'auth/recovery.ts RecoveryService.checkCode',
+  // Answers checked: a try reserved on the questions' own count, the fifth
+  // wrong refusing them for a day, and a right one's try given back.
+  'auth/recovery.ts RecoveryService.checkAnswers',
+  'auth/recovery.ts RecoveryService.checkAnswers',
+  'auth/recovery.ts RecoveryService.checkAnswers',
+  // How many wrong answers are left, and until when they are refused, in
+  // the household's time zone, said with a wrong answer.
+  'auth/recovery.ts RecoveryService.triesLeft',
+  'auth/recovery.ts RecoveryService.questionsRefused',
+  // The person told of a recovery, and the other owners found to tell.
+  'auth/recovery.ts RecoveryService.tell',
+  // Signed in, one's own: how many codes are left, a new set made (the
+  // session checked live and the account held in the same transaction),
+  // and one's questions read, set and removed — never anybody else's.
+  'auth/recovery.ts RecoveryService.codesState',
+  'auth/recovery.ts RecoveryService.makeCodes',
+  'auth/recovery.ts RecoveryService.questionsState',
+  'auth/recovery.ts RecoveryService.setQuestions',
+  'auth/recovery.ts RecoveryService.removeQuestions',
+  // Inside a reset's or a sign-in's recovery transaction: the vault's own
+  // tables written, and the sign-in marked recovered, in a savepoint that
+  // gives the transaction back as it was (asVault).
+  'auth/recovery.ts asVault (says app.actor)',
+  'auth/recovery.ts asVault (says app.actor)',
+  'auth/recovery.ts asVault (says app.actor)',
 ];
 
 const SRC = fileURLToPath(new URL('.', import.meta.url));

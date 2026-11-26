@@ -20,6 +20,16 @@ export interface ApiErrorExtra {
    * the password (0.9.0: changing how somebody with either signs in).
    */
   factor?: boolean;
+  /**
+   * A sign-in refused because its code by text could not be sent (`409
+   * text_code_unavailable`, 0.9.0-dev.104): the interim token the password
+   * earned, for a recovery code or the security questions to stand in, and
+   * which of those the person has (`recovery_code`, `security_questions`).
+   */
+  mfaToken?: string;
+  recovery?: string[];
+  /** And `passkey` when a passkey of theirs signs them in on its own. */
+  methods?: string[];
 }
 
 /** The server answered, and the answer was no. Its `message` is safe to show. */
@@ -31,6 +41,12 @@ export class ApiRequestError extends Error {
   readonly retryAfterSeconds: number | undefined;
   /** A step-up only a passkey or a code answers (0.9.0). */
   readonly factor: boolean;
+  /** A refused sign-in's interim token (`text_code_unavailable`, 0.9.0-dev.104). */
+  readonly mfaToken: string | undefined;
+  /** What may stand in for its second step; empty when nothing is said. */
+  readonly recovery: string[];
+  /** `passkey` when a passkey of theirs signs them in on its own; empty otherwise. */
+  readonly methods: string[];
 
   constructor(
     public readonly status: number,
@@ -48,6 +64,9 @@ export class ApiRequestError extends Error {
     this.detail = extra.detail;
     this.retryAfterSeconds = extra.retryAfterSeconds;
     this.factor = extra.factor === true;
+    this.mfaToken = extra.mfaToken;
+    this.recovery = extra.recovery ?? [];
+    this.methods = extra.methods ?? [];
   }
 }
 

@@ -315,6 +315,7 @@ export async function rotateMasterKey(
       return { ...moved, sessionsEnded: 0, alreadyDone: true };
     }
     const sessionsEnded = await endSessions(client, 'master key rotated');
+    await endRecoveryCodes(client);
     return { ...moved, sessionsEnded, alreadyDone: false };
   });
 }
@@ -337,6 +338,7 @@ export async function repairMasterKey(
     const moved = await rekey(client, { ...opts, to: current, from: [previous], write: true });
     const sessionsEnded =
       movedCount(moved) > 0 ? await endSessions(client, 'master key repaired') : 0;
+    if (movedCount(moved) > 0) await endRecoveryCodes(client);
     return { ...moved, sessionsEnded };
   });
 }
@@ -622,6 +624,21 @@ async function endSessions(client: pg.ClientBase, reason: string): Promise<numbe
     [reason],
   );
   return ended.rowCount ?? 0;
+}
+
+/**
+ * Every recovery code (0134, 0.9.0-dev.104): each is kept as an HMAC under a
+ * key derived from the master key, which no code typed would match once the
+ * key has moved. Each person makes new ones.
+ */
+async function endRecoveryCodes(client: pg.ClientBase): Promise<void> {
+  await client.query(
+    `do $$ begin
+       if to_regclass('public.recovery_code') is not null then
+         delete from public.recovery_code;
+       end if;
+     end $$`,
+  );
 }
 
 async function hasColumn(client: pg.ClientBase, table: string, column: string): Promise<boolean> {

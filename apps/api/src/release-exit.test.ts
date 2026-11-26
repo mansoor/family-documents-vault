@@ -470,6 +470,17 @@ const RULES: Record<string, Rule> = {
   // A sign-in's code by text (0.9.0, SMS3): only after the password, by its
   // interim token, to the person's own confirmed number.
   'POST /api/v1/auth/mfa/text': { who: 'public', body: () => ({ mfa_token: 'x' }) },
+  // A recovery code or the security questions in place of the second step
+  // (0.9.0-dev.104): only after the password, by its interim token.
+  'POST /api/v1/auth/mfa/recovery-code': {
+    who: 'public',
+    body: () => ({ mfa_token: 'x', code: 'aaaaa-aaaaa' }),
+  },
+  'POST /api/v1/auth/mfa/questions': { who: 'public', body: () => ({ mfa_token: 'x' }) },
+  'POST /api/v1/auth/mfa/answers': {
+    who: 'public',
+    body: () => ({ mfa_token: 'x', answers: ['one one', 'two two', 'three three'] }),
+  },
   'POST /api/v1/auth/refresh': { who: 'public', body: () => ({ refresh_token: 'not-one' }) },
   'POST /api/v1/auth/passkey/challenge': { who: 'public', body: () => ({}) },
   'POST /api/v1/auth/passkey/verify': {
@@ -568,6 +579,16 @@ const RULES: Record<string, Rule> = {
   // Whether a reset and a sign-in ask for a code by text (SMS3): one's own.
   'GET /api/v1/auth/text-codes': { who: 'signedIn' },
   'PUT /api/v1/auth/text-codes': { who: 'signedIn', body: () => ({ sign_in: false }) },
+  // One's own recovery codes and security questions (0.9.0-dev.104): never
+  // anybody else's, and never their codes or answers once made.
+  'GET /api/v1/auth/recovery-codes': { who: 'signedIn' },
+  'POST /api/v1/auth/recovery-codes': { who: 'signedIn', body: () => ({}) },
+  'GET /api/v1/auth/security-questions': { who: 'signedIn' },
+  'PUT /api/v1/auth/security-questions': {
+    who: 'signedIn',
+    body: () => ({ questions: [] }),
+  },
+  'DELETE /api/v1/auth/security-questions': { who: 'signedIn' },
   'GET /api/v1/auth/passkeys': { who: 'signedIn' },
   'POST /api/v1/auth/passkeys/challenge': { who: 'signedIn', body: () => ({}) },
   'POST /api/v1/auth/passkeys': { who: 'signedIn', body: () => ({ response: {} }) },
@@ -1214,6 +1235,9 @@ const RULES: Record<string, Rule> = {
   // everybody signed in, an owner power to change (A54).
   'GET /api/v1/household/two-step': { who: 'signedIn' },
   'PUT /api/v1/household/two-step': { who: 'ownerPower', body: () => ({ adults: true }) },
+  // Whether security questions are offered (0.9.0-dev.104), as the two-step rule.
+  'GET /api/v1/household/security-questions': { who: 'signedIn' },
+  'PUT /api/v1/household/security-questions': { who: 'ownerPower', body: () => ({ on: true }) },
   // Password rules: read by everybody signed in, an owner's to change (the
   // database holds it too, 0130). The sweep sends the rules every household
   // starts with, which ask nothing, and leave every later password as it was.

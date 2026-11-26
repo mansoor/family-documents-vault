@@ -9,6 +9,7 @@ import type { CollectionAudience, Role, RoleChangeEffect } from './roles.js';
 import type { CollectionShareLock, SharePages, SharePermission } from './shares.js';
 import type { TimeZoneSource } from './time-zone.js';
 import type { PasswordRules } from './password-rules.js';
+import type { RecoveryWay } from './recovery.js';
 
 /**
  * The shapes that travel over the wire, written once.
@@ -89,6 +90,16 @@ export interface MfaChallenge {
    * code box still works — the code goes in it, as `code`.
    */
   text_sent?: boolean;
+  /**
+   * What stands in for a lost second step (0.9.0-dev.104,
+   * `features.recovery_codes`): `recovery_code` when the person has codes
+   * left (`POST /auth/mfa/recovery-code`), `security_questions` when they
+   * set them and the household offers them (`POST /auth/mfa/questions`, then
+   * `POST /auth/mfa/answers`). Either signs them in with every second step
+   * taken away, to set one up again. Absent or empty when neither is there,
+   * and from older vaults.
+   */
+  recovery?: RecoveryWay[];
 }
 
 export interface Me {
@@ -107,10 +118,13 @@ export interface Me {
   /**
    * Why (0.9.0): `enrol`, no code or passkey set up yet; `confirm`, one is,
    * and this session has not given it — a passkey or a code at `POST
-   * /auth/step-up` lets it go on. Null when nothing is asked; absent from
+   * /auth/step-up` lets it go on; `recovered` (0.9.0-dev.104), signed in
+   * with a recovery code or security questions, which took every second step
+   * away: set one up again and make new recovery codes (`POST
+   * /auth/recovery-codes`) to go on. Null when nothing is asked; absent from
    * older vaults.
    */
-  two_step_reason?: 'enrol' | 'confirm' | null;
+  two_step_reason?: 'enrol' | 'confirm' | 'recovered' | null;
   /**
    * An owner made a one-time link to set a new password for this sign-in, to
    * hand over (5.29, path 2), and the person has not yet said they saw it:
@@ -418,6 +432,14 @@ export type ResetPath = 'mail' | 'handover' | 'operator';
  */
 export interface OwnerResetInput {
   stop_now?: boolean;
+  /**
+   * The person has lost their phone (0.9.0-dev.104, `features.recovery_codes`):
+   * the link asks for no code by text, though they asked for one when their
+   * password is reset, and codes by text at sign-in are turned off as it is
+   * spent unless they have an authenticator app. In their Activity. Absent,
+   * the link asks as their own would.
+   */
+  lost_phone?: boolean;
 }
 
 /**
@@ -446,8 +468,11 @@ export const RESET_LINK_MINUTES = 60;
  * quoted for a POSIX shell, each `'` written `'\''`, so an address with a
  * quote in it is passed whole and as it is, never as another one.
  */
-export const resetCommand = (email: string) =>
-  `docker compose exec api node apps/api/dist/cli.mjs reset-password ${shellQuoted(email)}`;
+/** With `--lost-phone` (0.9.0-dev.104): the link asks for no code by text. */
+export const resetCommand = (email: string, lostPhone = false) =>
+  `docker compose exec api node apps/api/dist/cli.mjs reset-password ${shellQuoted(email)}${
+    lostPhone ? ' --lost-phone' : ''
+  }`;
 
 /** One argument for a POSIX shell, taken literally: single quotes, each `'` as `'\''`. */
 export const shellQuoted = (value: string) => `'${value.replace(/'/g, "'\\''")}'`;
@@ -654,6 +679,22 @@ export interface ResetPreview {
    * none is asked for.
    */
   text_code_to?: string | null;
+  /**
+   * A code by text is asked for, and can't be sent now (0.9.0-dev.104): the
+   * reset is refused without a recovery code or the security questions in
+   * its place (`409 text_code_unavailable`). Absent from older vaults, which
+   * let the reset go on without it.
+   */
+  text_code_unavailable?: boolean;
+  /**
+   * What may stand in for the code by text here (0.9.0-dev.104): a recovery
+   * code (`recovery_code` on POST /password-resets/complete), or the answers
+   * to the security questions (`answers`, in the order of
+   * `security_questions`). Empty when no code by text is asked for.
+   */
+  recovery?: RecoveryWay[];
+  /** The questions to answer, when `recovery` has `security_questions`; null otherwise. */
+  security_questions?: string[] | null;
   /**
    * The household’s password rules (`features.password_rules`), which the
    * new password must meet. Absent from older vaults: 10 characters.

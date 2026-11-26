@@ -131,6 +131,11 @@ export interface Schema {
      */
     require_two_step_adults: Generated<boolean>;
     /**
+     * Whether security questions may stand in for a lost second step (0134,
+     * 0.9.0-dev.104): on unless an owner turns it off. An owner's to change.
+     */
+    security_questions: Generated<boolean>;
+    /**
      * The household's password rules (0130), asked whenever a sign-in
      * password is set: at least so many characters (10 to 64, 10 unless an
      * owner chose more); common and easily guessed passwords refused (on
@@ -300,6 +305,15 @@ export interface Schema {
      * a new authenticator is set up.
      */
     totp_last_step: number | null;
+    /**
+     * When a recovery code or the security questions last stood in for the
+     * second step (0134, 0.9.0-dev.104): every second step was taken away,
+     * and the person's sessions may only set one up again, and make new
+     * recovery codes, until they do. Null otherwise. The vault's to write.
+     */
+    recovered_at: Timestamp | null;
+    /** The session a sign-in's recovery opened: the one that may finish setting up (0134). */
+    recovered_session: string | null;
   };
 
   /**
@@ -393,6 +407,11 @@ export interface Schema {
     household_id: string | null;
     /** An owner's: who made it; null once their account is gone (0052). */
     issued_by_account: string | null;
+    /**
+     * An owner said the person lost their phone (0134, 0.9.0-dev.104): the
+     * link asks for no code by text. Never the person's own link.
+     */
+    skip_text: Generated<boolean>;
     /** An owner's, made to be handed over rather than mailed (0052, path 2). */
     handover: Generated<boolean>;
     /** When the person saw that an owner made one for them (0052). */
@@ -2707,6 +2726,37 @@ export interface Schema {
     expires_at: Timestamp;
     attempts: Generated<number>;
     used_at: Timestamp | null;
+  };
+
+  /**
+   * A person's recovery codes (0134, 0.9.0-dev.104): each an Argon2id hash,
+   * never the code, used once. The vault's alone.
+   */
+  recovery_code: {
+    id: Generated<string>;
+    household_id: string;
+    account_id: string;
+    member_id: string;
+    code_hash: Buffer;
+    made_at: GeneratedTimestamp;
+    used_at: Timestamp | null;
+  };
+
+  /**
+   * A person's security questions and their answers (0134, 0.9.0-dev.104):
+   * the answers as Argon2id hashes of their normalised words, and the wrong
+   * tries counted. The vault's alone.
+   */
+  security_answer: {
+    account_id: string;
+    household_id: string;
+    member_id: string;
+    questions: ColumnType<unknown, string, string>;
+    answer_hashes: string[];
+    set_at: GeneratedTimestamp;
+    tries: Generated<number>;
+    tries_since: Timestamp | null;
+    refused_until: Timestamp | null;
   };
 
   /** Each text the vault asked SMS Gate to send (0084): never its words. The owners' to read. */

@@ -1121,6 +1121,8 @@ function ResetDialog(props: {
   const { guarded } = useApp();
   const { name } = props;
   const [stopNow, setStopNow] = useState(false);
+  // They lost their phone (0.9.0-dev.104): the link asks for no code by text.
+  const [lostPhone, setLostPhone] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   /** A link handed over, or a command to pass on: shown here, this once. */
@@ -1135,7 +1137,7 @@ function ResetDialog(props: {
     busy,
     returnFocus: props.returnFocus,
   });
-  const command = resetCommand(props.email);
+  const command = resetCommand(props.email, lostPhone);
 
   const start = async () => {
     if (busy) return;
@@ -1143,7 +1145,10 @@ function ResetDialog(props: {
     setError(null);
     try {
       const done = await guarded((t) =>
-        api.startPasswordReset(t, props.member.id, stopNow ? { stop_now: true } : {}),
+        api.startPasswordReset(t, props.member.id, {
+          ...(stopNow ? { stop_now: true } : {}),
+          ...(lostPhone ? { lost_phone: true } : {}),
+        }),
       );
       if (!done) return;
       if (done.path === 'mail') {
@@ -1273,6 +1278,15 @@ function ResetDialog(props: {
                   }
                 />
               )}
+              {/* The link asks for a code by text when they asked for one, as
+                  their own would — unless they lost their phone (0.9.0-dev.104). */}
+              <Check
+                id="reset-lost-phone"
+                checked={lostPhone}
+                onChange={setLostPhone}
+                label="They’ve lost their phone — don’t ask for the code by text"
+                note={`If ${name} asked for a code by text when their password is reset, the link won’t ask for it, and codes by text at sign-in are turned off too unless they have an authenticator app. It is in the activity log.`}
+              />
               <ErrorNote message={error} />
               <div className="row">
                 {/* aria-disabled, not disabled: "confirm it is you" gives focus back to it. */}

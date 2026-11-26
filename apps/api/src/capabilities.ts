@@ -316,6 +316,10 @@ export function buildCapabilities(config: CapabilityConfig): Capabilities {
       // 0.9.0-dev.103: the tags put on a document most recently first, of
       // those the caller can see (GET /tags?sort=recent).
       recent_tags: true,
+      // 0.9.0-dev.104: recovery codes and security questions stand in for a
+      // lost second step; a code by text that can't go refuses the sign-in.
+      recovery_codes: true,
+      security_questions: true,
       // 0.9.0 (AIR1): the AI reader set in Settings → Reading, unless the
       // operator keeps it out (FDV_AI_READER_SETTINGS=off); and the kinds
       // of reader this vault reads with — Ollama, Anthropic and an

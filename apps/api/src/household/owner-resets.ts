@@ -65,7 +65,15 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 export const STOPPED_REVOKED_REASON = 'password stopped';
 
 /** POST /members/{id}/password-reset (5.29). */
-export const ownerResetBody = z.object({ stop_now: z.boolean().optional() }).strict();
+export const ownerResetBody = z
+  .object({
+    stop_now: z.boolean().optional(),
+    // The person has lost their phone (0.9.0-dev.104): the link asks for no
+    // code by text. Taken with the owner's passkey or code, as every reset
+    // they start is, and in the activity log.
+    lost_phone: z.boolean().optional(),
+  })
+  .strict();
 
 const noSignIn = () => new ApiError(404, 'not_found', 'They have no sign-in to reset.');
 
@@ -160,6 +168,7 @@ export class OwnerResetService {
   ): Promise<OwnerResetResult> {
     requireCapability(p, 'member.reset_password');
     const stopNow = body.stop_now === true;
+    const lostPhone = body.lost_phone === true;
     const told: AlertRequest[] = [];
     let phones: PushTarget[] = [];
     const result = await withPrincipal(this.db, p, async (trx) => {
@@ -230,6 +239,7 @@ export class OwnerResetService {
             household_id: p.householdId,
             issued_by_account: p.accountId,
             handover: path === 'handover',
+            skip_text: lostPhone,
             expires_at: expiresAt,
             ip: meta.ip ?? null,
           })
@@ -289,7 +299,12 @@ export class OwnerResetService {
         action: 'member.reset_started',
         objectType: 'member',
         objectId: target.member_id,
-        detail: { path, stop_now: stopNow, sessions },
+        detail: {
+          path,
+          stop_now: stopNow,
+          sessions,
+          ...(lostPhone && path !== 'operator' ? { lost_phone: true } : {}),
+        },
         ip: meta.ip,
       });
 
@@ -362,7 +377,7 @@ export class OwnerResetService {
       };
       if (expiresAt) answer.expires_at = expiresAt.toISOString();
       if (path === 'handover' && token) answer.link = this.linkFor(token);
-      if (path === 'operator') answer.command = resetCommand(target.email);
+      if (path === 'operator') answer.command = resetCommand(target.email, lostPhone);
       return answer;
     });
 

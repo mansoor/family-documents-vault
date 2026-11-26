@@ -228,6 +228,11 @@ export function ResetPasswordScreen() {
   const [code, setCode] = useState('');
   const [texted, setTexted] = useState<string | null>(null);
   const [texting, setTexting] = useState(false);
+  // Or what stands in for it (0.9.0-dev.104): a recovery code, or the
+  // answers to the security questions.
+  const [standIn, setStandIn] = useState<'text' | 'recovery_code' | 'security_questions'>('text');
+  const [recoveryCode, setRecoveryCode] = useState('');
+  const [answers, setAnswers] = useState<string[]>([]);
 
   useEffect(() => {
     if (!token) return;
@@ -251,7 +256,16 @@ export function ResetPasswordScreen() {
     setBusy(true);
     setError(null);
     try {
-      await api.completeReset(token, password, textTo ? code.trim() : undefined);
+      await api.completeReset(
+        token,
+        password,
+        textTo && standIn === 'text' ? code.trim() : undefined,
+        standIn === 'recovery_code'
+          ? { recovery_code: recoveryCode.trim() }
+          : standIn === 'security_questions'
+            ? { answers }
+            : undefined,
+      );
       markLinkSpent();
       setDone(true);
     } catch (err) {
@@ -261,6 +275,18 @@ export function ResetPasswordScreen() {
   };
 
   const textTo = preview?.text_code_to ?? null;
+  // Asked for, and can't be sent now (0.9.0-dev.104): only a stand-in finishes it.
+  const textDown = preview?.text_code_unavailable === true;
+  const ways = preview?.recovery ?? [];
+  const questions = preview?.security_questions ?? [];
+  const standInReady =
+    standIn === 'recovery_code'
+      ? recoveryCode.trim() !== ''
+      : standIn === 'security_questions'
+        ? questions.length > 0 && questions.every((_, i) => (answers[i] ?? '').trim() !== '')
+        : textDown
+          ? false
+          : textTo === null || code.trim().length >= 6;
   // What the new password must be: the household's rules, as the link's look said them.
   const rules = rulesOrBefore(preview?.password_rules);
   const textMe = async () => {
@@ -393,8 +419,59 @@ export function ResetPasswordScreen() {
           hint={passwordHint(rules, 'This also unlocks your own private documents.')}
           note={passwordStillLacks(password, rules)}
         />
+        {/* Asked for, and can't be sent now (0.9.0-dev.104). */}
+        {textDown && standIn === 'text' && (
+          <p className="status status-warn" role="note">
+            You asked for a code by text when your password is reset, and we can’t send one now.{' '}
+            {ways.length > 0
+              ? 'Use a recovery code or your security questions instead.'
+              : 'Ask an owner to send you a password reset.'}
+          </p>
+        )}
+        {/* What stands in for the code by text (0.9.0-dev.104). */}
+        {standIn === 'recovery_code' && (
+          <Field
+            id="reset-recovery-code"
+            label="Recovery code"
+            value={recoveryCode}
+            onChange={setRecoveryCode}
+            autoComplete="off"
+            autoCapitalize="none"
+            autoCorrect="off"
+            placeholder="xxxxx-xxxxx"
+            hint="One of the codes you kept. It works once, and your second steps are taken away: you set two-step sign-in up again after you sign in."
+          />
+        )}
+        {standIn === 'security_questions' &&
+          questions.map((q, i) => (
+            <Field
+              key={q}
+              id={`reset-answer-${i}`}
+              label={q}
+              value={answers[i] ?? ''}
+              autoComplete="off"
+              onChange={(v) =>
+                setAnswers(questions.map((_, j) => (j === i ? v : (answers[j] ?? ''))))
+              }
+            />
+          ))}
+        {ways.includes('recovery_code') && standIn !== 'recovery_code' && (
+          <Button kind="link" onClick={() => setStandIn('recovery_code')}>
+            Use a recovery code instead
+          </Button>
+        )}
+        {ways.includes('security_questions') && standIn !== 'security_questions' && (
+          <Button kind="link" onClick={() => setStandIn('security_questions')}>
+            Answer your security questions instead
+          </Button>
+        )}
+        {standIn !== 'text' && textTo && (
+          <Button kind="link" onClick={() => setStandIn('text')}>
+            Use the code by text instead
+          </Button>
+        )}
         {/* You asked for a code by text when your password is reset (SMS3). */}
-        {textTo && (
+        {textTo && standIn === 'text' && (
           <div className="stack" style={{ gap: 8 }} data-testid="reset-text-code">
             <p>
               You asked for a code by text when your password is reset. We text it to{' '}
@@ -423,12 +500,7 @@ export function ResetPasswordScreen() {
           </div>
         )}
         <ErrorNote message={error} />
-        <Button
-          type="submit"
-          disabled={
-            busy || !passwordFits(password, rules) || (textTo !== null && code.trim().length < 6)
-          }
-        >
+        <Button type="submit" disabled={busy || !passwordFits(password, rules) || !standInReady}>
           {busy ? 'Setting it…' : 'Set my new password'}
         </Button>
         <p className="muted">

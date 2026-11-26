@@ -2016,6 +2016,17 @@ export const contractScenarios: Scenario[] = [
       expect((await api.me(theirs.access_token)).member_id).toBe(ranaId);
       expect((await signInAs(api, rana.email, rana.password)).member_id).toBe(ranaId);
 
+      // She lost her phone (0.9.0-dev.104): the link asks for no code by
+      // text; otherwise the same.
+      expect(await api.startPasswordReset(token, ranaId, { lost_phone: true })).toMatchObject({
+        member_id: ranaId,
+        path: 'mail',
+        stop_now: false,
+      });
+      expect(
+        await refusal(api.startPasswordReset(token, ranaId, { lost_phone: 'yes' } as never)),
+      ).toMatchObject({ status: 422, code: 'validation_failed' });
+
       // Her password stops now (A48): her session ends, and the old
       // password is refused as any wrong one is.
       expect(await api.startPasswordReset(token, ranaId, { stop_now: true })).toMatchObject({
@@ -6389,6 +6400,109 @@ export const contractScenarios: Scenario[] = [
         (await lines()).some((l) => / via Acme Itself sent a file to their Inbox$/.test(l.text)),
       ).toBe(true);
       await api.connectedApps.remove(token, made.id);
+    },
+  },
+  {
+    name: 'recovery codes and security questions: made beside a second step and shown once, counted, a new set replacing the old; three questions set and never their answers; the household offering them; a wrong interim token refused (0.9.0-dev.104)',
+    run: async (api, ctx) => {
+      const caps = await api.capabilities();
+      expect(caps.features.recovery_codes).toBe(true);
+      expect(caps.features.security_questions).toBe(true);
+      // The vault's own owner, as signed in from the start: two-step sign-in
+      // of theirs since, a password alone signs them in no more.
+      const first = ctx.tokens as Tokens;
+      const email = 'contract-recovery@example.test';
+      const password = 'contract recovery password';
+      await ctx.addSignIn(first.access_token, { name: 'Rowan', email, password, role: 'owner' });
+      const owner = await signInAs(api, email, password);
+      const token = owner.access_token;
+
+      // No second step yet: none, and none to make.
+      expect(await api.recoveryCodes(token)).toEqual({
+        remaining: 0,
+        made_at: null,
+        low: false,
+        second_step: false,
+      });
+      expect(await refusal(api.makeRecoveryCodes(token))).toMatchObject({
+        status: 409,
+        code: 'recovery_codes_need_second_step',
+      });
+
+      // Beside two-step sign-in: ten, shown once, each a different one.
+      await ctx.ownerTwoStep(token);
+      const made = await api.makeRecoveryCodes(token);
+      expect(made).toMatchObject({ remaining: 10, low: false, second_step: true });
+      expect(typeof made.made_at).toBe('string');
+      expect(made.codes).toHaveLength(10);
+      expect(new Set(made.codes).size).toBe(10);
+      for (const c of made.codes) expect(c).toMatch(/^[2-9a-hjkmnp-z]{5}-[2-9a-hjkmnp-z]{5}$/);
+      expect(await api.recoveryCodes(token)).toMatchObject({ remaining: 10, low: false });
+      // A new set replaces the old.
+      const again = await api.makeRecoveryCodes(token);
+      expect(again.codes.some((c) => made.codes.includes(c))).toBe(false);
+      expect((await api.recoveryCodes(token)).remaining).toBe(10);
+
+      // Security questions: the household offers them, and three are set.
+      expect(await api.securityQuestionsRule(token)).toEqual({ on: true, can_change: true });
+      expect(await api.securityQuestions(token)).toEqual({
+        set: false,
+        questions: [],
+        set_at: null,
+        offered: true,
+        refused_until: null,
+      });
+      const pet = { key: 'first_pet', answer: 'Biscuit' };
+      const bike = { key: 'own', text: 'What was my first bike called?', answer: 'Red Racer' };
+      const school = { key: 'first_school', answer: 'St Mary’s' };
+      expect(
+        await refusal(api.setSecurityQuestions(token, { questions: [pet, bike] })),
+      ).toMatchObject({ status: 422, code: 'validation_failed' });
+      expect(
+        await refusal(
+          api.setSecurityQuestions(token, {
+            questions: [pet, bike, { key: 'first_school', answer: 'a.b' }],
+          }),
+        ),
+      ).toMatchObject({ status: 422, code: 'validation_failed' });
+      expect(
+        await refusal(api.setSecurityQuestions(token, { questions: [pet, bike, pet] })),
+      ).toMatchObject({ status: 422, code: 'validation_failed' });
+      const set = await api.setSecurityQuestions(token, { questions: [pet, bike, school] });
+      expect(set).toMatchObject({
+        set: true,
+        offered: true,
+        refused_until: null,
+        questions: [
+          { key: 'first_pet', text: 'What was the name of your first pet?' },
+          { key: 'own', text: 'What was my first bike called?' },
+          { key: 'first_school', text: 'What was the name of your first school?' },
+        ],
+      });
+      // The answers are never given back.
+      expect(JSON.stringify(await api.securityQuestions(token))).not.toMatch(/biscuit|racer/i);
+      expect((await api.removeSecurityQuestions(token)).set).toBe(false);
+
+      // Standing in for a sign-in's second step takes its interim token.
+      expect(
+        await refusal(
+          api.signInRecoveryCode('not-a-token', made.codes[0] ?? '', 'a new long password'),
+        ),
+      ).toMatchObject({ status: 401, code: 'mfa_expired' });
+      expect(await refusal(api.signInQuestions('not-a-token'))).toMatchObject({
+        status: 401,
+        code: 'mfa_expired',
+      });
+      expect(
+        await refusal(
+          api.signInAnswers(
+            'not-a-token',
+            ['one one', 'two two', 'three three'],
+            'a new long password',
+          ),
+        ),
+      ).toMatchObject({ status: 401, code: 'mfa_expired' });
+      await api.logout(token);
     },
   },
   {

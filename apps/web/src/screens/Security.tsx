@@ -2,6 +2,7 @@ import { Navigate } from 'react-router';
 import { AutoLockCard } from '../auto-lock-settings.js';
 import { useApp } from '../app-context.js';
 import { PasswordRulesCard } from '../password-rules.js';
+import { SecurityQuestionsRuleCard } from '../recovery.js';
 import { securityCards } from '../settings-sections.js';
 import { storedRole } from '../session.js';
 import { TwoStepRuleCard } from '../two-step-rule.js';
@@ -9,8 +10,9 @@ import { SettingsPage } from './Settings.js';
 
 /**
  * Settings → Security (/settings/security; 24 Nov 2026, the owner's ask),
- * before Privacy: the password rules and whether every adult must have
- * two-step sign-in, an owner's; and when the vault locks itself — the
+ * before Privacy: the password rules, whether every adult must have
+ * two-step sign-in and whether security questions are offered, an owner's;
+ * and when the vault locks itself — the
  * family's time, an owner's, and each person's own, shorter one beside it
  * (until then in Your account).
  */
@@ -28,6 +30,9 @@ export function SecurityScreen() {
       {cards.passwordRules && <PasswordRulesCard />}
       {/* Two-step sign-in for adults (0.9.0): an owner's to change. */}
       {cards.twoStepRule && <TwoStepRuleCard />}
+      {/* Whether security questions may stand in for a lost second step
+          (0.9.0-dev.104): an owner's to change. */}
+      {cards.questionsRule && <SecurityQuestionsRuleCard />}
       {/* Lock after a while away (0.9.0-dev.87): the family's time, an
           owner's to change, and yours beside it, in one card. */}
       {cards.myLock && <AutoLockCard />}
