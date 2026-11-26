@@ -13,6 +13,8 @@ import { ElsewhereNote, GroupName, ServerLine, useSettingsGroups } from '../sett
 import { ChangePassword } from './Password.js';
 import { dateTimeWords, dayWordsOf, useFamilyZone } from '../family-time.js';
 import { CodesByTextCard } from '../text-messages.js';
+import { makeCodesIfNone, RecoveryCodesCard, SecurityQuestionsCard } from '../recovery.js';
+import type { RecoveryCodesMade } from '@fdv/shared';
 
 /**
  * A section's page: its heading names the section. On a phone its bar has
@@ -84,10 +86,24 @@ export function SettingsScreen() {
 
 /**
  * Your account (/settings/account): the password, two-step sign-in,
- * passkeys, the devices signed in, and the single keys on this device.
+ * passkeys, codes by text, recovery codes and security questions
+ * (0.9.0-dev.104), the devices signed in, and the single keys on this
+ * device.
  */
 export function AccountScreen() {
-  const { authVersion, withToken, guarded } = useApp();
+  const { caps, authVersion, withToken, guarded } = useApp();
+  // A second step just set up (0.9.0-dev.104): recovery codes are made
+  // beside it, when there are none yet, and shown once.
+  const [justMade, setJustMade] = useState<RecoveryCodesMade | null>(null);
+  const secondStepSetUp = () => {
+    if (caps?.features.recovery_codes !== true) return;
+    void makeCodesIfNone(withToken, guarded).then(
+      (made) => {
+        if (made) setJustMade(made);
+      },
+      () => undefined,
+    );
+  };
   const {
     data: sessions,
     error: sessionsError,
@@ -128,10 +144,13 @@ export function AccountScreen() {
   return (
     <SettingsPage title="Your account">
       <ChangePassword />
-      <TwoStep />
-      <Passkeys />
+      <TwoStep onDone={secondStepSetUp} />
+      <Passkeys onAdded={secondStepSetUp} />
       {/* A code by text at a reset and at sign-in (0.9.0, SMS3): only ever as well. */}
-      <CodesByTextCard />
+      <CodesByTextCard onTurnedOn={secondStepSetUp} />
+      {/* What stands in for a lost second step (0.9.0-dev.104). */}
+      <RecoveryCodesCard justMade={justMade} onKept={() => setJustMade(null)} />
+      <SecurityQuestionsCard />
       <section aria-labelledby="devices-h">
         <h2 id="devices-h" className="section-h">
           Signed-in devices

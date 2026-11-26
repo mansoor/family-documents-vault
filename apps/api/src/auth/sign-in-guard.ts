@@ -40,8 +40,16 @@ import { ApiError } from '../errors.js';
  * are emailed too, once. Never about an address with no account.
  */
 
-/** A wrong password, a code that didn't match, a passkey refused. */
-export type FailedStep = 'password' | 'code' | 'passkey';
+/**
+ * A wrong password, a code that didn't match, a passkey refused; and since
+ * 0.9.0-dev.104 a recovery code that didn't match, or security questions
+ * answered wrong — each a second step, as a code is.
+ */
+export type FailedStep = 'password' | 'code' | 'passkey' | 'recovery_code' | 'questions';
+
+/** Whether a step comes after the password was right. */
+const isSecondStep = (step: FailedStep) =>
+  step === 'code' || step === 'recovery_code' || step === 'questions';
 
 /** Failures before signing in waits. */
 export const THROTTLE_AFTER = 5;
@@ -242,7 +250,7 @@ export class SignInGuard {
     if (attempt.settled || !attempt.subject) return;
     attempt.settled = true;
     const now = new Date(this.now());
-    const second = step === 'code';
+    const second = isSecondStep(step);
     // The fifth failure waits a minute, the sixth five, every one after
     // fifteen: never longer.
     const r = await sql<{ failures: number; throttled_until: Date | null }>`
@@ -347,7 +355,7 @@ export class SignInGuard {
     // The incident: its failures (a passkey's not among them), and whether
     // it was told; a new one after a day without a failure.
     const counted = step === 'passkey' ? 0 : 1;
-    const second = step === 'code';
+    const second = isSecondStep(step);
     const incident = await sql<{
       failures: number;
       second_step: boolean;

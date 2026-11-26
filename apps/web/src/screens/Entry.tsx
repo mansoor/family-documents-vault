@@ -2,11 +2,11 @@ import { useState, type FormEvent } from 'react';
 import { useNavigate } from 'react-router';
 import * as passkeys from '../passkeys.js';
 import * as push from '../push.js';
-import { api } from '../api.js';
+import { api, ApiRequestError } from '../api.js';
 import { takeLanding } from '../landing.js';
 import { describeError, useApp } from '../app-context.js';
 import { Button, ErrorNote, Field, Logo } from '../ui.js';
-import type { MfaChallenge } from '@fdv/shared';
+import type { MfaChallenge, RecoveryWay, Tokens } from '@fdv/shared';
 
 /** The Welcome board: what this is, and one primary action. */
 export function WelcomeScreen() {
@@ -63,6 +63,22 @@ export function SignInScreen() {
   const [mfa, setMfa] = useState<MfaChallenge | null>(null);
   const [byText, setByText] = useState(false);
   const [texted, setTexted] = useState<string | null>(null);
+  // What stands in for a lost second step (0.9.0-dev.104): a recovery code,
+  // or the security questions; and a sign-in refused because its code by
+  // text couldn't be sent, which only they can finish.
+  const [way, setWay] = useState<'second_step' | RecoveryWay>('second_step');
+  const [refused, setRefused] = useState<string | null>(null);
+  const [recoveryCode, setRecoveryCode] = useState('');
+  const [questions, setQuestions] = useState<string[] | null>(null);
+  const [answers, setAnswers] = useState<string[]>([]);
+
+  /** Signed in: where a folder label's code asked to go (C3); else Home. */
+  const signedIn = (r: Tokens) => {
+    session.accept(r);
+    markAuthChanged();
+    void push.repost(r.access_token);
+    void navigate(takeLanding() ?? '/', { replace: true });
+  };
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
@@ -81,12 +97,23 @@ export function SignInScreen() {
         if (r.text_sent && r.text_to) setTexted(`We texted a code to ${r.text_to}.`);
         return;
       }
-      session.accept(r);
-      markAuthChanged();
-      void push.repost(r.access_token);
-      // Where a folder label's code asked to go, once signed in (C3); else Home.
-      void navigate(takeLanding() ?? '/', { replace: true });
+      signedIn(r);
     } catch (err) {
+      // The code by text couldn't be sent (0.9.0-dev.104): nobody is let in,
+      // and a recovery code or the questions may stand in.
+      if (err instanceof ApiRequestError && err.code === 'text_code_unavailable' && err.mfaToken) {
+        setMfaToken(err.mfaToken);
+        setMfa({
+          mfa_required: true,
+          mfa_token: err.mfaToken,
+          methods: [],
+          recovery: err.recovery.filter(
+            (w): w is RecoveryWay => w === 'recovery_code' || w === 'security_questions',
+          ),
+        });
+        setRefused(err.message);
+        return;
+      }
       setError(describeError(err));
     } finally {
       setBusy(false);
@@ -102,11 +129,7 @@ export function SignInScreen() {
     setError(null);
     try {
       const tokens = await passkeys.signIn(email.trim() || undefined);
-      session.accept(tokens);
-      markAuthChanged();
-      void push.repost(tokens.access_token);
-      // Where a folder label's code asked to go, once signed in (C3); else Home.
-      void navigate(takeLanding() ?? '/', { replace: true });
+      signedIn(tokens);
     } catch (err) {
       setError(passkeys.describe(err));
     } finally {
@@ -131,12 +154,64 @@ export function SignInScreen() {
     }
   };
 
+  /** One of what stands in for the second step, chosen (0.9.0-dev.104). */
+  const choose = async (next: RecoveryWay) => {
+    setError(null);
+    setWay(next);
+    if (next !== 'security_questions' || questions || !mfaToken) return;
+    setBusy(true);
+    try {
+      const asked = await api.signInQuestions(mfaToken);
+      setQuestions(asked.questions);
+      setAnswers(asked.questions.map(() => ''));
+    } catch (err) {
+      setError(describeError(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  /** The recovery code, or the answers, in place of the second step. */
+  const standIn = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!mfaToken) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const r =
+        way === 'recovery_code'
+          ? await api.signInRecoveryCode(mfaToken, recoveryCode)
+          : await api.signInAnswers(mfaToken, answers);
+      signedIn(r);
+    } catch (err) {
+      setError(describeError(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  /** Back to the email and password, as if nothing had been typed after them. */
+  const startAgain = () => {
+    setMfaToken(null);
+    setMfa(null);
+    setCode('');
+    setByText(false);
+    setTexted(null);
+    setWay('second_step');
+    setRefused(null);
+    setRecoveryCode('');
+    setQuestions(null);
+    setAnswers([]);
+    setError(null);
+  };
+
   if (mfaToken) {
     const offersText = mfa?.methods?.includes('text') === true;
     const offersApp = !mfa?.methods || mfa.methods.includes('totp');
     // Somebody who must have two-step sign-in, whose factor is a passkey
     // (0.9.0): the passkey is the second step, as a passkey sign-in.
     const offersPasskey = mfa?.methods?.includes('passkey') === true;
+    const ways = mfa?.recovery ?? [];
     const passkeyButton = offersPasskey && (
       <Button
         kind={offersApp ? 'quiet' : 'primary'}
@@ -146,6 +221,104 @@ export function SignInScreen() {
         {busy ? 'Waiting for your device…' : 'Use your passkey'}
       </Button>
     );
+    // What stands in, as links under the second step (0.9.0-dev.104).
+    const standInLinks = (
+      <>
+        {ways.includes('recovery_code') && way !== 'recovery_code' && (
+          <Button kind="link" onClick={() => void choose('recovery_code')}>
+            Use a recovery code
+          </Button>
+        )}
+        {ways.includes('security_questions') && way !== 'security_questions' && (
+          <Button kind="link" onClick={() => void choose('security_questions')}>
+            Answer your security questions
+          </Button>
+        )}
+        {way !== 'second_step' && !refused && (
+          <Button
+            kind="link"
+            onClick={() => {
+              setWay('second_step');
+              setError(null);
+            }}
+          >
+            Use my second step instead
+          </Button>
+        )}
+      </>
+    );
+    if (way !== 'second_step' || refused) {
+      return (
+        <main className="page">
+          <Logo />
+          <div>
+            <h1 style={{ fontSize: 32 }}>
+              {way === 'recovery_code'
+                ? 'Use a recovery code'
+                : way === 'security_questions'
+                  ? 'Answer your security questions'
+                  : 'One more step'}
+            </h1>
+            <p className="lede">
+              {way === 'recovery_code'
+                ? 'Type one of the recovery codes you kept. It works once.'
+                : way === 'security_questions'
+                  ? 'Answer all three, as you did when you set them.'
+                  : refused}
+            </p>
+            {way !== 'second_step' && (
+              <p className="muted">
+                Your authenticator app, passkeys and codes by text will be taken away, and every
+                other device signed out. You then set up two-step sign-in again.
+              </p>
+            )}
+          </div>
+          <form onSubmit={(e) => void standIn(e)} className="card stack">
+            {way === 'recovery_code' && (
+              <Field
+                id="recovery-code"
+                label="Recovery code"
+                value={recoveryCode}
+                onChange={setRecoveryCode}
+                autoComplete="off"
+                autoCapitalize="none"
+                autoCorrect="off"
+                placeholder="xxxxx-xxxxx"
+              />
+            )}
+            {way === 'security_questions' &&
+              (questions ?? []).map((q, i) => (
+                <Field
+                  key={q}
+                  id={`security-answer-${i}`}
+                  label={q}
+                  value={answers[i] ?? ''}
+                  autoComplete="off"
+                  onChange={(v) => setAnswers(answers.map((a, j) => (j === i ? v : a)))}
+                />
+              ))}
+            <ErrorNote message={error} />
+            {way !== 'second_step' && (
+              <Button
+                type="submit"
+                disabled={
+                  busy ||
+                  (way === 'recovery_code'
+                    ? recoveryCode.trim() === ''
+                    : questions === null || answers.some((a) => a.trim() === ''))
+                }
+              >
+                {busy ? 'Checking…' : 'Continue'}
+              </Button>
+            )}
+            {standInLinks}
+            <Button kind="link" onClick={startAgain}>
+              Start again
+            </Button>
+          </form>
+        </main>
+      );
+    }
     if (offersPasskey && !offersApp && !offersText) {
       return (
         <main className="page">
@@ -159,6 +332,7 @@ export function SignInScreen() {
           <div className="card stack">
             <ErrorNote message={error} />
             {passkeyButton}
+            {standInLinks}
           </div>
         </main>
       );
@@ -214,6 +388,7 @@ export function SignInScreen() {
               Use my authenticator app instead
             </Button>
           )}
+          {standInLinks}
         </form>
       </main>
     );

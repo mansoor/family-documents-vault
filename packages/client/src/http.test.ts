@@ -272,5 +272,30 @@ describe('a vault that asks for the app to be updated (0.9.0-dev.79)', () => {
     expect(err).toBeInstanceOf(ApiRequestError);
     expect(isAppUpdateRequired(err)).toBe(false);
     expect(err).toMatchObject({ status: 403, code: 'forbidden' });
+    // Nothing to stand in for a second step there.
+    expect(err).toMatchObject({ mfaToken: undefined, recovery: [] });
+  });
+
+  it('a sign-in refused for its code by text hands back the interim token and what may stand in (0.9.0-dev.104)', async () => {
+    const http = createHttp({
+      baseUrl: '',
+      fetch: answering(409, {
+        error: {
+          code: 'text_code_unavailable',
+          message: 'We couldn’t send your code by text.',
+          mfa_token: 'interim',
+          recovery: ['recovery_code', 7, 'security_questions'],
+          retriable: false,
+        },
+      }),
+    });
+    const err = await http.request('/api/v1/auth/password').catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ApiRequestError);
+    expect(err).toMatchObject({
+      status: 409,
+      code: 'text_code_unavailable',
+      mfaToken: 'interim',
+      recovery: ['recovery_code', 'security_questions'],
+    });
   });
 });

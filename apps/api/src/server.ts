@@ -26,6 +26,7 @@ import { SetupToken } from './auth/setup-token.js';
 import { TotpService } from './auth/totp.js';
 import { deriveSigningKey } from './auth/tokens.js';
 import { SignInGuard } from './auth/sign-in-guard.js';
+import { RecoveryService } from './auth/recovery.js';
 import { buildApp } from './app.js';
 import { loadConfig, runsMigrations } from './config.js';
 import { PgBoss } from 'pg-boss';
@@ -239,6 +240,9 @@ async function main(): Promise<void> {
   // Failed sign-ins counted per account (0.9.0): a wait after five in a
   // row, a line in the person's Activity, an alert.
   const guard = new SignInGuard(db, deriveSigningKey(masterSecret), alert);
+  // Recovery codes and security questions (0.9.0-dev.104): what stands in
+  // for a lost second step, with the password or a reset link.
+  const recovery = new RecoveryService(db, alert, push, guard);
   const auth = new AuthService(
     db,
     deriveSigningKey(masterSecret),
@@ -248,7 +252,7 @@ async function main(): Promise<void> {
     totp,
     push,
     textCodes,
-    { guard },
+    { guard, recovery },
   );
   const passkeys = new PasskeyService(
     db,
@@ -284,6 +288,7 @@ async function main(): Promise<void> {
     push,
     enqueue,
     textCodes,
+    recovery,
   );
   // 5.29: a reset an owner starts goes by the operator's mail server alone,
   // or is handed over only for somebody who keeps nothing private.
@@ -367,6 +372,7 @@ async function main(): Promise<void> {
       codeKey: deriveKey(masterSecret, PHONE_CODE_KEY_PURPOSE),
     }),
     textCodes,
+    recovery,
     // The local AI reader's switch (0.9.0, R4): the endpoint is the worker's alone.
     localAi: new LocalAiService(db, settingsChecks, aiReader),
     aiReader,

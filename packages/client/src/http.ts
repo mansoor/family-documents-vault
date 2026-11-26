@@ -198,6 +198,8 @@ export async function toError(res: ResponseLike, now: number): Promise<ApiReques
       detail?: string;
       factor?: boolean;
       min_client_version?: string;
+      mfa_token?: string;
+      recovery?: unknown;
     };
   } = {};
   try {
@@ -228,5 +230,10 @@ export async function toError(res: ResponseLike, now: number): Promise<ApiReques
     ...(e.detail !== undefined ? { detail: e.detail } : {}),
     ...(e.factor === true ? { factor: true } : {}),
     ...(retryAfter !== undefined ? { retryAfterSeconds: retryAfter } : {}),
+    // A sign-in refused for its code by text (0.9.0-dev.104).
+    ...(typeof e.mfa_token === 'string' ? { mfaToken: e.mfa_token } : {}),
+    ...(Array.isArray(e.recovery)
+      ? { recovery: e.recovery.filter((w): w is string => typeof w === 'string') }
+      : {}),
   });
 }

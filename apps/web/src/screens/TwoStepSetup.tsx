@@ -1,9 +1,11 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router';
 import { api } from '../api.js';
-import { useApp, useLoad } from '../app-context.js';
+import { describeError, useApp, useLoad } from '../app-context.js';
+import { RecoveryCodesShown } from '../recovery.js';
 import { StepUpPrompt } from '../StepUpPrompt.js';
-import { Button, Logo } from '../ui.js';
+import { CodesByTextCard } from '../text-messages.js';
+import { Button, ErrorNote, Logo } from '../ui.js';
 import { Passkeys, TwoStep } from './Settings.js';
 
 /**
@@ -18,16 +20,43 @@ import { Passkeys, TwoStep } from './Settings.js';
  * Either way they go straight on, in the same sign-in. `onDone` is for
  * first-run setup, which carries on with its own boards; anywhere else the
  * app goes on by itself.
+ *
+ * Somebody who got back in with a recovery code or their security questions
+ * (`recovered`, 0.9.0-dev.104) had every second step taken away: they set
+ * one up again — codes by text too, unless they are an owner — and go on
+ * once new recovery codes are made. A second step set up here, either way,
+ * is followed by the recovery codes made for it, shown once.
  */
 export function TwoStepSetupScreen({ onDone }: { onDone?: () => void }) {
-  const { session, authVersion, markAuthChanged, twoStepDone } = useApp();
+  const { caps, session, authVersion, markAuthChanged, twoStepDone, guarded } = useApp();
   const navigate = useNavigate();
   const { data: me } = useLoad(async (t) => api.me(t), [authVersion]);
   const [leaving, setLeaving] = useState(false);
   const [confirming, setConfirming] = useState(false);
+  const [codes, setCodes] = useState<string[] | null>(null);
+  const [making, setMaking] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
   const done = () => {
     twoStepDone();
     onDone?.();
+  };
+  // A second step set up: its recovery codes made, and shown once, before
+  // going on (0.9.0-dev.104). A vault without them goes straight on.
+  const setUp = async () => {
+    if (caps?.features.recovery_codes !== true) {
+      done();
+      return;
+    }
+    setMaking(true);
+    setProblem(null);
+    try {
+      const made = await guarded((t) => api.makeRecoveryCodes(t));
+      if (made) setCodes(made.codes);
+    } catch (err) {
+      setProblem(describeError(err));
+    } finally {
+      setMaking(false);
+    }
   };
   const signOut = async () => {
     setLeaving(true);
@@ -69,6 +98,41 @@ export function TwoStepSetupScreen({ onDone }: { onDone?: () => void }) {
     );
   }
 
+  if (codes) {
+    return (
+      <main className="page page-top">
+        <Logo />
+        <RecoveryCodesShown codes={codes} onDone={done} />
+      </main>
+    );
+  }
+
+  if (me?.two_step_reason === 'recovered') {
+    return (
+      <main className="page page-top">
+        <Logo />
+        <div>
+          <h1 style={{ fontSize: 28 }}>Set up two-step sign-in again</h1>
+          <p className="lede">
+            You got back in without your second step, so your authenticator app, passkeys and codes
+            by text were taken away, and every other device was signed out. Set one up again, keep
+            the new recovery codes we make for it, and you go straight on.
+          </p>
+        </div>
+        <Passkeys onAdded={() => void setUp()} />
+        <TwoStep onDone={() => void setUp()} />
+        {me.role !== 'owner' && <CodesByTextCard onTurnedOn={() => void setUp()} />}
+        {making && (
+          <p className="status-line" role="status">
+            Making your recovery codes…
+          </p>
+        )}
+        <ErrorNote message={problem} />
+        {signOutButton}
+      </main>
+    );
+  }
+
   const who =
     me?.role === 'owner'
       ? 'Owners must have two-step sign-in, so that a password alone, guessed or stolen, never opens the vault.'
@@ -83,8 +147,14 @@ export function TwoStepSetupScreen({ onDone }: { onDone?: () => void }) {
           one: it takes a minute, and you go straight on.
         </p>
       </div>
-      <Passkeys onAdded={done} />
-      <TwoStep onDone={done} />
+      <Passkeys onAdded={() => void setUp()} />
+      <TwoStep onDone={() => void setUp()} />
+      {making && (
+        <p className="status-line" role="status">
+          Making your recovery codes…
+        </p>
+      )}
+      <ErrorNote message={problem} />
       <p className="muted">Not now? You can sign out and come back to it.</p>
       {signOutButton}
     </main>

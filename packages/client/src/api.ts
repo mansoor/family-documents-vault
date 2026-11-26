@@ -143,6 +143,11 @@ import type {
   SharedSession,
   NotesList,
   RecentlyOpened,
+  RecoveryCodesMade,
+  RecoveryCodesState,
+  SecurityQuestionsInput,
+  SecurityQuestionsRule,
+  SecurityQuestionsState,
   ShareInput,
   ShareLinkPreview,
   SharePreview,
@@ -333,6 +338,41 @@ export function createApi(http: Http) {
      */
     signInTextCode: (mfa_token: string) =>
       request<TextCodeSent>('/api/v1/auth/mfa/text', { method: 'POST', body: { mfa_token } }),
+    /**
+     * A recovery code in place of the second step (0.9.0-dev.104,
+     * `features.recovery_codes`), when `MfaChallenge.recovery` has
+     * `recovery_code` — or a `409 text_code_unavailable` handed back its
+     * `mfaToken`. Every second step of theirs is taken away, every other
+     * device signed out, and the session may only set one up again
+     * (`two_step_setup_required`, reason `recovered`). `401
+     * recovery_code_wrong`; `429 sign_in_throttled` after five wrong.
+     */
+    signInRecoveryCode: (mfa_token: string, code: string) =>
+      request<Tokens>('/api/v1/auth/mfa/recovery-code', {
+        method: 'POST',
+        body: { mfa_token, code },
+      }),
+    /**
+     * The person's security questions, to answer in place of the second step
+     * (0.9.0-dev.104, `features.security_questions`): `409
+     * security_questions_not_offered` when none are set, or the household
+     * turned them off.
+     */
+    signInQuestions: (mfa_token: string) =>
+      request<{ questions: string[] }>('/api/v1/auth/mfa/questions', {
+        method: 'POST',
+        body: { mfa_token },
+      }),
+    /**
+     * The answers, in the questions' order (0.9.0-dev.104): right, as a
+     * recovery code is. `401 security_answers_wrong`; `429
+     * security_questions_refused` for a day after five wrong.
+     */
+    signInAnswers: (mfa_token: string, answers: string[]) =>
+      request<Tokens>('/api/v1/auth/mfa/answers', {
+        method: 'POST',
+        body: { mfa_token, answers },
+      }),
     refresh: (refresh_token: string) =>
       request<Tokens>('/api/v1/auth/refresh', { method: 'POST', body: { refresh_token } }),
     /**
@@ -460,6 +500,38 @@ export function createApi(http: Http) {
      */
     setTextCodeSettings: (token: string, body: TextCodeSettingsInput) =>
       request<TextCodeSettings>('/api/v1/auth/text-codes', { method: 'PUT', body, token }),
+    /** How many of one's own recovery codes are left (0.9.0-dev.104, `features.recovery_codes`). */
+    recoveryCodes: (token: string) =>
+      request<RecoveryCodesState>('/api/v1/auth/recovery-codes', { token }),
+    /**
+     * Ten new recovery codes, which replace the old (0.9.0-dev.104): shown
+     * this once. `step_up_required` (`change_sign_in`) first; `409
+     * recovery_codes_need_second_step` with no second step. After a
+     * recovery, made beside a new second step, they let the session go on.
+     */
+    makeRecoveryCodes: (token: string) =>
+      request<RecoveryCodesMade>('/api/v1/auth/recovery-codes', { method: 'POST', token }),
+    /** One's own security questions, never the answers (0.9.0-dev.104, `features.security_questions`). */
+    securityQuestions: (token: string) =>
+      request<SecurityQuestionsState>('/api/v1/auth/security-questions', { token }),
+    /**
+     * Three questions and their answers, which replace any before:
+     * `step_up_required` (`change_sign_in`) first; `422 validation_failed` in
+     * plain words; `409 security_questions_off` when the household doesn't
+     * offer them.
+     */
+    setSecurityQuestions: (token: string, body: SecurityQuestionsInput) =>
+      request<SecurityQuestionsState>('/api/v1/auth/security-questions', {
+        method: 'PUT',
+        body,
+        token,
+      }),
+    /** Removed: `step_up_required` (`change_sign_in`) first. */
+    removeSecurityQuestions: (token: string) =>
+      request<SecurityQuestionsState>('/api/v1/auth/security-questions', {
+        method: 'DELETE',
+        token,
+      }),
     passkeys: (token: string) =>
       request<{ items: PasskeyView[] }>('/api/v1/auth/passkeys', { token }),
     passkeyRegisterChallenge: (token: string) =>
@@ -514,12 +586,25 @@ export function createApi(http: Http) {
      * Spends the link: the new password is set, and nobody is signed in.
      * Since 0.9.0 (`features.sms_codes`), `code` is the one texted when the
      * person asked for one (`ResetPreview.text_code_to`; `422
-     * sms_code_required` without it).
+     * sms_code_required` without it). Since 0.9.0-dev.104
+     * (`features.recovery_codes`) a recovery code, or the answers to the
+     * security questions, may stand in for it (`ResetPreview.recovery`): `409
+     * text_code_unavailable` when it can't be sent and neither is given.
      */
-    completeReset: (linkToken: string, password: string, code?: string) =>
+    completeReset: (
+      linkToken: string,
+      password: string,
+      code?: string,
+      standIn?: { recovery_code: string } | { answers: string[] },
+    ) =>
       request<{ email: string }>('/api/v1/password-resets/complete', {
         method: 'POST',
-        body: code ? { token: linkToken, password, code } : { token: linkToken, password },
+        body: {
+          token: linkToken,
+          password,
+          ...(code ? { code } : {}),
+          ...(standIn ?? {}),
+        },
       }),
     /**
      * The code that finishes a reset, texted to the person's own number
@@ -643,6 +728,23 @@ export function createApi(http: Http) {
       request<{ adults: boolean; can_change: boolean }>('/api/v1/household/two-step', {
         method: 'PUT',
         body: { adults },
+        token,
+      }),
+    /**
+     * Whether the household offers security questions (0.9.0-dev.104,
+     * `features.security_questions`): on unless an owner turned them off.
+     * Every role reads it; `can_change` for an owner.
+     */
+    securityQuestionsRule: (token: string) =>
+      request<SecurityQuestionsRule>('/api/v1/household/security-questions', { token }),
+    /**
+     * An owner turns them on or off: `403 forbidden` to anybody else; an
+     * owner power, as the two-step rule is.
+     */
+    setSecurityQuestionsRule: (token: string, on: boolean) =>
+      request<SecurityQuestionsRule>('/api/v1/household/security-questions', {
+        method: 'PUT',
+        body: { on },
         token,
       }),
     /**

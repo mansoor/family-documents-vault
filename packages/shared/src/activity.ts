@@ -142,6 +142,7 @@ export function activityKind(action: string): ActivityKind {
     case 'household.neutral_wording_changed':
     case 'household.ended_sharing_changed':
     case 'household.two_step_changed':
+    case 'household.security_questions_changed':
     case 'household.auto_lock_changed':
     case 'household.password_rules_changed':
     case 'issuer.joined': // 0.9.0-dev.91: issuers said to be the same,
@@ -1297,6 +1298,15 @@ export function eventWords(e: ActivityEvent): (ActivityLine & { named: boolean }
           : `${who} stopped asking every adult to use two-step sign-in`,
         true,
       );
+    // Whether security questions may stand in for a lost second step
+    // (0.9.0-dev.104), on or off.
+    case 'household.security_questions_changed':
+      return line(
+        detail.on === true
+          ? `${who} turned security questions on for the family`
+          : `${who} turned security questions off for the family`,
+        true,
+      );
     // The AI reader set in Settings, changed, removed or tested (0.9.0,
     // AIR1): which kind and where it runs — never its address, its key, or
     // anything it said.
@@ -1417,7 +1427,11 @@ export function eventWords(e: ActivityEvent): (ActivityLine & { named: boolean }
           ? 'the code didn’t match'
           : detail.step === 'passkey'
             ? 'the passkey wasn’t accepted'
-            : 'the password was wrong';
+            : detail.step === 'recovery_code'
+              ? 'the recovery code didn’t match'
+              : detail.step === 'questions'
+                ? 'the answers to the security questions weren’t right'
+                : 'the password was wrong';
       const minutes = typeof detail.paused_minutes === 'number' ? detail.paused_minutes : null;
       const waits =
         minutes === null
@@ -1435,11 +1449,12 @@ export function eventWords(e: ActivityEvent): (ActivityLine & { named: boolean }
       return line(`${who} switched on two-step sign-in`, true);
     case 'auth.totp_disabled':
       return line(`${who} switched off two-step sign-in`, true);
-    // 0.9.0 (SMS3): a sign-in or a reset that went on without its code by
-    // text, and why in a word — never the number.
-    case 'auth.text_code_skipped':
+    // 0.9.0-dev.104: a sign-in or a reset refused because its code by text
+    // couldn't be sent, and why in a word — never the number. Whoever tried
+    // is not named: it may not have been them.
+    case 'auth.text_code_refused':
       return line(
-        `${who} ${detail.at === 'reset' ? 'reset their password' : 'signed in'} without the code by text they asked for: ${
+        `${detail.at === 'reset' ? `A password reset of ${possessive(who)} account` : `A sign-in to ${possessive(who)} account`} was refused, because the code by text couldn’t be sent: ${
           detail.why === 'cap_reached'
             ? 'this month’s texts were all sent'
             : detail.why === 'not_sent'
@@ -1448,6 +1463,36 @@ export function eventWords(e: ActivityEvent): (ActivityLine & { named: boolean }
                 ? 'their mobile number wasn’t confirmed'
                 : 'text messages weren’t working'
         }`,
+        true,
+        UNNAMED,
+      );
+    // 0.9.0-dev.104: recovery codes made (a new set replaces the old), one
+    // used in place of a lost second step, and security questions set,
+    // changed, removed or answered — never a code, a question or an answer.
+    case 'auth.recovery_codes_made':
+      return line(
+        detail.replaced === true
+          ? `${who} made new recovery codes, and the old ones stopped working`
+          : `${who} made recovery codes`,
+        true,
+      );
+    case 'auth.recovery_code_used':
+      return line(
+        `${who} used a recovery code ${detail.at === 'reset' ? 'to reset their password' : 'to sign in'}, so their two-step sign-in was taken away and every other device signed out`,
+        true,
+      );
+    case 'auth.security_questions_set':
+      return line(
+        detail.changed === true
+          ? `${who} changed their security questions`
+          : `${who} set security questions`,
+        true,
+      );
+    case 'auth.security_questions_removed':
+      return line(`${who} removed their security questions`, true);
+    case 'auth.security_questions_used':
+      return line(
+        `${who} answered their security questions ${detail.at === 'reset' ? 'to reset their password' : 'to sign in'}, so their two-step sign-in was taken away and every other device signed out`,
         true,
       );
     // 0.9.0 (SMS3): whether a reset and a sign-in ask for a code by text.

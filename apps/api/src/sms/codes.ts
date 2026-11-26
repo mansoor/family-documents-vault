@@ -42,9 +42,10 @@ import type { SmsService } from './service.js';
  * a SIM swap moves the number — so it is only ever in addition: an owner
  * turns it on for sign-in only beside a passkey or two-step sign-in, an
  * owner never confirms it's them with one, and none of the owner's powers
- * (A54) is ever served by one. A reset whose code cannot be texted goes on
- * as it would have without it, and the person's owners are told: nobody is
- * locked out by a phone that is off.
+ * (A54) is ever served by one. A sign-in or a reset whose code cannot be
+ * texted is refused (0.9.0-dev.104; until then it went on without it): a
+ * recovery code or the security questions stand in instead, or an owner
+ * sends a password reset. The person's owners are told, as something to fix.
  *
  * A code is six digits, 10 minutes and 5 tries, used once, and only the
  * newest for its purpose works. It is kept as an HMAC under a key derived
@@ -106,8 +107,7 @@ interface Target {
   resetText: boolean;
 }
 
-/** Whether a reset asks for a code by text: no, yes (and where), or it should but cannot. */
-/** Why a code by text could not be asked for, in a word (`auth.text_code_skipped`). */
+/** Why a code by text could not be asked for, in a word (`auth.text_code_refused`). */
 export type TextSkipped = 'no_number' | 'not_ready' | 'cap_reached' | 'not_sent';
 
 /** Each, in plain words, as the owners are told it. */
@@ -118,13 +118,14 @@ const SKIPPED_WORDS: Record<TextSkipped, string> = {
   not_sent: 'the phone that sends the household’s texts didn’t take it',
 };
 
+/** Whether a reset asks for a code by text: no, yes (and where), or it should but cannot. */
 export type ResetText =
   { asks: false } | { asks: true; to: string } | { asks: false; cannot: 'no_number' | 'not_ready' };
 
 export interface TextCodeOptions {
   /** The key a code is HMACed under (deriveKey(master, SMS_CODE_KEY_PURPOSE)). */
   codeKey?: Buffer;
-  /** How a person's owners are told a reset went on without its code. */
+  /** How a person's owners are told a sign-in or a reset was refused without its code. */
   alert?: (a: AlertRequest) => Promise<void>;
 }
 
@@ -319,7 +320,8 @@ export class TextCodeService {
   /**
    * At a reset: whether it asks for a code by text — the person asked, and
    * their number is confirmed and texts go — or should and cannot, when the
-   * reset goes on without it (`skipped`).
+   * reset is refused without a recovery code or the security questions in
+   * its place (`refused`).
    */
   async forReset(accountId: string): Promise<ResetText> {
     return this.asked(accountId, 'reset');
@@ -327,8 +329,8 @@ export class TextCodeService {
 
   /**
    * At sign-in, the same: asked for and possible, not asked for, or asked
-   * for and impossible — when somebody whose only second step it is signs
-   * in with their password alone (the owner's decision of 12 Nov 2026).
+   * for and impossible — when somebody whose only second step it is is
+   * refused (0.9.0-dev.104).
    */
   async forSignInState(accountId: string): Promise<ResetText> {
     return this.asked(accountId, 'sign_in');
@@ -344,21 +346,20 @@ export class TextCodeService {
 
   /**
    * A sign-in or a reset that should have asked for a code by text, and
-   * could not, went on (don't lock anybody out; the owner's decision of 12
-   * Nov 2026): written in the activity log as `auth.text_code_skipped` —
-   * which, and why in a word — and the person's owners are told, by email
-   * and push, never by text, since texts are what failed. Who, when and why
-   * in plain words; never a code or a number. As best the vault can: it
-   * stops nothing.
+   * could not, was refused (0.9.0-dev.104): written in the activity log as
+   * `auth.text_code_refused` — which, and why in a word — and the person's
+   * owners are told, by email and push, never by text, since texts are what
+   * failed: they are what is to be fixed. Who, when and why in plain words;
+   * never a code or a number. As best the vault can: it stops nothing.
    */
-  async skipped(accountId: string, at: 'reset' | 'sign_in', why: TextSkipped): Promise<void> {
+  async refused(accountId: string, at: 'reset' | 'sign_in', why: TextSkipped): Promise<void> {
     const t = await this.target(accountId);
     if (!t) return;
     const found = await withSystem(this.db, t.householdId, async (trx) => {
       await appendAudit(trx, {
         householdId: t.householdId,
         actorAccountId: accountId,
-        action: 'auth.text_code_skipped',
+        action: 'auth.text_code_refused',
         objectType: 'member',
         objectId: t.memberId,
         detail: { at, why },
@@ -387,13 +388,17 @@ export class TextCodeService {
       accountIds,
       subject:
         at === 'reset'
-          ? 'A password was reset without its code by text'
-          : 'A sign-in went ahead without its code by text',
+          ? 'A password reset was stopped: its code by text couldn’t be sent'
+          : 'A sign-in was stopped: its code by text couldn’t be sent',
       body:
         (at === 'reset'
-          ? `${who}’s password was reset on ${when} without the code by text they asked for, because ${SKIPPED_WORDS[why]}.`
-          : `${who} signed in on ${when} with their password alone, without the code by text they asked for, because ${SKIPPED_WORDS[why]}.`) +
-        ` If it wasn’t them, ask them about it${at === 'sign_in' ? ', and sign that device out' : ''}.`,
+          ? `${who} tried to reset their password on ${when}, and couldn’t: the code by text they asked for couldn’t be sent, because ${SKIPPED_WORDS[why]}.`
+          : `${who} tried to sign in on ${when}, and couldn’t: the code by text they asked for couldn’t be sent, because ${SKIPPED_WORDS[why]}.`) +
+        ` They can use a recovery code or their security questions instead, if they set them up, or you can send them a password reset. ${
+          why === 'no_number'
+            ? 'Ask them to confirm their mobile number again.'
+            : 'Fix the household’s text messages in Settings, under Text messages.'
+        }`,
       // By email and push; never by text, which is what failed.
       noText: true,
     });

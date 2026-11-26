@@ -8,13 +8,17 @@ import { z } from 'zod';
 import {
   PASSWORD_RULES_DEFAULT,
   RESET_LINK_MINUTES,
+  SECURITY_ANSWER_MAX,
+  SECURITY_QUESTION_COUNT,
   suspensionInEffect,
+  type RecoveryWay,
   type PasswordRules,
   type ResetNotice,
   type TextCodeSent,
 } from '@fdv/shared';
 import { ApiError } from '../errors.js';
-import { stillSignedIn, type Principal, type RequestMeta } from './service.js';
+import { stillSignedIn, textCodeUnavailable, type Principal, type RequestMeta } from './service.js';
+import type { RecoveryProof, RecoveryService } from './recovery.js';
 import type { Enqueue } from '../documents/service.js';
 import { SHARE_PAGES_PRUNE_JOB } from '../documents/shares.js';
 import type { StepUpService } from './step-up.js';
@@ -105,10 +109,21 @@ export const lookupBody = z.object({ token: linkToken }).strict();
 /**
  * Spending the link (5.17): its token and the new password, both in the
  * body; and since 0.9.0 (SMS3) the code texted to the person's own number,
- * when they asked for one (`ResetPreview.text_code_to`).
+ * when they asked for one (`ResetPreview.text_code_to`). Since 0.9.0-dev.104
+ * a recovery code, or the answers to the security questions in their
+ * order, may stand in for that code.
  */
 export const completeBody = z
-  .object({ token: linkToken, password, code: z.string().trim().min(1).max(16).optional() })
+  .object({
+    token: linkToken,
+    password,
+    code: z.string().trim().min(1).max(16).optional(),
+    recovery_code: z.string().trim().min(1).max(40).optional(),
+    answers: z
+      .array(z.string().max(SECURITY_ANSWER_MAX))
+      .length(SECURITY_QUESTION_COUNT)
+      .optional(),
+  })
   .strict();
 
 export interface ResetPreview {
@@ -121,6 +136,12 @@ export interface ResetPreview {
   expires_at: string;
   /** A code by text is asked for too (SMS3): where it goes, masked; null when none is. */
   text_code_to: string | null;
+  /** One is asked for, and can't be sent now (0.9.0-dev.104): the reset waits for a stand-in. */
+  text_code_unavailable: boolean;
+  /** What may stand in for the code by text (0.9.0-dev.104); empty when none is asked for. */
+  recovery: RecoveryWay[];
+  /** The security questions to answer, when they may stand in; null otherwise. */
+  security_questions: string[] | null;
   /** The household's password rules, which the new password must meet. */
   password_rules: PasswordRules;
 }
@@ -166,6 +187,11 @@ export class PasswordService {
      * finished with a code texted to their own confirmed number as well.
      */
     private readonly textCodes: TextCodeService | null = null,
+    /**
+     * Recovery codes and security questions (0.9.0-dev.104): either stands
+     * in for that code when it can't be sent, or the phone is lost.
+     */
+    private readonly recovery: RecoveryService | null = null,
   ) {}
 
   // -------------------------------------------------------- changing one
@@ -465,18 +491,54 @@ export class PasswordService {
       issued_by_operator: row.issued_by !== 'self',
       issued_by: row.issued_by,
       expires_at: row.expires_at.toISOString(),
-      text_code_to: await this.textCodeTo(row.account_id),
+      ...(await this.textCodeAsked(row.account_id, row.issued_by)),
       // What the new password must be (features.password_rules): the rules
       // alone, nothing else of the household.
       password_rules: household ? rulesOfRow(household) : { ...PASSWORD_RULES_DEFAULT },
     };
   }
 
-  /** Where a reset's code by text goes, masked, when the person asked for one and it can go. */
-  private async textCodeTo(accountId: string): Promise<string | null> {
-    if (!this.textCodes) return null;
-    const asked = await this.textCodes.forReset(accountId);
-    return asked.asks ? asked.to : null;
+  /**
+   * Whether a reset asks for a code by text, as its link says (0.9.0):
+   * one the person asked for themselves does when they asked for
+   * one — where it goes, masked, or that it can't be sent now — and what may
+   * stand in for it (0.9.0-dev.104). A link an owner or whoever runs the
+   * server made never asks: they made it for somebody who could not get in,
+   * and it is the way back when texts can't be sent.
+   */
+  private async textCodeAsked(
+    accountId: string,
+    issuedBy: 'self' | 'operator' | 'owner',
+  ): Promise<
+    Pick<ResetPreview, 'text_code_to' | 'text_code_unavailable' | 'recovery' | 'security_questions'>
+  > {
+    const none = {
+      text_code_to: null,
+      text_code_unavailable: false,
+      recovery: [],
+      security_questions: null,
+    };
+    const asked = await this.resetText(accountId, issuedBy);
+    if (!asked.asks && !('cannot' in asked)) return none;
+    const recovery = this.recovery ? await this.recovery.waysFor(accountId) : [];
+    return {
+      text_code_to: asked.asks ? asked.to : null,
+      text_code_unavailable: 'cannot' in asked,
+      recovery,
+      security_questions:
+        this.recovery && recovery.includes('security_questions')
+          ? await this.recovery.questionsFor(accountId).catch(() => null)
+          : null,
+    };
+  }
+
+  /** What a reset by this link asks of codes by text: nothing for a link somebody else made. */
+  private async resetText(
+    accountId: string,
+    issuedBy: 'self' | 'operator' | 'owner',
+  ): Promise<ResetText> {
+    if (!this.textCodes || issuedBy !== 'self') return { asks: false };
+    return this.textCodes.forReset(accountId);
   }
 
   /**
@@ -487,7 +549,8 @@ export class PasswordService {
    */
   async sendResetCode(token: string): Promise<TextCodeSent> {
     const row = await this.live(token);
-    if (!this.textCodes || !(await this.textCodeTo(row.account_id))) throw smsCodeNotOffered();
+    const asked = await this.resetText(row.account_id, row.issued_by);
+    if (!this.textCodes || !asked.asks) throw smsCodeNotOffered();
     return this.textCodes.send(row.account_id, 'reset');
   }
 
@@ -513,6 +576,7 @@ export class PasswordService {
     newPassword: string,
     meta: RequestMeta,
     code?: string,
+    standIn?: RecoveryProof,
   ): Promise<{ email: string }> {
     const row = await this.live(token);
     const account = await this.db
@@ -551,13 +615,18 @@ export class PasswordService {
     await mustMeetRules(newPassword, rules, { email: account.email, name });
     // A code by text, when the person asked for one (SMS3): typed, and
     // right, before anything is spent. Asked for and impossible — their
-    // number no longer confirmed, or the household's texts not working —
-    // the reset goes on as it would have, and their owners are told below:
-    // a phone that is off locks nobody out.
-    const textCode: ResetText = this.textCodes
-      ? await this.textCodes.forReset(account.id)
-      : { asks: false };
-    if (textCode.asks && this.textCodes) {
+    // number no longer confirmed, or the household's texts not working — the
+    // reset is refused (0.9.0-dev.104; until then it went on without it),
+    // and their owners are told. A recovery code or the security questions
+    // may stand in, either way: used, every second step of theirs goes, as
+    // at sign-in. A link an owner or whoever runs the server made asks for
+    // no code by text (`resetText`).
+    const textCode = await this.resetText(account.id, row.issued_by);
+    let stoodIn: 'recovery_code' | 'questions' | null = null;
+    if ((textCode.asks || 'cannot' in textCode) && standIn && this.recovery) {
+      await this.recovery.use(account.id, standIn, 'reset', meta);
+      stoodIn = 'code' in standIn ? 'recovery_code' : 'questions';
+    } else if (textCode.asks && this.textCodes) {
       if (!code) {
         throw new ApiError(
           422,
@@ -566,13 +635,25 @@ export class PasswordService {
         );
       }
       await this.textCodes.verify(account.id, 'reset', code);
+    } else if ('cannot' in textCode && this.textCodes) {
+      await this.textCodes.refused(account.id, 'reset', textCode.cannot).catch(() => undefined);
+      throw textCodeUnavailable(
+        undefined,
+        this.recovery ? await this.recovery.waysFor(account.id) : [],
+      );
     }
+    // A link somebody else made, for somebody who asked for codes by text
+    // (0.9.0-dev.104): those go with the reset, as every passkey does, so
+    // that the new password signs them in and they can set up a second step
+    // again. A code they can't be sent would otherwise refuse that too.
+    const textOff = row.issued_by !== 'self';
     const hash = await argon2.hash(newPassword, ARGON2);
     let resetPhones: PushTarget[] = [];
     let handedOver = false;
     let handedBy: string | null = null;
     let endedLinks: EndedLink[] = [];
     let computers = 0;
+    let textsTurnedOff = false;
     // A reset signs nobody in, so it is not the account asking even now; the
     // account it is for is named, for what the database asks of it (0052).
     const scope = {
@@ -613,6 +694,12 @@ export class PasswordService {
       // spent goes (5.29), as every passkey goes below — but not one turned
       // on after a change of the password, which the person may have made.
       await takeAwaySinceHandover(trx, account.id, 'reset');
+      const before = await trx
+        .selectFrom('account')
+        .select(['sign_in_text', 'reset_text'])
+        .where('id', '=', account.id)
+        .executeTakeFirstOrThrow();
+      textsTurnedOff = textOff && (before.sign_in_text || before.reset_text);
       await trx
         .updateTable('account')
         .set({
@@ -620,6 +707,7 @@ export class PasswordService {
           // A link an owner was handed (5.29): from now, what is added to
           // this sign-in goes at the next change of its password.
           ...(claimed.handover ? { handover_spent_at: sql<Date>`now()` } : {}),
+          ...(textsTurnedOff ? { sign_in_text: false, reset_text: false } : {}),
         })
         .where('id', '=', account.id)
         .execute();
@@ -678,9 +766,11 @@ export class PasswordService {
         detail: {
           issued_by: row.issued_by,
           exports: Number(exports.rows[0]?.n ?? 0),
-          // A code by text (SMS3): asked for and given, or asked for and impossible.
-          ...(textCode.asks ? { text_code: 'given' } : {}),
-          ...('cannot' in textCode ? { text_code: 'skipped' } : {}),
+          // A code by text: asked for and given; or since
+          // 0.9.0-dev.104 a recovery code or the questions in its place, and
+          // codes by text turned off by a link somebody else made.
+          ...(stoodIn ? { text_code: stoodIn } : textCode.asks ? { text_code: 'given' } : {}),
+          ...(textsTurnedOff ? { text_codes_off: true } : {}),
         },
         ip: meta.ip,
       });
@@ -698,9 +788,6 @@ export class PasswordService {
     // A link used up because they keep something private now commits as
     // used up, and is answered as any dead link: nothing says why.
     if (outcome !== 'done') throw gone();
-    if ('cannot' in textCode && this.textCodes) {
-      await this.textCodes.skipped(account.id, 'reset', textCode.cannot).catch(() => undefined);
-    }
     await this.prunePages(membership.household_id, endedLinks);
     if (resetPhones.length > 0) {
       await this.push({
@@ -720,6 +807,9 @@ export class PasswordService {
         (handedOver
           ? `${handedBy ?? 'An owner'}, an owner of your family vault, was given a one-time link for your sign-in, and it has been used to set a new password. Every device has been signed out and every passkey removed. If you did not choose that password yourself, set one of your own in Settings → Your account when you next sign in — that also removes any passkey or two-step sign-in added since — and talk to them.`
           : 'Somebody used a reset link to set a new password, and every device has been signed out. If that was not you, whoever did it can read your email — deal with that first.') +
+        (textsTurnedOff
+          ? ' Codes by text have been turned off for your sign-in: turn them on again in Settings → Your account if you want them.'
+          : '') +
         (computers > 0 ? ` ${COMPUTERS_STOPPED}` : ''),
       emailOnly: true,
       text: 'password_changed',

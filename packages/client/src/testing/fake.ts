@@ -1,4 +1,22 @@
 import {
+  normaliseRecoveryCode,
+  normaliseSecurityAnswer,
+  RECOVERY_CODE_ALPHABET,
+  RECOVERY_CODE_COUNT,
+  RECOVERY_CODE_LENGTH,
+  RECOVERY_CODES_LOW,
+  recoveryCodeWords,
+  SECURITY_QUESTION_CHOICES,
+  SECURITY_QUESTION_COUNT,
+  SECURITY_QUESTION_OWN,
+  SECURITY_QUESTION_TRIES,
+  SECURITY_QUESTIONS_REFUSED_HOURS,
+  securityAnswerProblem,
+  TEXT_CODE_UNAVAILABLE_MESSAGE,
+  type RecoveryCodesState,
+  type RecoveryWay,
+  type SecurityQuestion,
+  type SecurityQuestionsState,
   SESSION_LOCKED_CODE,
   SESSION_LOCKED_MESSAGE,
   addFolderTree,
@@ -480,6 +498,41 @@ const FAKE_LOCK_ROUTES: ReadonlySet<string> = new Set([
   'POST /api/v1/auth/step-up/text',
 ]);
 
+/**
+ * What a session somebody got back into with a recovery code or their
+ * security questions may still ask (0.9.0-dev.104), as the real vault lets
+ * it: set up a second step again, make new recovery codes, sign out.
+ */
+const FAKE_RECOVERED_ROUTES: ReadonlySet<string> = new Set([
+  'GET /api/v1/me',
+  'POST /api/v1/auth/logout',
+  'GET /api/v1/auth/step-up',
+  'POST /api/v1/auth/step-up',
+  'POST /api/v1/auth/unlock',
+  'GET /api/v1/auth/passkeys',
+  'POST /api/v1/auth/passkeys/challenge',
+  'POST /api/v1/auth/passkeys',
+  'GET /api/v1/auth/text-codes',
+  'PUT /api/v1/auth/text-codes',
+  'GET /api/v1/auth/recovery-codes',
+  'POST /api/v1/auth/recovery-codes',
+]);
+
+/** Somebody's recovery codes in the fake (0.9.0-dev.104): kept as themselves, as only a fake may. */
+export interface FakeRecoveryCodes {
+  codes: Array<{ code: string; used: boolean }>;
+  made_at: string;
+}
+
+/** Somebody's security questions in the fake (0.9.0-dev.104), the answers normalised. */
+export interface FakeSecurityQuestions {
+  questions: SecurityQuestion[];
+  answers: string[];
+  set_at: string;
+  tries: number;
+  refused_until: number | null;
+}
+
 /** Somebody's mobile number in the fake (SMS1), and the code out for it. */
 export interface FakePhone {
   /** E.164. */
@@ -869,6 +922,23 @@ export interface FakeVaultState {
   textCodes?: Map<string, { sign_in: boolean; reset: boolean }>;
   textCodesOut?: Map<string, { code: string; expires: number; attempts: number }>;
   mfaWaiting?: Map<string, { memberId: string; installation: string | null }>;
+  /**
+   * Getting back in (0.9.0-dev.104): each person's recovery codes and
+   * security questions, by member id; whether the household offers
+   * questions (on unless a test says); and who got back in and has yet to
+   * set up a second step and make new codes (their sessions may only do
+   * that, `two_step_setup_required` with the reason `recovered`).
+   */
+  recoveryCodes?: Map<string, FakeRecoveryCodes>;
+  /**
+   * Who has two-step sign-in of their own, by member id — what recovery
+   * codes stand in for, beside codes by text (a test's `ownerTwoStep`
+   * names whose session it gave it to).
+   */
+  twoStepMembers?: Set<string>;
+  securityQuestions?: Map<string, FakeSecurityQuestions>;
+  securityQuestionsOn?: boolean;
+  recovered?: Set<string>;
   /**
    * What each person wants to hear, and how (GET and PUT
    * /notifications/preferences), by member id: the vault's defaults until
@@ -2210,6 +2280,8 @@ export function createFakeVault(): {
       member_id: who.memberId,
       role: who.role,
       scopes_unlocked: ['household', 'adults', 'member'],
+      // Got back in without a second step (0.9.0-dev.104): only setting one up.
+      ...(state.recovered?.has(who.memberId) ? { two_step_setup_required: true as const } : {}),
     };
   };
   const open = (installation: string | null = null, memberId?: string): Tokens => {
@@ -2642,6 +2714,273 @@ export function createFakeVault(): {
           );
     }
     state.textCodesOut?.delete(`${memberId}:${purpose}`);
+    return null;
+  };
+
+  // ------------------------------------------------ getting back in (0.9.0-dev.104)
+
+  /** Whether somebody has a second step for recovery to stand in for: codes by text, or the owner's own. */
+  const hasSecondStepOf = (memberId: string): boolean => {
+    const asked = state.textCodes?.get(memberId);
+    return (
+      asked?.sign_in === true ||
+      asked?.reset === true ||
+      state.twoStepMembers?.has(memberId) === true
+    );
+  };
+  /** What may stand in for somebody's second step now, as the real vault offers it. */
+  const recoveryWaysOf = (memberId: string): RecoveryWay[] => {
+    const ways: RecoveryWay[] = [];
+    if (state.recoveryCodes?.get(memberId)?.codes.some((c) => !c.used)) ways.push('recovery_code');
+    if (state.securityQuestions?.has(memberId) && (state.securityQuestionsOn ?? true)) {
+      ways.push('security_questions');
+    }
+    return ways;
+  };
+  const recoveryCodesOf = (memberId: string): RecoveryCodesState => {
+    const kept = state.recoveryCodes?.get(memberId);
+    const remaining = kept ? kept.codes.filter((c) => !c.used).length : 0;
+    return {
+      remaining,
+      made_at: kept?.made_at ?? null,
+      low: kept !== undefined && remaining <= RECOVERY_CODES_LOW,
+      second_step: hasSecondStepOf(memberId),
+    };
+  };
+  const questionsOf = (memberId: string): SecurityQuestionsState => {
+    const kept = state.securityQuestions?.get(memberId);
+    return {
+      set: kept !== undefined,
+      questions: kept?.questions ?? [],
+      set_at: kept?.set_at ?? null,
+      offered: state.securityQuestionsOn ?? true,
+      refused_until:
+        kept?.refused_until && kept.refused_until > Date.now()
+          ? new Date(kept.refused_until).toISOString()
+          : null,
+    };
+  };
+  let recoveryMade = 0;
+  /** Ten codes, different every time the fake makes some. */
+  const newRecoveryCodes = () =>
+    Array.from({ length: RECOVERY_CODE_COUNT }, () => {
+      recoveryMade += 1;
+      let code = '';
+      for (let i = 0; i < RECOVERY_CODE_LENGTH; i++) {
+        code +=
+          RECOVERY_CODE_ALPHABET[
+            (recoveryMade * 7919 + i * 104729) % RECOVERY_CODE_ALPHABET.length
+          ];
+      }
+      return code;
+    });
+  /**
+   * Somebody got back in: every second step of theirs taken away (codes by
+   * text; the owner's own), the rest of their codes, and every session of
+   * theirs ended; their sign-in only sets one up again until they do.
+   */
+  const recoverMember = (memberId: string) => {
+    state.recoveryCodes?.delete(memberId);
+    state.textCodes?.delete(memberId);
+    state.twoStepMembers?.delete(memberId);
+    if (memberId === ME) state.ownerTwoStep = false;
+    const kept = state.securityQuestions?.get(memberId);
+    if (kept) {
+      kept.tries = 0;
+      kept.refused_until = null;
+    }
+    for (const s of state.sessions) {
+      if (!s.revoked && whoOf(s).memberId === memberId) {
+        s.revoked = true;
+        s.endedBecause = 'revoked';
+      }
+    }
+    (state.recovered ??= new Set()).add(memberId);
+  };
+  const waitingSignIn = (token: unknown) => state.mfaWaiting?.get(String(token));
+  const signInExpired = () =>
+    fail(401, 'mfa_expired', 'That sign-in attempt has expired. Start again.');
+  const questionsNotOffered = () =>
+    fail(
+      409,
+      'security_questions_not_offered',
+      'Security questions aren’t set up for this sign-in.',
+    );
+
+  const recoveryRoutes = (
+    path: string,
+    init: Parameters<FetchLike>[1],
+    body: Record<string, unknown>,
+    sessionOf: () => FakeSession | ResponseLike,
+  ): ResponseLike | null => {
+    const method = init.method ?? 'GET';
+    // In place of the second step, with the interim token.
+    if (path === '/api/v1/auth/mfa/recovery-code' && method === 'POST') {
+      const waiting = waitingSignIn(body.mfa_token);
+      if (!waiting) return signInExpired();
+      const typed = normaliseRecoveryCode(typeof body.code === 'string' ? body.code : '');
+      const found = state.recoveryCodes
+        ?.get(waiting.memberId)
+        ?.codes.find((c) => !c.used && c.code === typed);
+      if (!found) {
+        return fail(
+          401,
+          'recovery_code_wrong',
+          'That recovery code isn’t right, or it was used already.',
+        );
+      }
+      found.used = true;
+      recoverMember(waiting.memberId);
+      state.mfaWaiting?.delete(String(body.mfa_token));
+      return ok(open(waiting.installation, waiting.memberId === ME ? undefined : waiting.memberId));
+    }
+    if (path === '/api/v1/auth/mfa/questions' && method === 'POST') {
+      const waiting = waitingSignIn(body.mfa_token);
+      if (!waiting) return signInExpired();
+      const kept = state.securityQuestions?.get(waiting.memberId);
+      if (!kept || !(state.securityQuestionsOn ?? true)) return questionsNotOffered();
+      return ok({ questions: kept.questions.map((q) => q.text) });
+    }
+    if (path === '/api/v1/auth/mfa/answers' && method === 'POST') {
+      const waiting = waitingSignIn(body.mfa_token);
+      if (!waiting) return signInExpired();
+      const kept = state.securityQuestions?.get(waiting.memberId);
+      if (!kept || !(state.securityQuestionsOn ?? true)) return questionsNotOffered();
+      if (kept.refused_until && kept.refused_until > Date.now()) {
+        return fail(
+          429,
+          'security_questions_refused',
+          `Your security questions were answered wrong ${SECURITY_QUESTION_TRIES} times, so they can’t be used for now. Use a recovery code, or ask an owner to send you a password reset.`,
+        );
+      }
+      kept.tries += 1;
+      const typed = Array.isArray(body.answers)
+        ? body.answers.map((a) => normaliseSecurityAnswer(typeof a === 'string' ? a : ''))
+        : [];
+      const right =
+        typed.length === SECURITY_QUESTION_COUNT && typed.every((a, i) => a === kept.answers[i]);
+      if (!right) {
+        const left = Math.max(0, SECURITY_QUESTION_TRIES - kept.tries);
+        if (left === 0) {
+          kept.refused_until = Date.now() + SECURITY_QUESTIONS_REFUSED_HOURS * 3600_000;
+        }
+        return fail(
+          401,
+          'security_answers_wrong',
+          left > 0
+            ? `Those answers aren’t all right. ${left} ${left === 1 ? 'try' : 'tries'} left before your security questions are refused for a day.`
+            : 'Those answers aren’t all right, and your security questions are now refused for a day. Use a recovery code, or ask an owner to send you a password reset.',
+        );
+      }
+      recoverMember(waiting.memberId);
+      state.mfaWaiting?.delete(String(body.mfa_token));
+      return ok(open(waiting.installation, waiting.memberId === ME ? undefined : waiting.memberId));
+    }
+    // One's own recovery codes: how many are left, and a new set.
+    if (path === '/api/v1/auth/recovery-codes') {
+      const s = sessionOf();
+      if (!('id' in s)) return s;
+      const who = whoOf(s);
+      if (method === 'GET') return ok(recoveryCodesOf(who.memberId));
+      if (method !== 'POST') return null;
+      if (!hasSecondStepOf(who.memberId)) {
+        return fail(
+          409,
+          'recovery_codes_need_second_step',
+          'Set up two-step sign-in first — an authenticator app, a passkey or codes by text — and then make recovery codes for it.',
+        );
+      }
+      const codes = newRecoveryCodes();
+      (state.recoveryCodes ??= new Map()).set(who.memberId, {
+        codes: codes.map((code) => ({ code, used: false })),
+        made_at: new Date().toISOString(),
+      });
+      state.recovered?.delete(who.memberId);
+      return ok({ ...recoveryCodesOf(who.memberId), codes: codes.map(recoveryCodeWords) }, 201);
+    }
+    // One's own security questions: never the answers.
+    if (path === '/api/v1/auth/security-questions') {
+      const s = sessionOf();
+      if (!('id' in s)) return s;
+      const who = whoOf(s);
+      if (method === 'GET') return ok(questionsOf(who.memberId));
+      if (method === 'DELETE') {
+        state.securityQuestions?.delete(who.memberId);
+        return ok(questionsOf(who.memberId));
+      }
+      if (method !== 'PUT') return null;
+      if (!(state.securityQuestionsOn ?? true)) {
+        return fail(
+          409,
+          'security_questions_off',
+          'An owner has turned security questions off for this household.',
+        );
+      }
+      const given = Array.isArray(body.questions)
+        ? (body.questions as Array<{ key?: unknown; text?: unknown; answer?: unknown }>)
+        : [];
+      if (given.length !== SECURITY_QUESTION_COUNT) {
+        return fail(
+          422,
+          'validation_failed',
+          `Choose ${SECURITY_QUESTION_COUNT} questions, and answer each.`,
+        );
+      }
+      const questions: SecurityQuestion[] = [];
+      for (const q of given) {
+        const key = typeof q.key === 'string' ? q.key : '';
+        const text =
+          key === SECURITY_QUESTION_OWN
+            ? (typeof q.text === 'string' ? q.text : '').trim()
+            : SECURITY_QUESTION_CHOICES.find((c) => c.key === key)?.text;
+        if (!text || (key === SECURITY_QUESTION_OWN && text.length < 8)) {
+          return fail(
+            422,
+            'validation_failed',
+            'Choose each question from the list, or write your own.',
+          );
+        }
+        if (questions.some((x) => x.key === key)) {
+          return fail(422, 'validation_failed', 'Choose a different question each time.');
+        }
+        const problem = securityAnswerProblem(typeof q.answer === 'string' ? q.answer : '');
+        if (problem) return fail(422, 'validation_failed', problem);
+        questions.push({ key, text });
+      }
+      const answers = given.map((q) =>
+        normaliseSecurityAnswer(typeof q.answer === 'string' ? q.answer : ''),
+      );
+      if (new Set(answers).size !== answers.length) {
+        return fail(422, 'validation_failed', 'Give a different answer to each question.');
+      }
+      (state.securityQuestions ??= new Map()).set(who.memberId, {
+        questions,
+        answers,
+        set_at: new Date().toISOString(),
+        tries: 0,
+        refused_until: null,
+      });
+      return ok(questionsOf(who.memberId));
+    }
+    // Whether the household offers them: an owner's to change.
+    if (path === '/api/v1/household/security-questions') {
+      const s = sessionOf();
+      if (!('id' in s)) return s;
+      const who = whoOf(s);
+      if (method === 'PUT') {
+        if (who.role !== 'owner') {
+          return fail(
+            403,
+            'forbidden',
+            'Only an owner can choose whether security questions are offered.',
+          );
+        }
+        state.securityQuestionsOn = body.on === true;
+      } else if (method !== 'GET') {
+        return null;
+      }
+      return ok({ on: state.securityQuestionsOn ?? true, can_change: who.role === 'owner' });
+    }
     return null;
   };
 
@@ -3885,6 +4224,22 @@ export function createFakeVault(): {
       if (s.locked && !FAKE_LOCK_ROUTES.has(`${init.method ?? 'GET'} ${path}`)) {
         return fail(423, SESSION_LOCKED_CODE, SESSION_LOCKED_MESSAGE);
       }
+      // Got back in without a second step (0.9.0-dev.104): only setting one up.
+      if (
+        state.recovered?.has(whoOf(s).memberId) &&
+        !FAKE_RECOVERED_ROUTES.has(`${init.method ?? 'GET'} ${path}`)
+      ) {
+        return respond(403, {
+          error: {
+            code: 'two_step_setup_required',
+            message:
+              'You got back in without your second step, so it was taken away. Set up two-step sign-in again and make new recovery codes before going on.',
+            reason: 'recovered',
+            retriable: false,
+            request_id: 'fake',
+          },
+        });
+      }
       return s;
     };
     // A computer that sends scans (0.8.0, D1), as the real vault answers: a
@@ -4018,6 +4373,8 @@ export function createFakeVault(): {
     if (mailboxAnswer) return mailboxAnswer;
     const phoneAnswer = phoneRoutes(path, init, body, session);
     if (phoneAnswer) return phoneAnswer;
+    const recoveryAnswer = recoveryRoutes(path, init, body, session);
+    if (recoveryAnswer) return recoveryAnswer;
     // The AI reader set in Settings (AIR1): an owner reads it; nobody else.
     if (path === '/api/v1/household/reading/ai-reader' && (init.method ?? 'GET') === 'GET') {
       const s = session();
@@ -4201,6 +4558,9 @@ export function createFakeVault(): {
           recently_opened: true,
           // The tags used most recently (0.9.0-dev.103).
           recent_tags: true,
+          // Recovery codes and security questions (0.9.0-dev.104).
+          recovery_codes: true,
+          security_questions: true,
           // Connected apps (0.9.0, APP1).
           connected_apps: true,
           connected_app_reads: true,
@@ -4275,12 +4635,27 @@ export function createFakeVault(): {
       // one: texted now, as the real vault does when it is the only one.
       const signer = other ? other.member_id : ME;
       const to = textCodeTo(signer, 'sign_in');
-      if (to) {
+      const asked = state.textCodes?.get(signer)?.sign_in === true;
+      if (to || asked) {
         const mfaToken = next('mfa');
         (state.mfaWaiting ??= new Map()).set(mfaToken, {
           memberId: signer,
           installation: init.headers['x-fdv-installation'] ?? null,
         });
+        // Asked for and impossible (0.9.0-dev.104): refused, with the
+        // interim token for a recovery code or the questions to stand in.
+        if (!to) {
+          return respond(409, {
+            error: {
+              code: 'text_code_unavailable',
+              message: TEXT_CODE_UNAVAILABLE_MESSAGE,
+              mfa_token: mfaToken,
+              recovery: recoveryWaysOf(signer),
+              retriable: false,
+              request_id: 'fake',
+            },
+          });
+        }
         sendTextCode(signer, 'sign_in');
         const challenge: MfaChallenge = {
           mfa_required: true,
@@ -4288,6 +4663,7 @@ export function createFakeVault(): {
           methods: ['text'],
           text_to: to,
           text_sent: true,
+          recovery: recoveryWaysOf(signer),
         };
         return ok(challenge);
       }
@@ -4442,6 +4818,9 @@ export function createFakeVault(): {
         locked: s.locked === true,
         // 0.9.0-dev.87: the fake's sessions are a phone's, never locked by themselves.
         auto_lock_minutes: null,
+        // 0.9.0-dev.104: got back in without a second step, and only setting one up.
+        two_step_setup_required: state.recovered?.has(who.memberId) === true,
+        two_step_reason: state.recovered?.has(who.memberId) ? 'recovered' : null,
       });
     }
     if (path === '/api/v1/me/reset-notice' && init.method === 'DELETE') {

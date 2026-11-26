@@ -628,6 +628,8 @@ const RULES: ReadonlyMap<string, Audience | typeof BY_TYPE> = new Map<
   // 0.9.0: whether every adult must have two-step sign-in, chosen by an
   // owner: how the family signs in, so for whoever reads the log.
   ['household.two_step_changed', everyone],
+  // Whether security questions are offered (0.9.0-dev.104), as two-step sign-in's rule is.
+  ['household.security_questions_changed', everyone],
   // 0.9.0-dev.87: when the vault locks itself in a browser left unused,
   // chosen by an owner: how the family's browsers stay safe, so for whoever
   // reads the log.
@@ -714,10 +716,17 @@ const RULES: ReadonlyMap<string, Audience | typeof BY_TYPE> = new Map<
   // 0.9.0 (SMS3): codes by text turned on or off for a reset or a sign-in,
   // as two-step sign-in's lines are.
   ['auth.text_codes_changed', BY_TYPE],
-  // A sign-in or a reset that went on without its code by text (SMS3; the
-  // owner's decision of 12 Nov 2026): for the owners, the person and whoever
-  // did it, as the owners' sign-in lines are.
-  ['auth.text_code_skipped', ownersThePersonAndTheActor],
+  // A sign-in or a reset refused because its code by text couldn't be sent
+  // (0.9.0-dev.104): for the owners, the person and whoever did it, as the
+  // owners' sign-in lines are.
+  ['auth.text_code_refused', ownersThePersonAndTheActor],
+  // Recovery codes made and used, and security questions set, changed,
+  // removed and used (0.9.0-dev.104): the same.
+  ['auth.recovery_codes_made', ownersThePersonAndTheActor],
+  ['auth.recovery_code_used', ownersThePersonAndTheActor],
+  ['auth.security_questions_set', ownersThePersonAndTheActor],
+  ['auth.security_questions_removed', ownersThePersonAndTheActor],
+  ['auth.security_questions_used', ownersThePersonAndTheActor],
   ['credential.passkey_added', BY_TYPE],
   ['credential.passkey_removed', BY_TYPE],
   // kinds of document (5.11): what the family calls its papers is the

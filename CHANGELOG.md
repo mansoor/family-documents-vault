@@ -6,6 +6,21 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.9.0-dev.104] - 2026-11-25 — getting back in without your second step
+
+### Added
+
+- **Recovery codes.** Ten one-time codes, made when you set up two-step sign-in — an authenticator app, a passkey or codes by text — and again whenever you ask in Settings → Your account, which replaces the old set. They are shown once, with Download, Print and Copy, and kept only as hashes. The card says how many are left, and warns when two or fewer are.
+- **Security questions, if you want them.** Three questions you choose in Settings → Your account — one in your own words if you like — answered once, and never shown again. Capitals, spaces and punctuation don't matter. The page says plainly that relatives may know such answers. An owner can turn them off for the family in Settings → Security.
+- **If you lose your second step**, sign in with your password and choose **Use a recovery code** or **Answer your security questions**; if you lost your password as well, use the emailed reset link first. Neither ever works on its own. Using one takes away your authenticator app, passkeys and codes by text, and signs out every other device; you then set up two-step sign-in again, keep the new recovery codes, and go on. You are emailed, and when you are an owner the other owners are too. Five wrong answers to the questions refuse them for a day.
+- **Activity** says when recovery codes are made or used, when security questions are set, changed, removed or used, and when a sign-in or a reset was refused because its code by text couldn't be sent.
+- **For apps:** `features.recovery_codes` and `features.security_questions`, with the routes the phone app will use; see the API changelog.
+
+### Changed
+
+- **A code by text that can't be sent now refuses the sign-in**, for everybody, instead of letting the password alone in: "We couldn't send your code by text. Use a recovery code or your security questions, or ask an owner to send you a password reset." The owners are still told that texts aren't going out, as something to fix. A password reset that asks for a code by text is refused the same way unless a recovery code or the security questions stand in. A reset link an owner or whoever runs the server made never asks for a code by text, and turns codes by text off for that sign-in, so the person can get back in.
+- **A restore deletes every recovery code**: each person makes new ones.
+
 ## [0.9.0-dev.103] - 2026-11-25 — recently used tags
 
 ### Added

@@ -896,6 +896,30 @@ export interface CapabilityFeatures {
    * `sort` there.
    */
   recent_tags?: boolean;
+  /**
+   * Recovery codes (0.9.0-dev.104, `RecoveryCodesState`): ten one-time codes
+   * that stand in for a lost second step — with the password (`POST
+   * /auth/mfa/recovery-code` with the interim token), or after a reset link
+   * (`recovery_code` on `POST /password-resets/complete`). Made, and made
+   * again, at `POST /auth/recovery-codes`, which shows them once; counted at
+   * `GET /auth/recovery-codes`. Used, every second step is taken away, every
+   * other device signed out, and the session may only set one up again
+   * (`two_step_reason: recovered`) until new codes are made beside it.
+   * Since the same release a code by text that can't be sent refuses the
+   * sign-in or the reset (`409 text_code_unavailable`), never lets it go on.
+   * Absent from older vaults.
+   */
+  recovery_codes?: boolean;
+  /**
+   * Security questions (0.9.0-dev.104, `SecurityQuestionsState`): three the
+   * person chooses and answers in Settings (`GET`, `PUT` and `DELETE
+   * /auth/security-questions`), which stand in for a lost second step as a
+   * recovery code does — never on their own (`POST /auth/mfa/questions` and
+   * `/auth/mfa/answers`, or `answers` on a reset). An owner may turn them
+   * off for the household (`/household/security-questions`). Absent from
+   * older vaults.
+   */
+  security_questions?: boolean;
 }
 
 export interface CapabilityLimits {

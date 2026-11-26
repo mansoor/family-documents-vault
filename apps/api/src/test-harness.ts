@@ -27,6 +27,7 @@ import { buildApp } from './app.js';
 import { AuthService, type Tokens } from './auth/service.js';
 import { codeFor, TotpService } from './auth/totp.js';
 import { SignInGuard } from './auth/sign-in-guard.js';
+import { RecoveryService } from './auth/recovery.js';
 import { deriveSigningKey } from './auth/tokens.js';
 import { loadConfig } from './config.js';
 import type { ChecklistReader, Proposals } from './documents/proposal-pool.js';
@@ -523,6 +524,8 @@ export async function createHarness(opts: HarnessOptions = {}): Promise<Harness>
   const guard = new SignInGuard(db, deriveSigningKey(TEST_MASTER), alert, {
     enabled: opts.signInGuard ?? false,
   });
+  // Recovery codes and security questions (0.9.0-dev.104).
+  const recovery = new RecoveryService(db, alert, push, guard);
   const auth = new AuthService(
     db,
     deriveSigningKey(TEST_MASTER),
@@ -532,7 +535,7 @@ export async function createHarness(opts: HarnessOptions = {}): Promise<Harness>
     totp,
     push,
     textCodes,
-    { twoStep: opts.twoStep ?? false, guard },
+    { twoStep: opts.twoStep ?? false, guard, recovery },
   );
   auth.useSetupToken(new SetupToken(TEST_SETUP_TOKEN));
   const passkeys = new PasskeyService(
@@ -558,6 +561,7 @@ export async function createHarness(opts: HarnessOptions = {}): Promise<Harness>
     push,
     enqueue,
     textCodes,
+    recovery,
   );
   const resets = new OwnerResetService(
     db,
@@ -659,6 +663,7 @@ export async function createHarness(opts: HarnessOptions = {}): Promise<Harness>
       codeKey: deriveKey(TEST_MASTER, PHONE_CODE_KEY_PURPOSE),
     }),
     textCodes,
+    recovery,
     localAi: new LocalAiService(db, settingsChecks, aiReader),
     aiReader,
     backupOffsite: new BackupOffsiteService(db, {

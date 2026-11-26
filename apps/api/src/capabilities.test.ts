@@ -208,6 +208,9 @@ describe('buildCapabilities', () => {
       recently_opened: true,
       // The tags used most recently (0.9.0-dev.103).
       recent_tags: true,
+      // Recovery codes and security questions (0.9.0-dev.104).
+      recovery_codes: true,
+      security_questions: true,
     });
     // Never on the hosted edition, whose operator keeps the backups.
     expect(buildCapabilities({ ...config, edition: 'hosted' }).features).not.toHaveProperty(

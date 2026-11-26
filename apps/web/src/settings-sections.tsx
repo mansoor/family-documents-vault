@@ -128,6 +128,8 @@ export function securityCards(role: Role, caps: Capabilities | null) {
   return {
     passwordRules: role === 'owner' && caps?.features.password_rules === true,
     twoStepRule: role === 'owner',
+    // Whether security questions are offered (0.9.0-dev.104): an owner's.
+    questionsRule: role === 'owner' && caps?.features.security_questions === true,
     familyLock: role === 'owner' && autoLock,
     myLock: autoLock,
   };

@@ -866,6 +866,14 @@ begin
   if to_regclass('public.sms_code') is not null then
     delete from public.sms_code;
   end if;
+  -- Recovery codes (0134, 0.9.0-dev.104): one used since the backup would
+  -- work again, and a set replaced since would come back. None survives:
+  -- each person makes new ones. Security questions are kept as they were,
+  -- their wrong tries forgotten.
+  if to_regclass('public.recovery_code') is not null then
+    delete from public.recovery_code;
+    update public.security_answer set tries = 0, tries_since = null, refused_until = null;
+  end if;
   if to_regclass('public.upload_request') is not null then
     update public.upload_request set paused_at = now(), paused_reason = 'restored'
      where paused_at is null and revoked_at is null and closed_at is null
@@ -1269,6 +1277,16 @@ const GUARDS = [
   // Only an owner chooses whether every adult must have two-step sign-in
   // (0120, 0.9.0).
   { name: 'household_two_step_rule', table: 'household', fn: 'household_two_step_rule' },
+  // Only an owner chooses whether security questions are offered; a
+  // recovery code keeps what it was made as and is used once; and nobody
+  // signed in marks a sign-in as recovered, or lifts it (0134, 0.9.0-dev.104).
+  {
+    name: 'household_security_questions_rule',
+    table: 'household',
+    fn: 'household_security_questions_rule',
+  },
+  { name: 'recovery_code_writes', table: 'recovery_code', fn: 'recovery_code_writes' },
+  { name: 'account_recovered_writes', table: 'account', fn: 'account_recovered_writes' },
   // A batch's uploader changes its name and defaults, and nothing else of
   // it (0062, Phase 6 I1).
   {
@@ -1524,6 +1542,10 @@ const VAULTS_OWN = [
   { table: 'phone_code', what: 'the codes texted to confirm a number' },
   // A code texted to one's own number (0088, SMS3): between the vault and the phone.
   { table: 'sms_code', what: 'the codes texted for a reset, a sign-in or a step-up' },
+  // Recovery codes and security answers (0134, 0.9.0-dev.104): their hashes,
+  // between the vault and the person.
+  { table: 'recovery_code', what: 'the recovery codes' },
+  { table: 'security_answer', what: 'the answers to the security questions' },
   // A connected app's access tokens, the networks its keys were used from
   // and its days of requests (0119, 0.9.0-dev.72): the vault's alone.
   { table: 'connected_app_token', what: 'a connected app’s access tokens' },
@@ -2051,6 +2073,9 @@ const ACTOR_GUARDED = [
   // family's who are signed in, beside a document they can see, and the
   // vault's.
   'document_tag_use',
+  // Recovery codes and security answers (0134, 0.9.0-dev.104): the vault's alone.
+  'recovery_code',
+  'security_answer',
 ];
 
 /**
